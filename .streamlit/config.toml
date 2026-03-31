@@ -1,0 +1,6 @@
+# 本地与云端通用默认项；Streamlit Community Cloud 可在控制台覆盖 Python 版本等。
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
