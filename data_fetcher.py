@@ -1221,6 +1221,272 @@ class YFinanceFetcher(BaseDataFetcher):
         raise NotImplementedError("US stock fetching is not implemented yet.")
 
 
+def _coerce_analysis_timestamp(value: DateLike, field_name: str) -> pd.Timestamp:
+    """将区间边界转为日级、无时区的时间戳（与 ``app._coerce_date`` 语义对齐）。"""
+    try:
+        ts = pd.Timestamp(value)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("%s is not a valid date: %r" % (field_name, value)) from exc
+    if pd.isna(ts):
+        raise ValueError("%s is not a valid date: %r" % (field_name, value))
+    if ts.tzinfo is not None:
+        ts = ts.tz_localize(None)
+    return ts.normalize()
+
+
+def _filter_ohlcv_by_user_date_range(
+    df: pd.DataFrame,
+    start_date: DateLike,
+    end_date: DateLike,
+) -> pd.DataFrame:
+    """按用户区间裁剪 OHLCV；空区间抛 ``ValueError``（与 ``app._filter_by_date_range`` 文案一致）。"""
+    start_ts = _coerce_analysis_timestamp(start_date, "start_date")
+    end_ts = _coerce_analysis_timestamp(end_date, "end_date")
+    if start_ts > end_ts:
+        raise ValueError("start_date must be earlier than or equal to end_date.")
+    filtered = df.loc[(df.index >= start_ts) & (df.index <= end_ts)].copy()
+    if filtered.empty:
+        raise ValueError(
+            "指定日期区间内没有可用数据：%s 至 %s。"
+            % (start_ts.strftime("%Y-%m-%d"), end_ts.strftime("%Y-%m-%d"))
+        )
+    return filtered
+
+
+def _fund_find_date_column(df: pd.DataFrame) -> str:
+    """从 AKShare 基金净值表中解析日期列名。"""
+    preferred = ("日期", "净值日期", "x", "date", "Date", "时间")
+    for name in preferred:
+        if name in df.columns:
+            return name
+    best_col: str | None = None
+    best_valid = 0
+    for col in df.columns:
+        parsed = pd.to_datetime(df[col], errors="coerce")
+        valid = int(parsed.notna().sum())
+        if valid > best_valid:
+            best_valid = valid
+            best_col = str(col)
+    if not best_col or best_valid == 0:
+        raise ValueError("无法在基金净值数据中识别日期列。")
+    return best_col
+
+
+def _fund_pick_cumulative_column(df: pd.DataFrame, date_col: str) -> str | None:
+    """若表中已有累计净值列则返回其列名。"""
+    for col in df.columns:
+        if col == date_col:
+            continue
+        label = str(col)
+        if "累计" in label and "净值" in label:
+            return str(col)
+    return None
+
+
+def _fund_pick_primary_value_column(df: pd.DataFrame, date_col: str) -> str:
+    """在单位净值走势等表中选取主要数值列（单位净值或接口英文列）。"""
+    for col in df.columns:
+        if col == date_col:
+            continue
+        label = str(col).strip().lower()
+        if label == "equityreturn":
+            return str(col)
+        if "单位" in str(col) and "净值" in str(col):
+            return str(col)
+    # 常见兜底：除日期外第一个可解析为数值的列
+    for col in df.columns:
+        if col == date_col:
+            continue
+        numeric = pd.to_numeric(df[col], errors="coerce")
+        if int(numeric.notna().sum()) > 0:
+            return str(col)
+    raise ValueError("无法在基金净值数据中识别净值数值列。")
+
+
+def _fund_pick_cumulative_value_column(df: pd.DataFrame, date_col: str) -> str:
+    """在累计净值走势表中优先选取累计净值列。"""
+    picked = _fund_pick_cumulative_column(df, date_col)
+    if picked is not None:
+        return picked
+    for col in df.columns:
+        if col == date_col:
+            continue
+        label = str(col).strip().lower()
+        if label in {"accumulatednetvalue", "accunetvalue", "totalnetvalue"}:
+            return str(col)
+    return _fund_pick_primary_value_column(df, date_col)
+
+
+def _fund_frame_to_sorted_nav(
+    df: pd.DataFrame,
+    *,
+    value_column: str | None = None,
+    prefer_cumulative_value: bool = False,
+) -> pd.DataFrame:
+    """将单张 AK 返回表规范为列 ``_dt``、``nav``，按日期升序、去重。"""
+    if df.empty:
+        raise EmptySymbolDataError("Fund NAV DataFrame is empty.")
+    date_col = _fund_find_date_column(df)
+    if value_column is not None:
+        val_col = value_column
+    elif prefer_cumulative_value:
+        val_col = _fund_pick_cumulative_value_column(df, date_col)
+    else:
+        val_col = _fund_pick_primary_value_column(df, date_col)
+    out = pd.DataFrame(
+        {
+            "_dt": pd.to_datetime(df[date_col], errors="coerce"),
+            "nav": pd.to_numeric(df[val_col], errors="coerce"),
+        }
+    )
+    out = out.dropna(subset=["_dt", "nav"])
+    if out.empty:
+        raise EmptySymbolDataError("Fund NAV parsing yielded no valid rows.")
+    out = out.sort_values("_dt").drop_duplicates(subset=["_dt"], keep="last")
+    return out
+
+
+def _fund_build_pseudo_ohlcv_raw(close_series: pd.Series) -> pd.DataFrame:
+    """将累计净值序列构造成带中文列的伪 K 线表，供 ``A_SHARE_COLUMN_MAPPING`` + ``_normalize_ohlcv`` 使用。
+
+    ``close_series`` 的索引须为可解析为日期的值；返回表含 ``日期`` 与 OHLCV 中文列。
+    """
+    idx = pd.to_datetime(close_series.index, errors="coerce")
+    vals = pd.to_numeric(close_series.values, errors="coerce")
+    frame = pd.DataFrame({"_dt": idx, "收盘": vals}).dropna(subset=["_dt", "收盘"])
+    if frame.empty:
+        raise EmptySymbolDataError("No valid cumulative NAV points for pseudo OHLCV.")
+    close = frame["收盘"].astype("float64")
+    zeros = pd.Series(0.0, index=frame.index, dtype="float64")
+    return pd.DataFrame(
+        {
+            "日期": frame["_dt"],
+            "开盘": close,
+            "最高": close,
+            "最低": close,
+            "收盘": close,
+            "成交量": zeros,
+        }
+    )
+
+
+def _fund_raw_to_normalized_ohlcv(
+    fetcher: AKShareFetcher,
+    cumulative_close: pd.Series,
+) -> pd.DataFrame:
+    """累计净值序列 → 伪 OHLCV → ``_normalize_ohlcv``。"""
+    raw = _fund_build_pseudo_ohlcv_raw(cumulative_close)
+    return fetcher._normalize_ohlcv(raw, A_SHARE_COLUMN_MAPPING)
+
+
+def _akshare_neutralize_proxy_like_fetcher() -> bool:
+    """与 ``AKShareFetcher(use_system_proxy=None)`` 一致：默认忽略 WinINet 代理。"""
+    return not (os.environ.get("QUANT_USE_SYSTEM_PROXY", "").lower() in {"1", "true", "yes"})
+
+
+def get_fund_data(fund_code: str, start_date: DateLike, end_date: DateLike) -> pd.DataFrame:
+    """拉取开放式基金净值并输出统一 OHLCV 契约。
+
+    使用 ``ak.fund_open_fund_info_em(symbol=..., indicator=...)``（旧版为 ``fund=``）；``Close``（及 O/H/L）对应**累计净值**。
+    若「单位净值走势」结果中无累计净值列，则再请求「累计净值走势」并按日期左对齐合并。
+
+    Parameters
+    ----------
+    fund_code
+        基金代码，如 ``"009691"``。
+    start_date, end_date
+        分析区间；清洗后按该区间裁剪（与 Web 端一致）。
+
+    Returns
+    -------
+    pd.DataFrame
+        索引为 ``DatetimeIndex``，列为 ``Open``/``High``/``Low``/``Close``/``Volume``；
+        基金场景下 O=H=L=Close（累计净值），``Volume`` 为 0。
+
+    Raises
+    ------
+    ImportError
+        未安装 ``akshare``。
+    ValueError
+        代码为空、日期非法、或区间内无数据。
+    DataFetchError / EmptySymbolDataError
+        抓取或清洗失败。
+    """
+    code = str(fund_code).strip()
+    if not code:
+        raise ValueError("fund_code must be a non-empty string.")
+
+    apply_default_network_proxy_policy()
+
+    def _call_fund_info(indicator: str) -> pd.DataFrame:
+        ak = importlib.import_module("akshare")
+        fn = ak.fund_open_fund_info_em
+        try:
+            return fn(symbol=code, indicator=indicator)
+        except TypeError:
+            # 旧版 AKShare 使用参数名 ``fund``；新版为 ``symbol``。
+            return fn(fund=code, indicator=indicator)
+
+    def _fetch_with_proxy_policy() -> pd.DataFrame:
+        if _akshare_neutralize_proxy_like_fetcher():
+            with _without_http_proxy_env():
+                return _call_fund_info("单位净值走势")
+        return _call_fund_info("单位净值走势")
+
+    try:
+        raw_unit = _fetch_with_proxy_policy()
+    except ImportError as exc:
+        raise ImportError(
+            "AKShare is required for fund data. Install it with `pip install akshare`."
+        ) from exc
+    except EmptySymbolDataError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DataFetchError("fund_open_fund_info_em (单位净值走势) failed: %r" % (exc,)) from exc
+
+    if not isinstance(raw_unit, pd.DataFrame) or raw_unit.empty:
+        raise EmptySymbolDataError("fund_open_fund_info_em returned no unit NAV data for %r." % code)
+
+    date_col = _fund_find_date_column(raw_unit)
+    cum_col = _fund_pick_cumulative_column(raw_unit, date_col)
+
+    fetcher = AKShareFetcher(max_retries=3, retry_delay=1.0)
+
+    if cum_col is not None:
+        cum_series = _fund_frame_to_sorted_nav(raw_unit, value_column=cum_col)
+        cumulative_close = cum_series.set_index("_dt")["nav"]
+        normalized = _fund_raw_to_normalized_ohlcv(fetcher, cumulative_close)
+    else:
+        unit_sorted = _fund_frame_to_sorted_nav(raw_unit)
+
+        def _fetch_cumulative() -> pd.DataFrame:
+            if _akshare_neutralize_proxy_like_fetcher():
+                with _without_http_proxy_env():
+                    return _call_fund_info("累计净值走势")
+            return _call_fund_info("累计净值走势")
+
+        try:
+            raw_cum = _fetch_cumulative()
+        except Exception as exc:  # noqa: BLE001
+            raise DataFetchError("fund_open_fund_info_em (累计净值走势) failed: %r" % (exc,)) from exc
+
+        if not isinstance(raw_cum, pd.DataFrame) or raw_cum.empty:
+            raise EmptySymbolDataError("fund_open_fund_info_em returned no cumulative NAV data for %r." % code)
+
+        cum_sorted = _fund_frame_to_sorted_nav(raw_cum, prefer_cumulative_value=True)
+        merged = unit_sorted.merge(cum_sorted, on="_dt", how="left", suffixes=("_unit", "_cum"))
+        if "nav_cum" not in merged.columns:
+            raise EmptySymbolDataError("Cumulative NAV merge produced unexpected columns for %r." % code)
+        merged = merged.assign(nav_cum=lambda m: m["nav_cum"].ffill().bfill())
+        merged = merged.dropna(subset=["nav_cum"])
+        if merged.empty:
+            raise EmptySymbolDataError("No overlapping cumulative NAV after aligning with unit NAV for %r." % code)
+        cumulative_close = merged.set_index("_dt")["nav_cum"]
+        normalized = _fund_raw_to_normalized_ohlcv(fetcher, cumulative_close)
+
+    return _filter_ohlcv_by_user_date_range(normalized, start_date, end_date)
+
+
 __all__ = [
     "DateLike",
     "REQUIRED_OHLCV_COLUMNS",
@@ -1236,4 +1502,5 @@ __all__ = [
     "AKShareChinaPrimarySource",
     "EastMoneyDailyKlineClient",
     "YFinanceFetcher",
+    "get_fund_data",
 ]

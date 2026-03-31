@@ -1,6 +1,6 @@
 """Streamlit 量化诊断应用入口。
 
-统一数据适配层覆盖 A 股 ETF、A 股个股、贵金属与加密货币，输出一致 OHLCV 契约，
+统一数据适配层覆盖 A 股 ETF、A 股个股、公募基金、贵金属与加密货币，输出一致 OHLCV 契约，
 供指标层与图表层复用。
 """
 
@@ -25,20 +25,23 @@ from data_fetcher import (
     DataFetchError,
     REQUIRED_OHLCV_COLUMNS,
     apply_default_network_proxy_policy,
+    get_fund_data,
 )
 from feature_engineering import OHLCVFeatureEngineer
 
 apply_default_network_proxy_policy()
 
 
-SUPPORTED_ASSET_TYPES: tuple[str, ...] = ("etf", "ashare", "gold", "crypto")
+SUPPORTED_ASSET_TYPES: tuple[str, ...] = ("etf", "ashare", "mutual_fund", "gold", "crypto")
 ASSET_LABELS: dict[str, str] = {
     **CHINA_EQUITY_LABELS,
+    "mutual_fund": "公募基金 (Mutual Fund)",
     "gold": "全球贵金属",
     "crypto": "加密货币",
 }
 DEFAULT_SYMBOLS: dict[str, str] = {
     **DEFAULT_CHINA_EQUITY_SYMBOLS,
+    "mutual_fund": "009691",
     "gold": "GC",
     "crypto": "BTC/USDT",
 }
@@ -225,6 +228,17 @@ def _fetch_ashare_stock_data(symbol: str, start_date: object, end_date: object) 
     return load_china_equity_ohlcv("ashare", symbol, start_date, end_date, adjust="hfq")
 
 
+def _fetch_mutual_fund_data(symbol: str, start_date: object, end_date: object) -> pd.DataFrame:
+    """通过 AKShare ``fund_open_fund_info_em`` 拉取开放式基金净值（Close 为累计净值）。"""
+    fund_code = str(symbol).strip()
+    if not fund_code:
+        raise ValueError("公募基金代码不能为空。")
+    df = get_fund_data(fund_code, start_date, end_date)
+    df.attrs["asset_type"] = "mutual_fund"
+    df.attrs["symbol"] = fund_code
+    return df
+
+
 def _fetch_gold_data(symbol: str, start_date: object, end_date: object) -> pd.DataFrame:
     """通过 AKShare `futures_foreign_hist` 加载贵金属期货行情。"""
     display_symbol, vendor_symbol = _resolve_gold_symbol(symbol)
@@ -361,7 +375,7 @@ def load_asset_data(
     end_date: object,
     proxy_url: str | None = None,
 ) -> pd.DataFrame:
-    """统一加载 ETF、A 股个股、黄金、加密货币等资产数据。"""
+    """统一加载 ETF、A 股个股、公募基金、黄金、加密货币等资产数据。"""
     asset_key = str(asset_type).strip().lower()
     if asset_key not in SUPPORTED_ASSET_TYPES:
         raise ValueError("不支持的资产类型: %s" % asset_type)
@@ -370,6 +384,8 @@ def load_asset_data(
         return _fetch_etf_data(symbol=symbol, start_date=start_date, end_date=end_date)
     if asset_key == "ashare":
         return _fetch_ashare_stock_data(symbol=symbol, start_date=start_date, end_date=end_date)
+    if asset_key == "mutual_fund":
+        return _fetch_mutual_fund_data(symbol=symbol, start_date=start_date, end_date=end_date)
     if asset_key == "gold":
         return _fetch_gold_data(symbol=symbol, start_date=start_date, end_date=end_date)
     return _fetch_crypto_data(
@@ -494,29 +510,45 @@ def _load_plotly_modules() -> tuple[Any, Any]:
 
 
 def build_price_volume_figure(df: pd.DataFrame) -> Any:
-    """绘制 K 线 + 成交量双层图。"""
+    """绘制 K 线 + 成交量双层图；公募基金为累计净值折线单层图（无 K 线、无成交量）。"""
     go, subplots = _load_plotly_modules()
     make_subplots = subplots.make_subplots
-    figure = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.04,
-        row_heights=[0.72, 0.28],
-    )
+    asset_key = str(df.attrs.get("asset_type", "")).strip().lower()
+    is_mutual_fund = asset_key == "mutual_fund"
 
-    figure.add_trace(
-        go.Candlestick(
-            x=df.index,
-            open=df["Open"],
-            high=df["High"],
-            low=df["Low"],
-            close=df["Close"],
-            name="K线",
-        ),
-        row=1,
-        col=1,
-    )
+    if is_mutual_fund:
+        figure = make_subplots(rows=1, cols=1)
+        figure.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["Close"],
+                mode="lines",
+                name="累计净值",
+                line={"width": 2.0, "color": "#1f77b4"},
+            ),
+            row=1,
+            col=1,
+        )
+    else:
+        figure = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.04,
+            row_heights=[0.72, 0.28],
+        )
+        figure.add_trace(
+            go.Candlestick(
+                x=df.index,
+                open=df["Open"],
+                high=df["High"],
+                low=df["Low"],
+                close=df["Close"],
+                name="K线",
+            ),
+            row=1,
+            col=1,
+        )
 
     feature_summary = df.attrs.get("feature_summary", {})
     short_window = int(feature_summary.get("sma_short_window", 20))
@@ -545,17 +577,18 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
             col=1,
         )
 
-    volume_colors = np.where(df["Close"] >= df["Open"], "#26a69a", "#ef5350")
-    figure.add_trace(
-        go.Bar(
-            x=df.index,
-            y=df["Volume"],
-            name="成交量",
-            marker={"color": volume_colors},
-        ),
-        row=2,
-        col=1,
-    )
+    if not is_mutual_fund:
+        volume_colors = np.where(df["Close"] >= df["Open"], "#26a69a", "#ef5350")
+        figure.add_trace(
+            go.Bar(
+                x=df.index,
+                y=df["Volume"],
+                name="成交量",
+                marker={"color": volume_colors},
+            ),
+            row=2,
+            col=1,
+        )
 
     figure.update_layout(
         height=760,
@@ -565,8 +598,11 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
     )
     figure.update_xaxes(rangeslider_visible=False, row=1, col=1)
-    figure.update_yaxes(title_text="价格", row=1, col=1)
-    figure.update_yaxes(title_text="成交量", row=2, col=1)
+    if is_mutual_fund:
+        figure.update_yaxes(title_text="净值", row=1, col=1)
+    else:
+        figure.update_yaxes(title_text="价格", row=1, col=1)
+        figure.update_yaxes(title_text="成交量", row=2, col=1)
     return figure
 
 
@@ -593,7 +629,7 @@ def render_app() -> None:
     streamlit.set_page_config(page_title="量化诊断应用", layout="wide")
     streamlit.title("量化诊断应用")
     streamlit.caption(
-        "支持 A 股 ETF / A 股个股 / 贵金属 / 加密货币 的统一诊断、K 线量价图和核心量化指标展示。"
+        "支持 A 股 ETF / A 股个股 / 公募基金 / 贵金属 / 加密货币 的统一诊断、K 线量价图和核心量化指标展示。"
     )
 
     today = pd.Timestamp.today().normalize().date()
