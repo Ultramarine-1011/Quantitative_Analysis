@@ -1,0 +1,13 @@
+[
+  "tests/test_china_equity_pipeline.py::test_fetch_china_equity_invalid_route_raises",
+  "tests/test_china_equity_pipeline.py::test_format_china_equity_user_message_empty_symbol",
+  "tests/test_china_equity_pipeline.py::test_format_china_equity_user_message_generic",
+  "tests/test_china_equity_pipeline.py::test_normalize_china_equity_asset_type_rejects_unknown",
+  "tests/test_china_equity_pipeline.py::test_normalize_ohlcv_accepts_datetime_index",
+  "tests/test_china_equity_pipeline.py::test_normalize_ohlcv_dedupes_index_keeps_last",
+  "tests/test_china_equity_pipeline.py::test_normalize_ohlcv_empty_raises_empty_symbol",
+  "tests/test_china_equity_pipeline.py::test_normalize_ohlcv_maps_chinese_columns_and_dtype",
+  "tests/test_china_equity_pipeline.py::test_normalize_ohlcv_missing_column_raises",
+  "tests/test_china_equity_pipeline.py::test_normalize_ohlcv_non_dataframe_raises_type_error",
+  "tests/test_china_equity_pipeline.py::test_validate_analysis_date_range_rejects_inverted"
+]
