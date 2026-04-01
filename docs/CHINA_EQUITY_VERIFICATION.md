@@ -39,7 +39,7 @@ python -m pytest tests\ -v
 
 - **网络**：防火墙、公司网络对行情域名的限制；可换网络或稍后重试。
 - **代理**：Windows 上项目默认可能**忽略 WinINet 系统代理**（见 `data_fetcher` 中 `QUANT_USE_SYSTEM_PROXY`）。若你必须**完全按系统/环境变量走代理**（例如只通过 Clash 等本机代理上网），请设置 `QUANT_USE_SYSTEM_PROXY=1` 后重启 Streamlit/CLI。
-- **提示 `AKShare ETF historical data fetch failed after 3 attempts`**：多为 **东方财富域名不可达** 或 **代理配置错误**。当前链路顺序为：AKShare 主接口 → **多个东方财富 K 线节点轮询** → **腾讯 `proxy.finance.qq.com` 日线**（个股与 ETF 均支持 `sh`/`sz` 代码）；ETF 还会先试 **新浪 `finance.sina.com.cn`**。请确认网络可访问上述域名，或按需设置 `QUANT_USE_SYSTEM_PROXY`。
+- **提示 `AKShare ETF historical data fetch failed after 3 attempts`**：多为 **各数据源均不可达** 或 **代理配置错误**。当前链路顺序为：**新浪（ETF）→ 腾讯日线** → AKShare 东财接口 → **多个东方财富 K 线节点直连**。请确认网络可访问 `finance.sina.com.cn`、`proxy.finance.qq.com` 及东财域名，或按需设置 `QUANT_USE_SYSTEM_PROXY`。
 - **代码与资产类型不匹配**：例如把股票代码填在 ETF 选项中，可能无数据或空表，界面会提示检查代码与类别。
 
 ### 3. `EmptySymbolDataError` / 「未找到该代码的数据」

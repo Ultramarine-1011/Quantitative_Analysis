@@ -7,7 +7,7 @@
 - 数值列 dtype 混乱
 - 日期列未标准化
 - 缺失值与重复索引
-- ETF/个股：AKShare 主源 → 东方财富多节点 K 线 → 腾讯/新浪备用源；``secid`` 市场前缀本地推导；WinINet 代理策略在首个 ``AKShareFetcher`` 构造时解析
+- ETF/个股：优先新浪 / 腾讯，再 AKShare（东财接口）与东方财富多节点直连；``secid`` 市场前缀本地推导；WinINet 代理策略在首个 ``AKShareFetcher`` 构造时解析
 """
 
 from __future__ import annotations
@@ -552,7 +552,7 @@ class EastMoneyDailyKlineClient:
         *,
         trust_env: bool,
     ) -> pd.DataFrame:
-        """多域名轮询直连 K 线；若全部失败由调用方再走腾讯/新浪等备用源。"""
+        """多域名轮询东方财富 K 线（在新浪/腾讯与 AKShare 主源之后调用）。"""
         last_exc: BaseException | None = None
         for api_url in _EASTMONEY_KLINE_APIS:
             try:
@@ -814,7 +814,7 @@ class AKShareFetcher(BaseDataFetcher):
                 "AKShare is required for AKShareFetcher. Install it with `pip install akshare`."
             ) from exc
 
-    def _fetch_tertiary_china_equity_raw(
+    def _fetch_sina_tencent_china_equity_raw(
         self,
         equity_route: str,
         sym: str,
@@ -822,7 +822,7 @@ class AKShareFetcher(BaseDataFetcher):
         end_ts: pd.Timestamp,
         adjust: str,
     ) -> pd.DataFrame:
-        """AKShare 腾讯 / 新浪接口备用（域名与东方财富不同，部分网络环境下可兜底）。"""
+        """新浪 / 腾讯日线（非东方财富域名，作为境内权益首选数据源）。"""
         code = str(sym).strip()
         start_s = start_ts.strftime("%Y%m%d")
         end_s = end_ts.strftime("%Y%m%d")
@@ -887,6 +887,13 @@ class AKShareFetcher(BaseDataFetcher):
         empty_primary_message: str,
     ) -> pd.DataFrame:
         def _pipeline() -> pd.DataFrame:
+            # 1) 新浪 / 腾讯（不依赖东方财富域名）
+            alt = self._fetch_sina_tencent_china_equity_raw(
+                equity_route, sym, start_ts, end_ts, adjust
+            )
+            if not alt.empty:
+                return alt
+
             first_error: BaseException | None = None
             try:
                 via_ak = fetch_primary()
@@ -914,19 +921,13 @@ class AKShareFetcher(BaseDataFetcher):
             except Exception as exc:  # noqa: BLE001
                 em_fail = exc
 
-            backup = self._fetch_tertiary_china_equity_raw(
-                equity_route, sym, start_ts, end_ts, adjust
-            )
-            if not backup.empty:
-                return backup
-
             if em_fail is not None:
                 raise ChinaEquityPipelineError(
-                    "%s：AKShare 主源未成功 (%r)；东方财富直连失败 (%s)。"
+                    "%s：新浪/腾讯无有效数据；AKShare 主源未成功 (%r)；东方财富直连失败 (%s)。"
                     % (label_zh, first_error, em_fail)
                 ) from em_fail
             raise ChinaEquityPipelineError(
-                "%s：AKShare 未返回有效数据 (%r)；东方财富直连返回空 K 线。"
+                "%s：新浪/腾讯无有效数据；AKShare 未返回有效数据 (%r)；东方财富直连返回空 K 线。"
                 % (label_zh, first_error)
             ) from first_error
 

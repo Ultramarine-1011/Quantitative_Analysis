@@ -623,6 +623,51 @@ def _sync_sidebar_state(streamlit: Any, asset_type: str) -> None:
     session_state["_last_asset_type"] = asset_type
 
 
+_TAB2_SYSTEM_MATH_MARKDOWN = r"""
+### 1. 收益与风险度量
+
+设 $P_t$ 为第 $t$ 个交易日收盘价（或复权价），简单收益率与对数收益率常分别写为：
+
+$$R_t=\frac{P_t-P_{t-1}}{P_{t-1}}, \qquad r_t=\ln\frac{P_t}{P_{t-1}}$$
+
+在样本区间 $[0,T]$ 内，若共 $n$ 个交易日，年化复合收益率（CAGR）可表示为：
+
+$$\mathrm{CAGR}=\left(\frac{P_T}{P_0}\right)^{252/n}-1$$
+
+（上式将一年折算为 $252$ 个交易日，与本工具链常用的年化尺度一致。）
+
+最大回撤（Maximum Drawdown）衡量自历史峰值以来的最深回落比例。设净值曲线为 $W_t$（例如从 1 起算的累计净值），则：
+
+$$\mathrm{MDD}=\max_{\tau\in[0,T]}\left(\frac{\max_{s\le\tau}W_s-W_\tau}{\max_{s\le\tau}W_s}\right)$$
+
+在诊断面板中，「最大回撤」以正数角标展示深度，可理解为 $\mathrm{MDD}$ 的绝对值。
+
+夏普比率（Sharpe Ratio）在经典定义下使用超额收益相对波动率的比值，并按 $\sqrt{252}$ 做年化缩放：
+
+$$S=\frac{E[R-r_f]}{\sigma(R)}\sqrt{252}$$
+
+其中 $r_f$ 为年化无风险利率（本应用内部采用常数近似以便横截面可比），$R$ 为日收益率序列，$\sigma$ 为样本标准差。
+
+---
+
+### 2. 累计收益与信号展示
+
+累计收益率可将各期收益链式复合，例如简单收益口径下：
+
+$$1+R_{\mathrm{cum}}=\prod_{t=1}^{n}(1+R_t)$$
+
+看板中的「最新信号」由特征工程与规则化输出共同决定，其底层是对价格、均线与波动包络等构造量的序贯更新；在阅读图表时，可将均线视为对 $P_t$ 的线性平滑，将布林带可视作对条件方差结构的启发式刻画。
+
+---
+
+### 3. 可视化与数据契约
+
+K–线（OHLC）与成交量在同一时间轴上联合展示，横轴为交易日期。清洗后的数据表遵循统一列名契约（`Open` / `High` / `Low` / `Close` / `Volume`），以便跨境、跨资产类别复用同一套指标与绘图管线。
+
+> **说明**：上述记号与年化习惯用于帮助理解面板指标；实际实现细节（如对数/简单收益选用、缺失值处理、复权口径等）以代码与拉取数据源为准。
+"""
+
+
 def render_app() -> None:
     """渲染 Streamlit 量化诊断应用。"""
     streamlit = _require_streamlit()
@@ -661,58 +706,66 @@ def render_app() -> None:
         )
         streamlit.sidebar.caption("代理仅在加密货币模式下生效。")
 
-    if streamlit.sidebar.button("开始诊断", use_container_width=True):
-        try:
-            with streamlit.spinner("正在加载数据并计算量化指标..."):
-                df = load_asset_data(
-                    asset_type=asset_type,
-                    symbol=symbol,
-                    start_date=start_date,
-                    end_date=end_date,
-                    proxy_url=proxy_url,
+    clicked = streamlit.sidebar.button("开始诊断", use_container_width=True)
+
+    tab1, tab2 = streamlit.tabs(["📊 量化诊断看板", "📚 系统数学原理解析"])
+
+    with tab2:
+        streamlit.markdown(_TAB2_SYSTEM_MATH_MARKDOWN)
+
+    with tab1:
+        if not clicked:
+            streamlit.info("在左侧选择资产和时间区间后点击“开始诊断”，即可查看 Web 版量化分析结果。")
+        else:
+            try:
+                with streamlit.spinner("正在加载数据并计算量化指标..."):
+                    df = load_asset_data(
+                        asset_type=asset_type,
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        proxy_url=proxy_url,
+                    )
+                    if df.empty:
+                        streamlit.error(EMPTY_SYMBOL_FETCH_HINT)
+                        return
+                    metrics = get_quant_metrics(df)
+                    figure = build_price_volume_figure(metrics["featured_df"])
+            except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
+                streamlit.error(format_china_equity_user_message(exc))
+                return
+
+            display_symbol = str(df.attrs.get("symbol", symbol)).strip() or symbol
+            streamlit.subheader("%s · %s" % (ASSET_LABELS[asset_type], display_symbol))
+            streamlit.caption(
+                "样本区间：%s 至 %s，共 %d 条记录。"
+                % (
+                    df.index[0].strftime("%Y-%m-%d"),
+                    df.index[-1].strftime("%Y-%m-%d"),
+                    len(df),
                 )
-                if df.empty:
-                    streamlit.error(EMPTY_SYMBOL_FETCH_HINT)
-                    return
-                metrics = get_quant_metrics(df)
-                figure = build_price_volume_figure(metrics["featured_df"])
-        except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
-            streamlit.error(format_china_equity_user_message(exc))
-            return
-
-        display_symbol = str(df.attrs.get("symbol", symbol)).strip() or symbol
-        streamlit.subheader("%s · %s" % (ASSET_LABELS[asset_type], display_symbol))
-        streamlit.caption(
-            "样本区间：%s 至 %s，共 %d 条记录。"
-            % (
-                df.index[0].strftime("%Y-%m-%d"),
-                df.index[-1].strftime("%Y-%m-%d"),
-                len(df),
             )
-        )
 
-        metric_col_1, metric_col_2, metric_col_3 = streamlit.columns(3)
-        metric_col_1.metric("CAGR", _format_percent_metric(metrics["cagr"]))
-        metric_col_2.metric("最大回撤", _format_percent_metric(-abs(metrics["max_drawdown"]), signed=True))
-        metric_col_3.metric("Sharpe", _format_ratio_metric(metrics["sharpe_ratio"]))
+            metric_col_1, metric_col_2, metric_col_3 = streamlit.columns(3)
+            metric_col_1.metric("CAGR", _format_percent_metric(metrics["cagr"]))
+            metric_col_2.metric("最大回撤", _format_percent_metric(-abs(metrics["max_drawdown"]), signed=True))
+            metric_col_3.metric("Sharpe", _format_ratio_metric(metrics["sharpe_ratio"]))
 
-        streamlit.info(
-            "最新信号：%s | 累计收益率：%s"
-            % (
-                metrics["latest_signal"],
-                _format_percent_metric(metrics["cumulative_return"], signed=True),
+            streamlit.info(
+                "最新信号：%s | 累计收益率：%s"
+                % (
+                    metrics["latest_signal"],
+                    _format_percent_metric(metrics["cumulative_return"], signed=True),
+                )
             )
-        )
-        streamlit.plotly_chart(figure, use_container_width=True)
+            streamlit.plotly_chart(figure, use_container_width=True)
 
-        with streamlit.expander("查看清洗后与特征后数据", expanded=False):
-            streamlit.markdown("**清洗后 OHLCV 数据尾部**")
-            streamlit.dataframe(df.tail(20), use_container_width=True)
-            streamlit.markdown("**特征工程结果尾部**")
-            streamlit.dataframe(metrics["featured_df"].tail(20), use_container_width=True)
-            streamlit.caption("标准列: %s" % ", ".join(list(REQUIRED_OHLCV_COLUMNS)))
-    else:
-        streamlit.info("在左侧选择资产和时间区间后点击“开始诊断”，即可查看 Web 版量化分析结果。")
+            with streamlit.expander("查看清洗后与特征后数据", expanded=False):
+                streamlit.markdown("**清洗后 OHLCV 数据尾部**")
+                streamlit.dataframe(df.tail(20), use_container_width=True)
+                streamlit.markdown("**特征工程结果尾部**")
+                streamlit.dataframe(metrics["featured_df"].tail(20), use_container_width=True)
+                streamlit.caption("标准列: %s" % ", ".join(list(REQUIRED_OHLCV_COLUMNS)))
 
 
 if __name__ == "__main__":
