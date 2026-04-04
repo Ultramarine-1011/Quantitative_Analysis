@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import importlib
+import io
 import math
+import re
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -667,6 +669,42 @@ K–线（OHLC）与成交量在同一时间轴上联合展示，横轴为交易
 > **说明**：上述记号与年化习惯用于帮助理解面板指标；实际实现细节（如对数/简单收益选用、缺失值处理、复权口径等）以代码与拉取数据源为准。
 """
 
+_WIN_FILENAME_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def _sanitize_symbol_for_filename(display_symbol: str) -> str:
+    """净化代码片段，避免 Windows 非法字符并将路径分隔符替换为下划线。"""
+    text = str(display_symbol).strip() or "symbol"
+    text = text.replace("/", "_")
+    text = _WIN_FILENAME_FORBIDDEN.sub("_", text)
+    text = text.strip(" .")
+    return text or "symbol"
+
+
+def _cleaned_ohlcv_to_csv_bytes_and_filename(
+    df: pd.DataFrame,
+    asset_type: str,
+    display_symbol: str,
+    start_date: object,
+    end_date: object,
+) -> tuple[bytes, str]:
+    """将 load_asset_data 返回的清洗后 OHLCV 导出为 UTF-8-SIG CSV 字节与安全文件名。"""
+    subset = df.loc[:, list(REQUIRED_OHLCV_COLUMNS)].copy()
+    subset = subset.sort_index()
+    if not isinstance(subset.index, pd.DatetimeIndex):
+        subset.index = pd.to_datetime(subset.index, errors="coerce")
+    subset.index.name = "Date"
+    text_buffer = io.StringIO()
+    subset.to_csv(text_buffer, index=True, date_format="%Y-%m-%d")
+    csv_bytes = text_buffer.getvalue().encode("utf-8-sig")
+    at_key = str(asset_type).strip().lower()
+    sym_part = _sanitize_symbol_for_filename(display_symbol)
+    at_part = _sanitize_symbol_for_filename(at_key)
+    start_s = pd.Timestamp(start_date).strftime("%Y-%m-%d")
+    end_s = pd.Timestamp(end_date).strftime("%Y-%m-%d")
+    filename = "%s_%s_%s_%s_ohlcv.csv" % (at_part, sym_part, start_s, end_s)
+    return csv_bytes, filename
+
 
 def render_app() -> None:
     """渲染 Streamlit 量化诊断应用。"""
@@ -744,6 +782,24 @@ def render_app() -> None:
                     df.index[-1].strftime("%Y-%m-%d"),
                     len(df),
                 )
+            )
+            csv_bytes, csv_filename = _cleaned_ohlcv_to_csv_bytes_and_filename(
+                df,
+                asset_type=asset_type,
+                display_symbol=display_symbol,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            streamlit.download_button(
+                label="下载清洗后 OHLCV（CSV）",
+                data=csv_bytes,
+                file_name=csv_filename,
+                mime="text/csv",
+                use_container_width=False,
+                key="download_cleaned_ohlcv_csv",
+            )
+            streamlit.caption(
+                "CSV 含 Date 与 Open、High、Low、Close、Volume 五列，与看板清洗后数据一致（不含均线、布林带等特征列）。"
             )
 
             metric_col_1, metric_col_2, metric_col_3 = streamlit.columns(3)
