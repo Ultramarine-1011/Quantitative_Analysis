@@ -8,9 +8,9 @@
 
 ### Web 应用（`app.py`）
 
-- **多资产类型**：A 股 ETF、A 股个股、公募基金、全球贵金属（期货行情）、加密货币（默认 Binance + CCXT）。
-- **量化诊断看板**：在选定区间内计算并展示 **CAGR**、**最大回撤**、**年化夏普比率**（内部无风险利率取常数约 1.6% 便于横向对比）、**累计收益率**，以及基于布林带的 **「最新信号」** 文案（如突破上轨、触底下轨、均值回归中等）。
-- **交互式图表**：Plotly **K 线 + 成交量**（公募基金为 **累计净值折线**，无 K 线与成交量子图）；叠加短期/长期均线与布林带上下轨。
+- **多资产类型**：A 股 ETF/个股、公募基金、贵金属与**外盘商品期货**、加密货币（Binance + CCXT）、**美股/港股日线**、**全球指数**（美股指数 `.INX` 等经新浪；`HSI`/`SPX` 等简码经东财 `index_global_hist_em`）、**中国国债 K 线**、**美债收益率水平序列**（`bond_zh_us_rate`，默认 10Y 列；非持有期回报，看板有专门说明）、**C-REITs**（`reits_hist_em`）、**外汇**（`forex_hist_em`，如 `USDCNH`）。
+- **量化诊断看板**：在选定区间内计算并展示 **CAGR**、**最大回撤**、**年化夏普比率**（内部无风险利率取常数约 1.6% 便于横向对比）、**累计收益率**（收益率水平类资产会改为「水平相对变化」等标签），以及基于布林带的 **「最新信号」** 文案。
+- **交互式图表**：Plotly **K 线 + 成交量**（无成交量或公募/收益率水平序列时用**单面板折线或单面板 K 线**）；叠加均线与布林带。
 - **数据导出**：可下载与看板一致的 **清洗后 OHLCV CSV**（UTF-8 BOM，列：`Date`, `Open`, `High`, `Low`, `Close`, `Volume`）。
 - **说明页**：第二个标签页提供指标相关的数学定义说明（Markdown + LaTeX）。
 - **缓存**：拉取数据使用 Streamlit `cache_data`（约 1 小时 TTL），减轻重复请求压力。
@@ -18,14 +18,15 @@
 ### 命令行（`main.py`）
 
 - 面向 **境内 ETF / A 股个股** 的端到端流程：拉数 → `OHLCVFeatureEngineer` 特征工程 → `MplfinanceVisualizer` 多面板图（K 线、成交量、波动率、回撤等）→ 控制台输出 **资产数学诊断报告**。
-- 与 Web 侧共用 `china_equity_entry` 的校验与 AKShare 路由逻辑。
+- 与 Web 侧共用 `asset_resolver` / `china_equity_entry`（兼容 re-export）的校验与境内权益路由。
 
 ### 核心库模块
 
 | 模块 | 作用 |
 |------|------|
-| `data_fetcher.py` | 数据抓取、公募基金净值、网络与代理策略（含 Windows 下可选行为） |
-| `china_equity_entry.py` | 境内 ETF / A 股参数与 `load_china_equity_ohlcv` 统一入口 |
+| `data_fetcher.py` | 境内权益、基金、贵金属/商品期货、`load_global_market_data` / `load_bond_data` / `load_reit_data` / `load_fx_data` 等；网络与代理策略 |
+| `asset_resolver.py` | 日期校验、境内 `load_china_equity_ohlcv`、`format_diagnosis_user_message` |
+| `china_equity_entry.py` | 自 `asset_resolver` 的兼容 re-export |
 | `feature_engineering.py` | SMA、布林带、对数收益波动率、回撤与最大回撤等 |
 | `visualizer.py` | 基于 mplfinance 的 CLI 用高级图表 |
 | `app.py` | Streamlit 页面、跨资产 `load_asset_data`、Plotly 图表与指标汇总 |
@@ -92,8 +93,16 @@ streamlit.bat run app.py
 | 公募基金 | `009691` | 基金代码（净值序列，Close 为累计净值） |
 | 贵金属 | `GC`、`AU9999`（映射到 GC）等 | 来自 AKShare 外盘期货历史接口 |
 | 加密货币 | `BTC/USDT` | CCXT + Binance；**可在侧边栏填写代理**（仅加密模式生效），格式如 `http://127.0.0.1:33210` |
+| 美股 | `AAPL` | `stock_us_daily` |
+| 港股 | `00700` | `stock_hk_daily`（纯数字会自动补零到 5 位） |
+| 全球指数 | `.INX`（新浪美股指数）；或 `HSI`、`SPX`、`DXY` 等简码（东财 `index_global_hist_em`） | 简码见 `data_fetcher.GLOBAL_INDEX_EM_ALIASES` |
+| 中国国债 K 线 | `sh010107` | `bond_zh_hs_daily` |
+| 美债收益率 | `10Y` 或留空=默认 10 年期列；亦可填 `bond_zh_us_rate` 表中的**完整列名** | 水平序列，非债基持有回报 |
+| 外盘商品期货 | `CL`、`HG` 等 | `futures_foreign_hist`，与贵金属同源 |
+| C-REITs | `508097` | `reits_hist_em` |
+| 外汇 | `USDCNH`；亦支持 `USD/CNY` 等别名 | `forex_hist_em` |
 
-若拉取失败，界面会给出可读错误信息；空数据时会提示检查代码与资产类型是否匹配。
+若拉取失败，界面会给出可读错误信息；**数据源异常**时会提示代码或接口暂不可用。空数据时会提示检查代码与资产类型是否匹配。
 
 ### 2. 命令行：境内 ETF / A 股
 

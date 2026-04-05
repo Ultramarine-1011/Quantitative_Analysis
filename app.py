@@ -1,6 +1,6 @@
 """Streamlit 量化诊断应用入口。
 
-统一数据适配层覆盖 A 股 ETF、A 股个股、公募基金、贵金属与加密货币，输出一致 OHLCV 契约，
+统一数据适配层覆盖 A 股、公募、贵金属、加密、全球股/指、债券、商品、REITs、外汇等，输出一致 OHLCV 契约，
 供指标层与图表层复用。
 """
 
@@ -16,36 +16,73 @@ from urllib.parse import urlparse
 import numpy as np
 import pandas as pd
 
-from china_equity_entry import (
+from asset_resolver import (
     CHINA_EQUITY_LABELS,
     DEFAULT_CHINA_EQUITY_SYMBOLS,
     EMPTY_SYMBOL_FETCH_HINT,
-    format_china_equity_user_message,
+    format_diagnosis_user_message,
     load_china_equity_ohlcv,
 )
 from data_fetcher import (
     DataFetchError,
     REQUIRED_OHLCV_COLUMNS,
+    US_TREASURY_YIELD_10Y_CN_COL,
     apply_default_network_proxy_policy,
     get_fund_data,
+    load_bond_data,
+    load_commodity_data,
+    load_futures_foreign_ohlcv,
+    load_fx_data,
+    load_global_market_data,
+    load_reit_data,
 )
 from feature_engineering import OHLCVFeatureEngineer
 
 apply_default_network_proxy_policy()
 
 
-SUPPORTED_ASSET_TYPES: tuple[str, ...] = ("etf", "ashare", "mutual_fund", "gold", "crypto")
+SUPPORTED_ASSET_TYPES: tuple[str, ...] = (
+    "etf",
+    "ashare",
+    "mutual_fund",
+    "gold",
+    "crypto",
+    "us_stock",
+    "hk_stock",
+    "global_index",
+    "bond_cn",
+    "bond_us_yield",
+    "commodity",
+    "creit",
+    "fx",
+)
 ASSET_LABELS: dict[str, str] = {
     **CHINA_EQUITY_LABELS,
     "mutual_fund": "公募基金 (Mutual Fund)",
     "gold": "全球贵金属",
     "crypto": "加密货币",
+    "us_stock": "美股 (US Stock)",
+    "hk_stock": "港股 (HK Stock)",
+    "global_index": "全球指数（含美股指数/东财国际指数）",
+    "bond_cn": "中国国债 K 线",
+    "bond_us_yield": "美债收益率曲线（水平序列）",
+    "commodity": "外盘大宗商品期货",
+    "creit": "C-REITs（基础设施）",
+    "fx": "外汇即期",
 }
 DEFAULT_SYMBOLS: dict[str, str] = {
     **DEFAULT_CHINA_EQUITY_SYMBOLS,
     "mutual_fund": "009691",
     "gold": "GC",
     "crypto": "BTC/USDT",
+    "us_stock": "AAPL",
+    "hk_stock": "00700",
+    "global_index": ".INX",
+    "bond_cn": "sh010107",
+    "bond_us_yield": "10Y",
+    "commodity": "CL",
+    "creit": "508097",
+    "fx": "USDCNH",
 }
 LOOKBACK_YEARS = 3
 RISK_FREE_RATE = 0.016
@@ -54,20 +91,104 @@ GOLD_SYMBOL_ALIASES: dict[str, str] = {
     "GC": "GC",
     "AU9999": "GC",
 }
-GOLD_COLUMN_MAPPING: dict[str, str] = {
-    "date": "Date",
-    "Date": "Date",
-    "open": "Open",
-    "Open": "Open",
-    "high": "High",
-    "High": "High",
-    "low": "Low",
-    "Low": "Low",
-    "close": "Close",
-    "Close": "Close",
-    "volume": "Volume",
-    "Volume": "Volume",
+
+# 资产种类说明：类型界定、社会意义、在本应用中的数学处理、代表代码（供用户对照输入）。
+ASSET_TYPE_GUIDES: dict[str, dict[str, str]] = {
+    "etf": {
+        "kind": "在交易所上市交易的开放式指数基金或行业/主题 ETF，份额可像股票一样买卖，净值与标的指数挂钩。",
+        "social": "为散户提供分散化、低门槛的指数化投资工具，反映市场对行业、风格与宏观主题的预期，流动性集中体现机构与散户配置行为。",
+        "math": "本应用使用**后复权**日线 OHLCV，与 A 股个股同一套收益率、波动率、布林带与回撤公式；成交量为真实成交。",
+        "examples": "`510300`（沪深300ETF）、`510500`（中证500ETF）、`159915`（创业板ETF）",
+    },
+    "ashare": {
+        "kind": "在上海或深圳证券交易所挂牌的人民币普通股（A 股），公司所有权凭证，价格由二级市场供需决定。",
+        "social": "连接实体经济融资与居民财富管理，个股走势反映行业景气、政策预期与公司治理等信息，是境内权益风险定价的核心载体之一。",
+        "math": "后复权日 K 线；指标基于收盘价序列的几何/统计性质（对数收益、滚动波动、极值带），**不**包含基本面因子。",
+        "examples": "`600519`、`000001`、`688981`",
+    },
+    "mutual_fund": {
+        "kind": "公募开放式基金，按净值申购赎回；本应用拉取的是**累计净值**序列，已折算为伪 OHLCV（开高低收相同）。",
+        "social": "专业管理、分散投资，服务长期储蓄与养老等需求；净值曲线体现基金经理资产配置与申赎压力的综合结果。",
+        "math": "无真实日内高低价，OHLC 均为净值；**成交量恒为 0**，图表以折线展示；夏普/CAGR 等仍按净值变化率计算，与 ETF 市价口径不同。",
+        "examples": "`009691`、`161725`、`110011`",
+    },
+    "gold": {
+        "kind": "通过外盘期货主力连续合约报价的贵金属（如 COMEX 黄金），美元计价，反映避险与真实利率预期。",
+        "social": "传统避险与储备资产锚，与美元信用、地缘政治和通胀预期相关，常作为多元资产配置的分散项。",
+        "math": "标准 OHLCV 日频；可存在换月导致的跳空，指标对跳变敏感；与 A 股不同币种与交易时段。",
+        "examples": "`GC`（黄金）、`AU9999`（映射至 GC）",
+    },
+    "crypto": {
+        "kind": "去中心化或交易所报价的加密资产，本应用默认通过 CCXT 拉取 **Binance** 现货日线（如 `BTC/USDT`）。",
+        "social": "高风险高波动的另类资产，反映全球流动性、监管叙事与技术采用预期；7×24 交易，与股市日历不完全对齐。",
+        "math": "UTC 日线合成 OHLCV；可设代理访问；夏普与回撤对极端日收益敏感，不宜与股票直接横比。",
+        "examples": "`BTC/USDT`、`ETH/USDT`、`SOL/USDT`",
+    },
+    "us_stock": {
+        "kind": "美国主要交易所上市的公司普通股，美元计价，本应用使用 AKShare 美股日线。",
+        "social": "全球科技与消费龙头集中地，股价反映全球增长预期与美元流动性；与 A 股存在时差与制度差异。",
+        "math": "日 OHLCV；与境内股相同的特征工程管线；注意财报季跳空对波动率估计的影响。",
+        "examples": "`AAPL`、`MSFT`、`NVDA`",
+    },
+    "hk_stock": {
+        "kind": "在香港联合交易所上市的股票，港币计价；代码常为 5 位数字，本应用会自动补零。",
+        "social": "连接内地资产与全球资本的中枢之一，大量中资股与美元利率、南向资金流量密切相关。",
+        "math": "日 OHLCV；收益率统计与 A 股同构；节假日安排与沪深不同，对齐指数时需注意交易日历。",
+        "examples": "`00700`、`09988`、`01810`",
+    },
+    "global_index": {
+        "kind": "表征一组证券整体表现的统计量。以 `.` 开头（如 `.INX`）走**新浪美股指数**；`HSI`/`SPX` 等简码走**东财全球指数**中文名映射。",
+        "social": "宏观与风险情绪的晴雨表，用于观察市场宽度、区域轮动与系统性风险，是资产配置与业绩基准的参照。",
+        "math": "点位序列视为“价格”；部分来源**无成交量**（Volume=0），图表可能为单面板 K 线；与成分股加总并非线性关系。",
+        "examples": "`.INX`（标普500新浪）、`HSI`（恒生）、`SPX`（标普500东财）、`DXY`（美元指数）",
+    },
+    "bond_cn": {
+        "kind": "在沪深挂牌交易的**国债或债券**日 K（新浪源），代码形如 `sh010107`。",
+        "social": "无风险利率与债市情绪的表征，影响全市场贴现率；机构配置与货币政策预期会体现在价格波动中。",
+        "math": "标准 OHLCV；部分行情源无成交量字段时已补 0；久期与凸性等债项指标**未**在本应用中计算。",
+        "examples": "`sh010107`、`sh019547`（示例，以数据源实际可交易代码为准）",
+    },
+    "bond_us_yield": {
+        "kind": "中债登口径的**美国国债收益率曲线**日度数据（`bond_zh_us_rate`），`Close` 为**收益率水平（%）**，非债券价格。",
+        "social": "全球资产定价的锚之一，影响汇率、房贷与企业债利差；10 年期常被视为“无风险长期利率”的代理变量。",
+        "math": "伪 OHLCV，水平序列；看板中 CAGR/夏普等解释为**水平变化统计**，**不是**持有美债的持有期回报；默认列可用 `10Y`。",
+        "examples": "`10Y`（默认美债10年列）、或粘贴表头完整列名如 `美国国债收益率10年`",
+    },
+    "commodity": {
+        "kind": "外盘**大宗商品期货**主力连续（如原油、铜），与贵金属同源 `futures_foreign_hist`，美元计价为主。",
+        "social": "实体经济成本与周期波动的晴雨表，连接通胀、制造业与地缘供给；常作为股票组合的商品敞口代理。",
+        "math": "连续合约有换月跳空；波动率与趋势指标对供给冲击敏感；与股票相关性随周期变化。",
+        "examples": "`CL`（原油）、`HG`（铜）、`NG`（天然气，视数据源是否提供）",
+    },
+    "creit": {
+        "kind": "中国**基础设施公募 REITs**，在沪深交易，份额代表对底层基础设施收益权的证券化权益。",
+        "social": "盘活存量基建资产、拓宽投融资渠道；价格反映分红预期、利率环境与流动性溢价。",
+        "math": "东财日 K 线 OHLCV；与股票共用技术指标；分红除权规则与 ETF/股票不同，复权口径以数据源为准。",
+        "examples": "`508097`、`180101`、`508000`（示例，以交易所挂牌为准）",
+    },
+    "fx": {
+        "kind": "**外汇即期**汇率对（如离岸人民币 `USDCNH`），本应用经东财多节点拉取日 K，表示一单位基准货币兑另一货币的比价。",
+        "social": "国际贸易与资本流动的价格纽带，影响出口竞争力与跨境资金成本；央行预期与利差是主要驱动。",
+        "math": "汇率水平为正值序列，宜用 K 线观察；对数收益近似刻画日相对变化；与股票指数联合分析时需注意共线性与因果方向。",
+        "examples": "`USDCNH`、`EURUSD`、`USD/JPY`（别名映射为数据源代码时以 `EURUSD` 等形式为准）",
+    },
 }
+
+
+def format_asset_guide_markdown(asset_type: str) -> str:
+    """生成当前资产类型的 Markdown 说明（侧栏与主区复用）。"""
+    key = str(asset_type).strip().lower()
+    g = ASSET_TYPE_GUIDES.get(key)
+    if g is None:
+        return ""
+    title = ASSET_LABELS.get(key, key)
+    return (
+        "#### %s\n\n"
+        "**类型**　%s\n\n"
+        "**社会意义**　%s\n\n"
+        "**数学与诊断口径**　%s\n\n"
+        "**代表代码示例**　%s\n"
+    ) % (title, g["kind"], g["social"], g["math"], g["examples"])
 
 
 def _identity_cache_data(*args: Any, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -242,14 +363,15 @@ def _fetch_mutual_fund_data(symbol: str, start_date: object, end_date: object) -
 
 
 def _fetch_gold_data(symbol: str, start_date: object, end_date: object) -> pd.DataFrame:
-    """通过 AKShare `futures_foreign_hist` 加载贵金属期货行情。"""
+    """通过 ``futures_foreign_hist`` 加载贵金属期货行情。"""
     display_symbol, vendor_symbol = _resolve_gold_symbol(symbol)
-    ak = _load_optional_dependency("akshare")
-
-    raw_df = ak.futures_foreign_hist(symbol=vendor_symbol)
-    normalized = _normalize_ohlcv(raw_df, dict(GOLD_COLUMN_MAPPING))
-    filtered = _filter_by_date_range(normalized, start_date, end_date)
-    filtered.attrs["asset_type"] = "gold"
+    filtered = load_futures_foreign_ohlcv(
+        vendor_symbol,
+        start_date,
+        end_date,
+        asset_type="gold",
+        unit_caption="USD · 贵金属外盘期货（主力连续，细则以数据源为准）",
+    )
     filtered.attrs["symbol"] = display_symbol
     filtered.attrs["vendor_symbol"] = vendor_symbol
     return filtered
@@ -377,7 +499,7 @@ def load_asset_data(
     end_date: object,
     proxy_url: str | None = None,
 ) -> pd.DataFrame:
-    """统一加载 ETF、A 股个股、公募基金、黄金、加密货币等资产数据。"""
+    """统一加载多类资产 OHLCV（契约一致）。"""
     asset_key = str(asset_type).strip().lower()
     if asset_key not in SUPPORTED_ASSET_TYPES:
         raise ValueError("不支持的资产类型: %s" % asset_type)
@@ -390,12 +512,40 @@ def load_asset_data(
         return _fetch_mutual_fund_data(symbol=symbol, start_date=start_date, end_date=end_date)
     if asset_key == "gold":
         return _fetch_gold_data(symbol=symbol, start_date=start_date, end_date=end_date)
-    return _fetch_crypto_data(
-        symbol=symbol,
-        start_date=start_date,
-        end_date=end_date,
-        proxy_url=proxy_url,
-    )
+    if asset_key == "crypto":
+        return _fetch_crypto_data(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            proxy_url=proxy_url,
+        )
+    if asset_key == "us_stock":
+        return load_global_market_data("us_stock", symbol, start_date, end_date)
+    if asset_key == "hk_stock":
+        return load_global_market_data("hk_stock", symbol, start_date, end_date)
+    if asset_key == "global_index":
+        return load_global_market_data("global_index", symbol, start_date, end_date)
+    if asset_key == "bond_cn":
+        return load_bond_data("cn_hist", symbol, start_date, end_date)
+    if asset_key == "bond_us_yield":
+        sym = str(symbol).strip()
+        col: str | None = None
+        if sym and sym.upper() not in ("10Y", "默认", "DEFAULT"):
+            col = sym
+        else:
+            col = US_TREASURY_YIELD_10Y_CN_COL
+        return load_bond_data(
+            "us_yield",
+            "",
+            start_date,
+            end_date,
+            us_yield_column=col,
+        )
+    if asset_key == "commodity":
+        return load_commodity_data(symbol, start_date, end_date)
+    if asset_key == "creit":
+        return load_reit_data(symbol, start_date, end_date)
+    return load_fx_data(symbol, start_date, end_date)
 
 
 def _compute_cumulative_return(close: pd.Series) -> float:
@@ -465,15 +615,17 @@ def get_quant_metrics(
     trading_days: int = TRADING_DAYS,
 ) -> dict[str, Any]:
     """将 CLI 数学诊断逻辑迁移为 Web 指标字典输出。"""
+    series_kind = str(df.attrs.get("series_kind", "price") or "price").strip().lower()
     engineer = OHLCVFeatureEngineer()
     featured_df = engineer.transform(df)
     featured_df.attrs.update(df.attrs)
+    featured_df.attrs["series_kind"] = series_kind
 
     close = pd.to_numeric(featured_df["Close"], errors="coerce").astype("float64")
     if close.isna().any():
         raise ValueError("Close 列存在 NaN，无法计算指标。")
 
-    metrics = {
+    metrics: dict[str, Any] = {
         "cumulative_return": _compute_cumulative_return(close),
         "cagr": _compute_cagr(close),
         "max_drawdown": float(featured_df.attrs.get("max_drawdown", engineer.compute_max_drawdown(df))),
@@ -485,7 +637,19 @@ def get_quant_metrics(
         ),
         "latest_signal": _describe_bollinger_position(featured_df),
         "featured_df": featured_df,
+        "series_kind": series_kind,
     }
+    if series_kind == "yield_level":
+        metrics["metric_disclaimer"] = (
+            "以下为收益率**水平**序列的统计（末/初比与波动），不代表债券持有期回报；"
+            "夏普等指标基于水平序列的对数变化，仅作相对比较参考。"
+        )
+        metrics["cumulative_return_label"] = "水平相对变化（Close末/初-1）"
+        metrics["cagr_label"] = "水平年化缩放（非票息回报）"
+    else:
+        metrics["metric_disclaimer"] = ""
+        metrics["cumulative_return_label"] = "累计收益率"
+        metrics["cagr_label"] = "CAGR"
     return metrics
 
 
@@ -512,26 +676,32 @@ def _load_plotly_modules() -> tuple[Any, Any]:
 
 
 def build_price_volume_figure(df: pd.DataFrame) -> Any:
-    """绘制 K 线 + 成交量双层图；公募基金为累计净值折线单层图（无 K 线、无成交量）。"""
+    """绘制 K 线 + 成交量；净值/收益率水平/零成交量序列用单面板折线。"""
     go, subplots = _load_plotly_modules()
     make_subplots = subplots.make_subplots
     asset_key = str(df.attrs.get("asset_type", "")).strip().lower()
-    is_mutual_fund = asset_key == "mutual_fund"
+    series_kind = str(df.attrs.get("series_kind", "price") or "price").strip().lower()
+    vol_max = float(pd.to_numeric(df["Volume"], errors="coerce").fillna(0).abs().max())
+    use_line = asset_key == "mutual_fund" or series_kind == "yield_level"
+    show_volume_panel = not use_line and vol_max > 0.0
 
-    if is_mutual_fund:
+    if use_line:
+        line_name = "累计净值" if asset_key == "mutual_fund" else "收盘序列"
+        if series_kind == "yield_level":
+            line_name = "收益率水平"
         figure = make_subplots(rows=1, cols=1)
         figure.add_trace(
             go.Scatter(
                 x=df.index,
                 y=df["Close"],
                 mode="lines",
-                name="累计净值",
+                name=line_name,
                 line={"width": 2.0, "color": "#1f77b4"},
             ),
             row=1,
             col=1,
         )
-    else:
+    elif show_volume_panel:
         figure = make_subplots(
             rows=2,
             cols=1,
@@ -539,6 +709,20 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
             vertical_spacing=0.04,
             row_heights=[0.72, 0.28],
         )
+        figure.add_trace(
+            go.Candlestick(
+                x=df.index,
+                open=df["Open"],
+                high=df["High"],
+                low=df["Low"],
+                close=df["Close"],
+                name="K线",
+            ),
+            row=1,
+            col=1,
+        )
+    else:
+        figure = make_subplots(rows=1, cols=1)
         figure.add_trace(
             go.Candlestick(
                 x=df.index,
@@ -579,7 +763,7 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
             col=1,
         )
 
-    if not is_mutual_fund:
+    if show_volume_panel:
         volume_colors = np.where(df["Close"] >= df["Open"], "#26a69a", "#ef5350")
         figure.add_trace(
             go.Bar(
@@ -600,10 +784,13 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
     )
     figure.update_xaxes(rangeslider_visible=False, row=1, col=1)
-    if is_mutual_fund:
-        figure.update_yaxes(title_text="净值", row=1, col=1)
-    else:
-        figure.update_yaxes(title_text="价格", row=1, col=1)
+    y1 = "净值" if asset_key == "mutual_fund" else "价格"
+    if series_kind == "yield_level":
+        y1 = "收益率水平"
+    if use_line or not show_volume_panel:
+        figure.update_yaxes(title_text=y1, row=1, col=1)
+    if show_volume_panel:
+        figure.update_yaxes(title_text=y1, row=1, col=1)
         figure.update_yaxes(title_text="成交量", row=2, col=1)
     return figure
 
@@ -712,7 +899,8 @@ def render_app() -> None:
     streamlit.set_page_config(page_title="量化诊断应用", layout="wide")
     streamlit.title("量化诊断应用")
     streamlit.caption(
-        "支持 A 股 ETF / A 股个股 / 公募基金 / 贵金属 / 加密货币 的统一诊断、K 线量价图和核心量化指标展示。"
+        "支持 A 股、公募、贵金属、加密、美股/港股/全球指数、国债与美债收益率、外盘商品、REITs、外汇等；"
+        "统一 OHLCV 契约下的诊断与图表（收益率水平类资产见看板说明）。"
     )
 
     today = pd.Timestamp.today().normalize().date()
@@ -725,7 +913,10 @@ def render_app() -> None:
         key="asset_type",
     )
     _sync_sidebar_state(streamlit, asset_type)
-    symbol = streamlit.sidebar.text_input("代码", key="symbol_input").strip()
+    code_label = "代码"
+    if asset_type == "bond_us_yield":
+        code_label = "收益率列（默认 10Y=美债10年，可填表中完整列名）"
+    symbol = streamlit.sidebar.text_input(code_label, key="symbol_input").strip()
     start_date = streamlit.sidebar.date_input(
         "开始日期",
         value=default_start,
@@ -744,6 +935,9 @@ def render_app() -> None:
         )
         streamlit.sidebar.caption("代理仅在加密货币模式下生效。")
 
+    with streamlit.sidebar.expander("资产类型说明", expanded=False):
+        streamlit.markdown(format_asset_guide_markdown(asset_type))
+
     clicked = streamlit.sidebar.button("开始诊断", use_container_width=True)
 
     tab1, tab2 = streamlit.tabs(["📊 量化诊断看板", "📚 系统数学原理解析"])
@@ -754,6 +948,8 @@ def render_app() -> None:
     with tab1:
         if not clicked:
             streamlit.info("在左侧选择资产和时间区间后点击“开始诊断”，即可查看 Web 版量化分析结果。")
+            with streamlit.expander("资产类型说明（与左侧「资产类型」联动）", expanded=False):
+                streamlit.markdown(format_asset_guide_markdown(asset_type))
         else:
             try:
                 with streamlit.spinner("正在加载数据并计算量化指标..."):
@@ -770,11 +966,14 @@ def render_app() -> None:
                     metrics = get_quant_metrics(df)
                     figure = build_price_volume_figure(metrics["featured_df"])
             except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
-                streamlit.error(format_china_equity_user_message(exc))
+                streamlit.error(format_diagnosis_user_message(exc))
                 return
 
             display_symbol = str(df.attrs.get("symbol", symbol)).strip() or symbol
             streamlit.subheader("%s · %s" % (ASSET_LABELS[asset_type], display_symbol))
+            unit_cap = str(df.attrs.get("unit_caption", "") or "").strip()
+            if unit_cap:
+                streamlit.caption("单位与口径：%s" % unit_cap)
             streamlit.caption(
                 "样本区间：%s 至 %s，共 %d 条记录。"
                 % (
@@ -783,6 +982,8 @@ def render_app() -> None:
                     len(df),
                 )
             )
+            if metrics.get("metric_disclaimer"):
+                streamlit.warning(metrics["metric_disclaimer"])
             csv_bytes, csv_filename = _cleaned_ohlcv_to_csv_bytes_and_filename(
                 df,
                 asset_type=asset_type,
@@ -803,14 +1004,15 @@ def render_app() -> None:
             )
 
             metric_col_1, metric_col_2, metric_col_3 = streamlit.columns(3)
-            metric_col_1.metric("CAGR", _format_percent_metric(metrics["cagr"]))
+            metric_col_1.metric(metrics["cagr_label"], _format_percent_metric(metrics["cagr"]))
             metric_col_2.metric("最大回撤", _format_percent_metric(-abs(metrics["max_drawdown"]), signed=True))
             metric_col_3.metric("Sharpe", _format_ratio_metric(metrics["sharpe_ratio"]))
 
             streamlit.info(
-                "最新信号：%s | 累计收益率：%s"
+                "最新信号：%s | %s：%s"
                 % (
                     metrics["latest_signal"],
+                    metrics["cumulative_return_label"],
                     _format_percent_metric(metrics["cumulative_return"], signed=True),
                 )
             )

@@ -1488,6 +1488,504 @@ def get_fund_data(fund_code: str, start_date: DateLike, end_date: DateLike) -> p
     return _filter_ohlcv_by_user_date_range(normalized, start_date, end_date)
 
 
+# ---------------------------------------------------------------------------
+# 全球多资产：AKShare 路由与统一 OHLCV（与 app / 特征工程契约一致）
+# ---------------------------------------------------------------------------
+
+FOREIGN_FUTURES_COLUMN_MAPPING: dict[str, str] = {
+    "date": "Date",
+    "Date": "Date",
+    "open": "Open",
+    "Open": "Open",
+    "high": "High",
+    "High": "High",
+    "low": "Low",
+    "Low": "Low",
+    "close": "Close",
+    "Close": "Close",
+    "volume": "Volume",
+    "Volume": "Volume",
+}
+
+# 东方财富 K 线类接口常见列（指数 / 外汇 / REITs 历史）
+_EM_KLINE_OHLCV_MAPPING: dict[str, str] = {
+    "日期": "Date",
+    "今开": "Open",
+    "最高": "High",
+    "最低": "Low",
+    "最新价": "Close",
+    "成交量": "Volume",
+}
+
+# 全球指数（东财）中文名称；用户可输入简码或中文
+GLOBAL_INDEX_EM_ALIASES: dict[str, str] = {
+    "HSI": "恒生指数",
+    "HSCEI": "国企指数",
+    "SPX": "标普500",
+    "INX": "标普500",
+    "GSPC": "标普500",
+    "NDX": "纳斯达克",
+    "IXIC": "纳斯达克",
+    "DJI": "道琼斯",
+    "DJIA": "道琼斯",
+    "UDI": "美元指数",
+    "DXY": "美元指数",
+    "N225": "日经225",
+    "FTSE": "英国富时100",
+    "GDAXI": "德国DAX30",
+    "FCHI": "法国CAC40",
+    "SX5E": "欧洲斯托克50",
+}
+
+# 美债收益率表默认列（bond_zh_us_rate）
+US_TREASURY_YIELD_10Y_CN_COL = "美国国债收益率10年"
+
+FX_PAIR_ALIASES: dict[str, str] = {
+    "USD/CNY": "USDCNH",
+    "USD/CNH": "USDCNH",
+    "USDCNY": "USDCNH",
+    "EUR/USD": "EURUSD",
+    "GBP/USD": "GBPUSD",
+}
+
+# 与 A 股 K 线类似：东财 ``push2his`` 单节点易被 TLS/中间设备断开；多域名轮询并带浏览器头可显著降低
+# ``RemoteDisconnected`` / ``Connection aborted`` 概率。AKShare ``forex_hist_em`` 使用裸 ``requests.get`` 无 Referer，
+# 在部分网络环境下会被服务端直接掐断连接。
+_EASTMONEY_FOREX_KLINE_URLS: tuple[str, ...] = (
+    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+    "https://push2.eastmoney.com/api/qt/stock/kline/get",
+    "https://33.push2his.eastmoney.com/api/qt/stock/kline/get",
+    "https://63.push2his.eastmoney.com/api/qt/stock/kline/get",
+)
+
+
+def _load_httpx_module() -> Any:
+    try:
+        return importlib.import_module("httpx")
+    except ImportError as exc:
+        raise ImportError(
+            "外汇历史行情直连需要 httpx，请执行：`pip install httpx`。"
+        ) from exc
+
+
+def _forex_kline_json_to_dataframe(data_json: dict[str, Any]) -> pd.DataFrame:
+    """解析东财外汇 K 线 JSON，列结构与 AKShare ``forex_hist_em`` 一致。"""
+    if not isinstance(data_json, dict):
+        return pd.DataFrame()
+    block = data_json.get("data")
+    if not block or not block.get("klines"):
+        return pd.DataFrame()
+    klines = block["klines"]
+    temp_df = pd.DataFrame([str(item).split(",") for item in klines])
+    n_split = int(temp_df.shape[1])
+    temp_df["code"] = block.get("code", "")
+    temp_df["name"] = block.get("name", "")
+    # 东财 klines 常见为 13 段（与当前 AKShare 解析一致）；少数环境为 14 段，按列数分支命名。
+    if n_split == 13:
+        split_names = [
+            "日期",
+            "今开",
+            "最新价",
+            "最高",
+            "最低",
+            "-",
+            "-",
+            "振幅",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+        ]
+    elif n_split == 14:
+        split_names = [
+            "日期",
+            "今开",
+            "最新价",
+            "最高",
+            "最低",
+            "-",
+            "-",
+            "振幅",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+        ]
+    else:
+        split_names = ["c%d" % i for i in range(n_split)]
+    temp_df.columns = list(split_names) + ["代码", "名称"]
+    temp_df = temp_df[
+        [
+            "日期",
+            "代码",
+            "名称",
+            "今开",
+            "最新价",
+            "最高",
+            "最低",
+            "振幅",
+        ]
+    ]
+    temp_df["日期"] = pd.to_datetime(temp_df["日期"], errors="coerce").dt.date
+    temp_df["今开"] = pd.to_numeric(temp_df["今开"], errors="coerce")
+    temp_df["最新价"] = pd.to_numeric(temp_df["最新价"], errors="coerce")
+    temp_df["最高"] = pd.to_numeric(temp_df["最高"], errors="coerce")
+    temp_df["最低"] = pd.to_numeric(temp_df["最低"], errors="coerce")
+    temp_df["振幅"] = pd.to_numeric(temp_df["振幅"], errors="coerce")
+    return temp_df
+
+
+def _fetch_forex_hist_em_robust(pair: str) -> pd.DataFrame:
+    """东财外汇日线：多节点 + 浏览器头 + ``trust_env=False``，避免裸请求被对端直接断开。"""
+    cons = importlib.import_module("akshare.forex.cons")
+    symbol_map: dict[str, int] = getattr(cons, "symbol_market_map", {})
+    if pair not in symbol_map:
+        raise ValueError("不支持的外汇品种代码: %r（请使用东财代码如 USDCNH）。" % pair)
+
+    market_code = int(symbol_map[pair])
+    params: dict[str, Any] = {
+        "secid": "%d.%s" % (market_code, pair),
+        "klt": "101",
+        "fqt": "1",
+        "lmt": "50000",
+        "end": "20500000",
+        "iscca": "1",
+        "fields1": "f1,f2,f3,f4,f5,f6,f7,f8",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64",
+        "ut": "f057cbcbce2a86e2866ab8877db1d059",
+        "forcect": 1,
+    }
+
+    headers = dict(_EASTMONEY_DEFAULT_HEADERS)
+    headers["Referer"] = "https://quote.eastmoney.com/center/gridlist.html#forex_all"
+    headers["Accept"] = "application/json, text/plain, */*"
+
+    apply_default_network_proxy_policy()
+    httpx = _load_httpx_module()
+    last_error: BaseException | None = None
+
+    for round_idx in range(3):
+        for api_url in _EASTMONEY_FOREX_KLINE_URLS:
+            try:
+                with _without_http_proxy_env():
+                    with httpx.Client(
+                        timeout=45.0,
+                        trust_env=False,
+                        headers=headers,
+                        follow_redirects=True,
+                    ) as client:
+                        response = client.get(api_url, params=params)
+                        response.raise_for_status()
+                        payload = response.json()
+                frame = _forex_kline_json_to_dataframe(payload)
+                if not frame.empty:
+                    return frame
+                last_error = EmptySymbolDataError(
+                    "East Money forex kline returned empty klines for %r." % pair
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                continue
+        time.sleep(0.4 * (round_idx + 1))
+
+    ak = _import_akshare()
+    try:
+        return _call_akshare("forex_hist_em(%r) fallback" % pair, ak.forex_hist_em, symbol=pair)
+    except Exception as exc:  # noqa: BLE001
+        detail: BaseException = last_error if isinstance(last_error, BaseException) else exc
+        err = DataFetchError(
+            "外汇历史行情抓取失败（已尝试多东财节点与 AKShare 回退）: %r" % (detail,)
+        )
+        raise err from detail
+
+
+def _import_akshare() -> Any:
+    try:
+        return importlib.import_module("akshare")
+    except ImportError as exc:
+        raise ImportError("运行该数据源需要安装 akshare：`pip install akshare`。") from exc
+
+
+def _call_akshare(
+    op_label: str,
+    fn: Callable[..., Any],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """在默认代理策略下调用 AKShare，失败时抛出带上下文的 ``DataFetchError``。"""
+    apply_default_network_proxy_policy()
+    try:
+        if _akshare_neutralize_proxy_like_fetcher():
+            with _without_http_proxy_env():
+                return fn(*args, **kwargs)
+        return fn(*args, **kwargs)
+    except EmptySymbolDataError:
+        raise
+    except DataFetchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DataFetchError("%s 失败: %r" % (op_label, exc)) from exc
+
+
+def _em_kline_frame_to_ohlcv_raw(df: pd.DataFrame) -> pd.DataFrame:
+    """为缺少成交量列的东财 K 线表补 ``成交量``，再交给 ``A_SHARE_COLUMN_MAPPING`` 清洗。"""
+    work = df.copy()
+    if "成交量" not in work.columns:
+        work["成交量"] = 0.0
+    return work
+
+
+def _normalize_hk_stock_symbol(symbol: str) -> str:
+    text = str(symbol).strip()
+    if not text:
+        raise ValueError("港股代码不能为空。")
+    if text.isdigit():
+        return text.zfill(5)
+    return text
+
+
+def _resolve_global_index_em_name(symbol: str) -> str:
+    raw = str(symbol).strip()
+    if not raw:
+        raise ValueError("指数代码或名称不能为空。")
+    if raw in GLOBAL_INDEX_EM_ALIASES:
+        return GLOBAL_INDEX_EM_ALIASES[raw]
+    upper = raw.upper()
+    if upper in GLOBAL_INDEX_EM_ALIASES:
+        return GLOBAL_INDEX_EM_ALIASES[upper]
+    return raw
+
+
+def load_futures_foreign_ohlcv(
+    symbol: str,
+    start_date: DateLike,
+    end_date: DateLike,
+    *,
+    asset_type: str,
+    unit_caption: str = "",
+    series_kind: str = "price",
+) -> pd.DataFrame:
+    """外盘期货日线（新浪全球期货），输出统一 OHLCV。"""
+    display = str(symbol).strip().upper()
+    if not display:
+        raise ValueError("期货品种代码不能为空。")
+    ak = _import_akshare()
+    raw_df = _call_akshare(
+        "futures_foreign_hist(%r)" % display,
+        ak.futures_foreign_hist,
+        symbol=display,
+    )
+    fetcher = AKShareFetcher(max_retries=1, retry_delay=0.0)
+    normalized = fetcher._normalize_ohlcv(raw_df, FOREIGN_FUTURES_COLUMN_MAPPING)
+    out = _filter_ohlcv_by_user_date_range(normalized, start_date, end_date)
+    out.attrs["asset_type"] = str(asset_type)
+    out.attrs["symbol"] = display
+    out.attrs["series_kind"] = str(series_kind)
+    if unit_caption:
+        out.attrs["unit_caption"] = str(unit_caption)
+    return out
+
+
+def load_global_market_data(
+    route: str,
+    symbol: str,
+    start_date: DateLike,
+    end_date: DateLike,
+) -> pd.DataFrame:
+    """全球权益/指数：``route`` 为 ``us_stock`` | ``hk_stock`` | ``global_index``。"""
+    route_key = str(route).strip().lower()
+    ak = _import_akshare()
+    fetcher = AKShareFetcher(max_retries=1, retry_delay=0.0)
+    sym = str(symbol).strip()
+    if not sym:
+        raise ValueError("代码不能为空。")
+
+    if route_key == "us_stock":
+        raw = _call_akshare(
+            "stock_us_daily(%r)" % sym,
+            ak.stock_us_daily,
+            symbol=sym,
+            adjust="",
+        )
+        out = fetcher._normalize_ohlcv(raw, FOREIGN_FUTURES_COLUMN_MAPPING)
+        atype = "us_stock"
+        caption = "USD 计价 · 美股日线"
+    elif route_key == "hk_stock":
+        hk_sym = _normalize_hk_stock_symbol(sym)
+        raw = _call_akshare(
+            "stock_hk_daily(%r)" % hk_sym,
+            ak.stock_hk_daily,
+            symbol=hk_sym,
+            adjust="",
+        )
+        out = fetcher._normalize_ohlcv(raw, FOREIGN_FUTURES_COLUMN_MAPPING)
+        out.attrs["symbol"] = hk_sym
+        atype = "hk_stock"
+        caption = "HKD 计价 · 港股日线"
+    elif route_key == "global_index":
+        display_sym = sym.strip()
+        if display_sym.startswith("."):
+            raw = _call_akshare(
+                "index_us_stock_sina(%r)" % display_sym,
+                ak.index_us_stock_sina,
+                symbol=display_sym,
+            )
+            out = fetcher._normalize_ohlcv(raw, FOREIGN_FUTURES_COLUMN_MAPPING)
+            atype = "global_index"
+            caption = "美股指数（新浪）· 点"
+        else:
+            em_name = _resolve_global_index_em_name(display_sym)
+            raw = _call_akshare(
+                "index_global_hist_em(%r)" % em_name,
+                ak.index_global_hist_em,
+                symbol=em_name,
+            )
+            raw2 = _em_kline_frame_to_ohlcv_raw(raw)
+            out = fetcher._normalize_ohlcv(raw2, {**A_SHARE_COLUMN_MAPPING, **_EM_KLINE_OHLCV_MAPPING})
+            out.attrs["symbol"] = em_name
+            atype = "global_index"
+            caption = "全球指数（东财）· 点"
+    else:
+        raise ValueError("load_global_market_data: 未知 route %r。" % route)
+
+    out = _filter_ohlcv_by_user_date_range(out, start_date, end_date)
+    out.attrs["asset_type"] = atype
+    if "symbol" not in out.attrs or not str(out.attrs.get("symbol", "")).strip():
+        out.attrs["symbol"] = sym
+    out.attrs["series_kind"] = "price"
+    out.attrs["unit_caption"] = caption
+    return out
+
+
+def load_bond_data(
+    kind: str,
+    symbol: str,
+    start_date: DateLike,
+    end_date: DateLike,
+    *,
+    us_yield_column: str | None = None,
+) -> pd.DataFrame:
+    """债券：``cn_hist`` 中国国债 K 线；``us_yield`` 美债收益率时间序列（伪 OHLCV）。"""
+    kind_key = str(kind).strip().lower()
+    ak = _import_akshare()
+    fetcher = AKShareFetcher(max_retries=1, retry_delay=0.0)
+    start_ts = _coerce_analysis_timestamp(start_date, "start_date")
+    end_ts = _coerce_analysis_timestamp(end_date, "end_date")
+
+    if kind_key == "cn_hist":
+        code = str(symbol).strip()
+        if not code:
+            raise ValueError("国债代码不能为空，例如 sh010107。")
+        raw = _call_akshare("bond_zh_hs_daily(%r)" % code, ak.bond_zh_hs_daily, symbol=code)
+        if "volume" not in raw.columns:
+            raw = raw.copy()
+            raw["volume"] = 0.0
+        out = fetcher._normalize_ohlcv(raw, FOREIGN_FUTURES_COLUMN_MAPPING)
+        out = _filter_ohlcv_by_user_date_range(out, start_date, end_date)
+        out.attrs["asset_type"] = "bond_cn"
+        out.attrs["symbol"] = code
+        out.attrs["series_kind"] = "price"
+        out.attrs["unit_caption"] = "人民币计价 · 国债现货/债券 K 线（列含义以数据源为准）"
+        return out
+
+    if kind_key == "us_yield":
+        start_arg = start_ts.strftime("%Y%m%d")
+        raw = _call_akshare("bond_zh_us_rate", ak.bond_zh_us_rate, start_date=start_arg)
+        if not isinstance(raw, pd.DataFrame) or raw.empty:
+            raise EmptySymbolDataError("bond_zh_us_rate returned empty.")
+
+        date_col = raw.columns[0]
+        col_name = us_yield_column or US_TREASURY_YIELD_10Y_CN_COL
+        if col_name not in raw.columns:
+            candidates = [c for c in raw.columns if c != date_col]
+            raise ValueError(
+                "未找到收益率列 %r，可选列示例: %s"
+                % (col_name, ", ".join(str(c) for c in candidates[:8]))
+            )
+
+        work = pd.DataFrame(
+            {
+                "日期": pd.to_datetime(raw[date_col], errors="coerce"),
+                "收盘": pd.to_numeric(raw[col_name], errors="coerce"),
+            }
+        ).dropna(subset=["日期", "收盘"])
+        if work.empty:
+            raise EmptySymbolDataError("美债收益率解析后无有效行。")
+        close = work["收盘"].astype("float64")
+        zeros = pd.Series(0.0, index=work.index, dtype="float64")
+        pseudo = pd.DataFrame(
+            {
+                "日期": work["日期"],
+                "开盘": close,
+                "最高": close,
+                "最低": close,
+                "收盘": close,
+                "成交量": zeros,
+            }
+        )
+        out = fetcher._normalize_ohlcv(pseudo, A_SHARE_COLUMN_MAPPING)
+        out = _filter_ohlcv_by_user_date_range(out, start_date, end_date)
+        out.attrs["asset_type"] = "bond_us_yield"
+        out.attrs["symbol"] = col_name
+        out.attrs["series_kind"] = "yield_level"
+        out.attrs["unit_caption"] = "收益率水平 %% · %s（非持有期回报，指标为水平序列统计）" % col_name
+        out.attrs["yield_column"] = col_name
+        return out
+
+    raise ValueError("load_bond_data: 未知 kind %r。" % kind)
+
+
+def load_commodity_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.DataFrame:
+    """工业商品等外盘期货（与贵金属共用 ``futures_foreign_hist``）。"""
+    return load_futures_foreign_ohlcv(
+        symbol,
+        start_date,
+        end_date,
+        asset_type="commodity",
+        unit_caption="USD 等 · 外盘期货主力连续（合约细则以数据源为准）",
+    )
+
+
+def load_reit_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.DataFrame:
+    """沪深 C-REITs 日线（东财 K 线）。"""
+    code = str(symbol).strip()
+    if not code:
+        raise ValueError("REITs 基金代码不能为空，例如 508097。")
+    ak = _import_akshare()
+    raw = _call_akshare("reits_hist_em(%r)" % code, ak.reits_hist_em, symbol=code)
+    raw2 = _em_kline_frame_to_ohlcv_raw(raw)
+    fetcher = AKShareFetcher(max_retries=1, retry_delay=0.0)
+    out = fetcher._normalize_ohlcv(raw2, {**A_SHARE_COLUMN_MAPPING, **_EM_KLINE_OHLCV_MAPPING})
+    out = _filter_ohlcv_by_user_date_range(out, start_date, end_date)
+    out.attrs["asset_type"] = "creit"
+    out.attrs["symbol"] = code
+    out.attrs["series_kind"] = "price"
+    out.attrs["unit_caption"] = "CNY 计价 · 基础设施 REITs"
+    return out
+
+
+def load_fx_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.DataFrame:
+    """外汇即期日线（东财 ``forex_hist_em``）。"""
+    raw_key = str(symbol).strip().upper().replace(" ", "")
+    if not raw_key:
+        raise ValueError("外汇代码不能为空，例如 USDCNH。")
+    pair = FX_PAIR_ALIASES.get(raw_key, raw_key)
+    raw = _fetch_forex_hist_em_robust(pair)
+    raw2 = _em_kline_frame_to_ohlcv_raw(raw)
+    fetcher = AKShareFetcher(max_retries=1, retry_delay=0.0)
+    out = fetcher._normalize_ohlcv(raw2, {**A_SHARE_COLUMN_MAPPING, **_EM_KLINE_OHLCV_MAPPING})
+    out = _filter_ohlcv_by_user_date_range(out, start_date, end_date)
+    out.attrs["asset_type"] = "fx"
+    out.attrs["symbol"] = pair
+    out.attrs["series_kind"] = "price"
+    out.attrs["unit_caption"] = "汇率 · %s（间接标价含义以数据源为准）" % pair
+    return out
+
+
 __all__ = [
     "DateLike",
     "REQUIRED_OHLCV_COLUMNS",
@@ -1504,4 +2002,14 @@ __all__ = [
     "EastMoneyDailyKlineClient",
     "YFinanceFetcher",
     "get_fund_data",
+    "FOREIGN_FUTURES_COLUMN_MAPPING",
+    "GLOBAL_INDEX_EM_ALIASES",
+    "US_TREASURY_YIELD_10Y_CN_COL",
+    "FX_PAIR_ALIASES",
+    "load_futures_foreign_ohlcv",
+    "load_global_market_data",
+    "load_bond_data",
+    "load_commodity_data",
+    "load_reit_data",
+    "load_fx_data",
 ]
