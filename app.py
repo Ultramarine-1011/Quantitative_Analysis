@@ -29,6 +29,7 @@ from data_fetcher import (
     US_TREASURY_YIELD_10Y_CN_COL,
     apply_default_network_proxy_policy,
     get_fund_data,
+    get_multiple_assets_close,
     load_bond_data,
     load_commodity_data,
     load_futures_foreign_ohlcv,
@@ -37,6 +38,13 @@ from data_fetcher import (
     load_reit_data,
 )
 from feature_engineering import OHLCVFeatureEngineer
+from quant_models import (
+    EfficientFrontierResult,
+    MonteCarloGBMResult,
+    generate_efficient_frontier,
+    normalize_close_to_base_one,
+    run_monte_carlo_gbm,
+)
 
 apply_default_network_proxy_policy()
 
@@ -548,6 +556,19 @@ def load_asset_data(
     return load_fx_data(symbol, start_date, end_date)
 
 
+@cache_data(ttl=3600, show_spinner=False)
+def load_multiple_etfs_close(
+    symbols_tuple: tuple[str, ...],
+    start_date: object,
+    end_date: object,
+    adjust: str = "hfq",
+) -> pd.DataFrame:
+    """多标的 A 股 ETF 收盘价宽表；参数为元组以便 Streamlit ``cache_data`` 键稳定。"""
+    if not symbols_tuple:
+        raise ValueError("symbols_tuple 不能为空。")
+    return get_multiple_assets_close(list(symbols_tuple), start_date, end_date, adjust=adjust)
+
+
 def _compute_cumulative_return(close: pd.Series) -> float:
     """计算区间累计收益率。"""
     return float(close.iloc[-1] / close.iloc[0] - 1.0)
@@ -795,6 +816,150 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
     return figure
 
 
+def build_tab3_normalize_figure(dates: pd.Index, normalized: pd.Series) -> Any:
+    """侧栏单一标的：收盘价归一化为期初=1 的净值曲线（暗色主题）。"""
+    go, _ = _load_plotly_modules()
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=dates,
+            y=normalized,
+            mode="lines",
+            name="Nₜ = Pₜ / P₀",
+            line={"width": 2.2, "color": "#7fdbff"},
+        )
+    )
+    figure.update_layout(
+        height=420,
+        margin={"l": 20, "r": 20, "t": 40, "b": 20},
+        template="plotly_dark",
+        hovermode="x unified",
+        yaxis_title="归一化净值",
+        xaxis_title="日期",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
+    )
+    return figure
+
+
+def build_tab3_gbm_figure(result: MonteCarloGBMResult) -> Any:
+    """GBM 蒙特卡洛：历史收盘价、未来分位带、中位数与若干示例路径。"""
+    go, _ = _load_plotly_modules()
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=result.historical_dates,
+            y=result.historical_close,
+            mode="lines",
+            name="历史收盘价",
+            line={"width": 2.0, "color": "#00d4ff"},
+        )
+    )
+    fut_x = result.future_dates
+    figure.add_trace(
+        go.Scatter(
+            x=fut_x,
+            y=result.quantiles_p95,
+            mode="lines",
+            line={"width": 0},
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=fut_x,
+            y=result.quantiles_p05,
+            mode="lines",
+            name="5%–95% 分位带",
+            fill="tonexty",
+            fillcolor="rgba(0, 191, 255, 0.22)",
+            line={"width": 0},
+        )
+    )
+    n_paths = int(result.sample_paths.shape[0])
+    for i in range(n_paths):
+        figure.add_trace(
+            go.Scatter(
+                x=fut_x,
+                y=result.sample_paths[i],
+                mode="lines",
+                name="示例路径" if i == 0 else None,
+                legendgroup="samples",
+                showlegend=(i == 0),
+                line={"width": 0.9, "color": "rgba(180, 180, 200, 0.45)"},
+            )
+        )
+    figure.add_trace(
+        go.Scatter(
+            x=fut_x,
+            y=result.quantiles_p50,
+            mode="lines",
+            name="中位数路径",
+            line={"width": 2.2, "color": "#ffcc00"},
+        )
+    )
+    figure.update_layout(
+        height=520,
+        margin={"l": 20, "r": 20, "t": 50, "b": 20},
+        template="plotly_dark",
+        hovermode="x unified",
+        yaxis_title="价格",
+        xaxis_title="日期",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.05, "x": 0.0},
+    )
+    return figure
+
+
+def build_tab3_efficient_frontier_figure(ef: EfficientFrontierResult) -> Any:
+    """随机权重组合散点（颜色=夏普），最优组合红星。"""
+    go, _ = _load_plotly_modules()
+    vol = ef.volatility
+    ret = ef.returns
+    sharpe = ef.sharpe
+    idx = int(ef.best_sharpe_idx)
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=vol,
+            y=ret,
+            mode="markers",
+            name="随机权重组合",
+            marker={
+                "size": 6,
+                "color": sharpe,
+                "colorscale": "Viridis",
+                "showscale": True,
+                "colorbar": {"title": "夏普"},
+                "opacity": 0.85,
+            },
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=[float(vol[idx])],
+            y=[float(ret[idx])],
+            mode="markers",
+            name="最大夏普组合",
+            marker={
+                "size": 20,
+                "symbol": "star",
+                "color": "#ff2a2a",
+                "line": {"width": 1.2, "color": "#ffffff"},
+            },
+        )
+    )
+    figure.update_layout(
+        height=520,
+        margin={"l": 20, "r": 20, "t": 40, "b": 20},
+        template="plotly_dark",
+        hovermode="closest",
+        xaxis_title="年化波动率",
+        yaxis_title="年化收益",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
+    )
+    return figure
+
+
 def _sync_sidebar_state(streamlit: Any, asset_type: str) -> None:
     """让侧边栏默认值在资产类型切换时保持联动。"""
     session_state = streamlit.session_state
@@ -940,10 +1105,125 @@ def render_app() -> None:
 
     clicked = streamlit.sidebar.button("开始诊断", use_container_width=True)
 
-    tab1, tab2 = streamlit.tabs(["📊 量化诊断看板", "📚 系统数学原理解析"])
+    tab1, tab2, tab3 = streamlit.tabs(
+        ["📊 量化诊断看板", "📚 系统数学原理解析", "🧮 进阶金融算法"]
+    )
 
     with tab2:
         streamlit.markdown(_TAB2_SYSTEM_MATH_MARKDOWN)
+
+    with tab3:
+        streamlit.markdown(
+            "本页使用**左侧**资产类型、代码与起止日期；各区块**独立按钮**拉数与计算，无需先点击「开始诊断」。"
+        )
+        streamlit.caption(
+            "有效前沿（模块 B）仅支持 **A 股 ETF 代码** 逗号分隔列表；GBM 与归一化沿用当前侧栏单一标的。"
+        )
+
+        streamlit.subheader("0 · 基准归一化")
+        streamlit.markdown(
+            r"将收盘价序列归一化为以样本首日价格为 1 的净值：$N_t = P_t / P_{t_0}$（$P$ 为 `Close`）。"
+        )
+        if streamlit.button("显示归一化净值曲线", key="tab3_btn_normalize", use_container_width=True):
+            try:
+                with streamlit.spinner("正在加载行情…"):
+                    df_norm = load_asset_data(
+                        asset_type=asset_type,
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        proxy_url=proxy_url,
+                    )
+                if df_norm.empty:
+                    streamlit.error(EMPTY_SYMBOL_FETCH_HINT)
+                else:
+                    series_n = normalize_close_to_base_one(df_norm)
+                    fig_n = build_tab3_normalize_figure(df_norm.index, series_n)
+                    streamlit.plotly_chart(fig_n, use_container_width=True)
+            except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
+                streamlit.error(format_diagnosis_user_message(exc))
+
+        streamlit.subheader("A · GBM 蒙特卡洛")
+        streamlit.markdown(
+            "基于历史日对数收益估计波动与漂移，按几何布朗运动离散递推未来 **252** 个交易日路径；"
+            "图中为分位数带与若干示例路径。"
+        )
+        if streamlit.button("运行 GBM 模拟", key="tab3_btn_gbm", use_container_width=True):
+            try:
+                with streamlit.spinner("正在加载数据并模拟路径…"):
+                    df_gbm = load_asset_data(
+                        asset_type=asset_type,
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        proxy_url=proxy_url,
+                    )
+                if df_gbm.empty:
+                    streamlit.error(EMPTY_SYMBOL_FETCH_HINT)
+                else:
+                    mc = run_monte_carlo_gbm(
+                        df_gbm,
+                        days=TRADING_DAYS,
+                        num_simulations=500,
+                        random_state=42,
+                        num_sample_paths=5,
+                    )
+                    streamlit.caption(
+                        "估计参数：日漂移 μ≈%.6f，日波动 σ≈%.6f，起点 S₀=%.4f。"
+                        % (mc.mu_daily, mc.sigma_daily, mc.s0)
+                    )
+                    fig_g = build_tab3_gbm_figure(mc)
+                    streamlit.plotly_chart(fig_g, use_container_width=True)
+            except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
+                streamlit.error(format_diagnosis_user_message(exc))
+
+        streamlit.subheader("B · 有效前沿（随机权重）")
+        ef_default = "%s,%s" % (
+            DEFAULT_SYMBOLS.get("etf", "510300"),
+            "510500",
+        )
+        ef_symbols_text = streamlit.text_input(
+            "ETF 代码（英文逗号分隔，至少 2 个）",
+            value=ef_default,
+            key="tab3_ef_symbol_input",
+        )
+        if streamlit.button("运行协方差矩阵优化", key="tab3_btn_ef", use_container_width=True):
+            raw_parts = [p.strip() for p in str(ef_symbols_text).split(",")]
+            codes = [p for p in raw_parts if p]
+            if len(codes) < 2:
+                streamlit.error("请至少输入两个有效 ETF 代码。")
+            else:
+                try:
+                    sym_tuple = tuple(sorted(codes))
+                    with streamlit.spinner("正在拉取多标的收盘价并模拟组合…"):
+                        wide_close = load_multiple_etfs_close(
+                            sym_tuple,
+                            start_date,
+                            end_date,
+                            adjust="hfq",
+                        )
+                    returns_wide = wide_close.pct_change().dropna()
+                    if returns_wide.shape[1] < 2:
+                        streamlit.error("有效资产列不足，请检查代码是否正确。")
+                    else:
+                        ef_res: EfficientFrontierResult = generate_efficient_frontier(
+                            returns_wide,
+                            num_portfolios=5000,
+                            risk_free_rate=RISK_FREE_RATE,
+                            trading_days=TRADING_DAYS,
+                            random_state=42,
+                        )
+                        fig_ef = build_tab3_efficient_frontier_figure(ef_res)
+                        streamlit.plotly_chart(fig_ef, use_container_width=True)
+                        w_best = ef_res.weights[ef_res.best_sharpe_idx]
+                        weights_df = pd.DataFrame(
+                            [w_best],
+                            columns=list(returns_wide.columns),
+                        )
+                        streamlit.markdown("**最大夏普比率组合的权重**")
+                        streamlit.dataframe(weights_df, use_container_width=True)
+                except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
+                    streamlit.error(format_diagnosis_user_message(exc))
 
     with tab1:
         if not clicked:

@@ -1986,6 +1986,89 @@ def load_fx_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.Da
     return out
 
 
+def get_multiple_assets_close(
+    symbols_list: list[str] | tuple[str, ...],
+    start_date: DateLike,
+    end_date: DateLike,
+    *,
+    adjust: str = "hfq",
+) -> pd.DataFrame:
+    """拉取多只 A 股 ETF 的收盘价宽表（按日期 outer 对齐后前向填充）。
+
+    假设 ``symbols_list`` 中均为沪深 ETF 代码。通过本模块内 ``AKShareFetcher`` 逐只拉取并裁剪区间，
+    逻辑上等价于单标的 ETF 拉取的组合；**不**依赖 ``asset_resolver``，以避免循环导入。
+
+    Parameters
+    ----------
+    symbols_list
+        ETF 代码列表；元素会先 ``strip``、去重（保序），且不得包含去空白后的空串。
+    start_date, end_date
+        分析区间；与 ``_filter_ohlcv_by_user_date_range`` 使用相同的日级时间戳与空区间语义。
+    adjust
+        复权方式，``"qfq"`` 或 ``"hfq"``，默认后复权。
+
+    Returns
+    -------
+    pd.DataFrame
+        索引为 ``DatetimeIndex``（升序），每列名为对应 ETF 代码，值为 ``Close``（``float64``）。
+
+    Raises
+    ------
+    ValueError
+        代码列表非法、复权参数非法、日期区间非法，或合并后某代码列全为缺失（与用户区间无重叠或无有效数据）。
+    """
+    if not isinstance(symbols_list, (list, tuple)):
+        raise TypeError("symbols_list must be a list or tuple of ETF codes.")
+
+    stripped = [str(s).strip() for s in symbols_list]
+    if any(not s for s in stripped):
+        raise ValueError("symbols_list must not contain empty codes after stripping whitespace.")
+
+    symbols_ordered: list[str] = []
+    seen: set[str] = set()
+    for s in stripped:
+        if s not in seen:
+            seen.add(s)
+            symbols_ordered.append(s)
+
+    if not symbols_ordered:
+        raise ValueError("symbols_list must be a non-empty list of ETF codes after normalization.")
+
+    adjust_key = str(adjust).strip().lower()
+    if adjust_key not in {"qfq", "hfq"}:
+        raise ValueError("adjust must be 'qfq' or 'hfq', got %r." % (adjust,))
+
+    start_ts = _coerce_analysis_timestamp(start_date, "start_date")
+    end_ts = _coerce_analysis_timestamp(end_date, "end_date")
+    if start_ts > end_ts:
+        raise ValueError("start_date must be earlier than or equal to end_date.")
+
+    fetcher = AKShareFetcher(max_retries=3, retry_delay=1.0)
+    close_frames: list[pd.Series] = []
+    for sym in symbols_ordered:
+        ohlcv = fetcher.fetch_china_equity(
+            "etf",
+            sym,
+            start=start_ts,
+            end=end_ts,
+            adjust=adjust_key,
+        )
+        clipped = _filter_ohlcv_by_user_date_range(ohlcv, start_date, end_date)
+        close_frames.append(clipped["Close"].rename(sym))
+
+    wide = pd.concat(close_frames, axis=1, join="outer")
+    wide = wide.sort_index().ffill()
+
+    for col in wide.columns:
+        if wide[col].isna().all():
+            raise ValueError(
+                "标的 %r 在指定区间内无有效收盘价，或与所选标的无可用重叠数据。" % str(col)
+            )
+
+    wide.index.name = "Date"
+    return wide.astype("float64")
+
+
 __all__ = [
     "DateLike",
     "REQUIRED_OHLCV_COLUMNS",
@@ -2012,4 +2095,5 @@ __all__ = [
     "load_commodity_data",
     "load_reit_data",
     "load_fx_data",
+    "get_multiple_assets_close",
 ]
