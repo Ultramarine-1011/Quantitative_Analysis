@@ -11,7 +11,8 @@ httpx>=0.27.0
 
 # Data sources (China equity: akshare; crypto: ccxt)
 akshare>=1.13.0
-ccxt>=4.0.0
+# ccxt 4.5.x wheels can fail pip byte-compile on Apple Python 3.9 (invalid syntax in bundled file).
+ccxt>=4.0.0,<4.5
 
 # Web app (app.py: Streamlit + Plotly)
 streamlit>=1.28.0

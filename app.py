@@ -569,6 +569,117 @@ def load_multiple_etfs_close(
     return get_multiple_assets_close(list(symbols_tuple), start_date, end_date, adjust=adjust)
 
 
+def multi_asset_leg_column_name(asset_type_key: str, symbol: str) -> str:
+    """有效前沿宽表列名：`{资产类型}:{代码}`，避免跨类型代码冲突。"""
+    return "%s:%s" % (str(asset_type_key).strip().lower(), str(symbol).strip())
+
+
+def _split_asset_leg_segment(segment: str) -> tuple[str, str]:
+    """解析单行 leg：`类型,代码` 或 `类型|代码`（仅拆第一处分隔符）。"""
+    s = str(segment).strip()
+    if not s:
+        raise ValueError("空的标的行。")
+    if "," in s:
+        left, right = s.split(",", 1)
+    elif "|" in s:
+        left, right = s.split("|", 1)
+    else:
+        raise ValueError(
+            "每行需为 `资产类型,代码` 或 `资产类型|代码`，例如 `etf,510300`；无效行：%r" % segment
+        )
+    asset_raw, symbol_raw = left.strip(), right.strip()
+    if not asset_raw:
+        raise ValueError("资产类型不能为空：%r" % segment)
+    if not symbol_raw:
+        raise ValueError("代码不能为空：%r" % segment)
+    return asset_raw, symbol_raw
+
+
+def parse_multi_asset_legs(text: str) -> tuple[tuple[str, str], ...]:
+    """从多行文本解析 Tab3 有效前沿标的列表；校验类型、去重（保序）、至少 2 条。
+
+    支持：换行分段；同一行内可用英文分号 `;` 分隔多条。空行忽略。
+    返回的元组中资产类型已规范为小写键（``SUPPORTED_ASSET_TYPES`` 成员）。
+    """
+    segments: list[str] = []
+    for line in str(text).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        for part in line.split(";"):
+            part = part.strip()
+            if part:
+                segments.append(part)
+
+    legs_ordered: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for seg in segments:
+        asset_raw, symbol_raw = _split_asset_leg_segment(seg)
+        asset_key = asset_raw.strip().lower()
+        if asset_key not in SUPPORTED_ASSET_TYPES:
+            raise ValueError(
+                "不支持的资产类型 %r；可选：%s"
+                % (asset_raw, ", ".join(SUPPORTED_ASSET_TYPES))
+            )
+        key = (asset_key, symbol_raw)
+        if key in seen:
+            continue
+        seen.add(key)
+        legs_ordered.append((asset_key, symbol_raw))
+
+    if len(legs_ordered) < 2:
+        raise ValueError("有效前沿至少需要 2 个不重复标的（`类型,代码` 每行一条，或用 `;` 分隔）。")
+
+    return tuple(legs_ordered)
+
+
+@cache_data(ttl=3600, show_spinner=False)
+def load_multi_leg_close_wide(
+    legs_tuple: tuple[tuple[str, str], ...],
+    start_date: object,
+    end_date: object,
+    proxy_url: str | None = None,
+) -> pd.DataFrame:
+    """多类型标的收盘价宽表：逐 leg ``load_asset_data``，按日期 outer 合并后前向填充。"""
+    if not legs_tuple:
+        raise ValueError("legs_tuple 不能为空。")
+
+    close_frames: list[pd.Series] = []
+    for asset_key, symbol in legs_tuple:
+        col = multi_asset_leg_column_name(asset_key, symbol)
+        df_leg = load_asset_data(
+            asset_type=asset_key,
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            proxy_url=proxy_url,
+        )
+        if df_leg.empty or "Close" not in df_leg.columns:
+            raise ValueError(
+                "标的 %r（列名 %r）在指定区间内无可用数据或缺少 Close 列。"
+                % ("%s:%s" % (asset_key, symbol), col)
+            )
+        close = pd.to_numeric(df_leg["Close"], errors="coerce")
+        if close.isna().all():
+            raise ValueError(
+                "标的 %r（列名 %r）在指定区间内 Close 全为缺失。"
+                % ("%s:%s" % (asset_key, symbol), col)
+            )
+        close_frames.append(close.rename(col))
+
+    wide = pd.concat(close_frames, axis=1, join="outer")
+    wide = wide.sort_index().ffill()
+
+    for col in wide.columns:
+        if wide[col].isna().all():
+            raise ValueError(
+                "标的列 %r 在指定区间内无有效收盘价，或与所选标的无可用重叠数据。" % str(col)
+            )
+
+    wide.index.name = "Date"
+    return wide.astype("float64")
+
+
 def _compute_cumulative_return(close: pd.Series) -> float:
     """计算区间累计收益率。"""
     return float(close.iloc[-1] / close.iloc[0] - 1.0)
@@ -1117,7 +1228,10 @@ def render_app() -> None:
             "本页使用**左侧**资产类型、代码与起止日期；各区块**独立按钮**拉数与计算，无需先点击「开始诊断」。"
         )
         streamlit.caption(
-            "有效前沿（模块 B）仅支持 **A 股 ETF 代码** 逗号分隔列表；GBM 与归一化沿用当前侧栏单一标的。"
+            "有效前沿（模块 B）支持在下方按行配置多标的（类型与侧栏「资产类型」一致）；"
+            "不同市场日历 **outer 对齐 + 前向填充** 后与 ETF 批量路径语义相同。"
+            "混合资产时重叠交易日可能变短；夏普等横比需谨慎（参见侧栏各类资产说明）。"
+            "GBM 与归一化仍用侧栏单一标的。"
         )
 
         streamlit.subheader("0 · 基准归一化")
@@ -1178,52 +1292,59 @@ def render_app() -> None:
                 streamlit.error(format_diagnosis_user_message(exc))
 
         streamlit.subheader("B · 有效前沿（随机权重）")
-        ef_default = "%s,%s" % (
-            DEFAULT_SYMBOLS.get("etf", "510300"),
-            "510500",
+        streamlit.markdown(
+            "每行一条：`资产类型,代码` 或 `资产类型|代码`（与侧栏类型键一致，如 `etf`、`us_stock`、`crypto`）；"
+            "同一行可用英文分号 `;` 写多条。列名为 `类型:代码`（如 `crypto:BTC/USDT`）。"
+            "若含 **crypto**，侧栏代理与「加密货币」模式相同（请将侧栏资产类型选为加密货币以填写代理）。"
         )
-        ef_symbols_text = streamlit.text_input(
-            "ETF 代码（英文逗号分隔，至少 2 个）",
+        ef_default = "\n".join(
+            (
+                "etf,%s" % DEFAULT_SYMBOLS.get("etf", "510300"),
+                "etf,510500",
+                "us_stock,%s" % DEFAULT_SYMBOLS.get("us_stock", "AAPL"),
+            )
+        )
+        ef_legs_text = streamlit.text_area(
+            "多标的组合（至少 2 条，不重复）",
             value=ef_default,
-            key="tab3_ef_symbol_input",
+            height=120,
+            key="tab3_ef_legs_input",
         )
         if streamlit.button("运行协方差矩阵优化", key="tab3_btn_ef", use_container_width=True):
-            raw_parts = [p.strip() for p in str(ef_symbols_text).split(",")]
-            codes = [p for p in raw_parts if p]
-            if len(codes) < 2:
-                streamlit.error("请至少输入两个有效 ETF 代码。")
-            else:
-                try:
-                    sym_tuple = tuple(sorted(codes))
-                    with streamlit.spinner("正在拉取多标的收盘价并模拟组合…"):
-                        wide_close = load_multiple_etfs_close(
-                            sym_tuple,
-                            start_date,
-                            end_date,
-                            adjust="hfq",
-                        )
-                    returns_wide = wide_close.pct_change().dropna()
-                    if returns_wide.shape[1] < 2:
-                        streamlit.error("有效资产列不足，请检查代码是否正确。")
-                    else:
-                        ef_res: EfficientFrontierResult = generate_efficient_frontier(
-                            returns_wide,
-                            num_portfolios=5000,
-                            risk_free_rate=RISK_FREE_RATE,
-                            trading_days=TRADING_DAYS,
-                            random_state=42,
-                        )
-                        fig_ef = build_tab3_efficient_frontier_figure(ef_res)
-                        streamlit.plotly_chart(fig_ef, use_container_width=True)
-                        w_best = ef_res.weights[ef_res.best_sharpe_idx]
-                        weights_df = pd.DataFrame(
-                            [w_best],
-                            columns=list(returns_wide.columns),
-                        )
-                        streamlit.markdown("**最大夏普比率组合的权重**")
-                        streamlit.dataframe(weights_df, use_container_width=True)
-                except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
-                    streamlit.error(format_diagnosis_user_message(exc))
+            try:
+                legs = parse_multi_asset_legs(ef_legs_text)
+                with streamlit.spinner("正在拉取多标的收盘价并模拟组合…"):
+                    wide_close = load_multi_leg_close_wide(
+                        legs,
+                        start_date,
+                        end_date,
+                        proxy_url=proxy_url,
+                    )
+                returns_wide = wide_close.pct_change().dropna()
+                if returns_wide.shape[1] < 2:
+                    streamlit.error("有效资产列不足，请检查标的与日期区间。")
+                else:
+                    streamlit.caption(
+                        "联合样本中日收益需各列同时非缺失；重叠过少或序列近似线性相关时优化可能失败。"
+                    )
+                    ef_res: EfficientFrontierResult = generate_efficient_frontier(
+                        returns_wide,
+                        num_portfolios=5000,
+                        risk_free_rate=RISK_FREE_RATE,
+                        trading_days=TRADING_DAYS,
+                        random_state=42,
+                    )
+                    fig_ef = build_tab3_efficient_frontier_figure(ef_res)
+                    streamlit.plotly_chart(fig_ef, use_container_width=True)
+                    w_best = ef_res.weights[ef_res.best_sharpe_idx]
+                    weights_df = pd.DataFrame(
+                        [w_best],
+                        columns=list(returns_wide.columns),
+                    )
+                    streamlit.markdown("**最大夏普比率组合的权重**")
+                    streamlit.dataframe(weights_df, use_container_width=True)
+            except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
+                streamlit.error(format_diagnosis_user_message(exc))
 
     with tab1:
         if not clicked:
