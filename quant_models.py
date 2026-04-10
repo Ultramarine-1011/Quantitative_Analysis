@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
@@ -208,6 +209,73 @@ class EfficientFrontierResult:
     best_sharpe_idx: int
 
 
+def clean_joint_returns(returns_df: pd.DataFrame, min_history: int = 30) -> pd.DataFrame:
+    """对多资产日收益宽表做与有效前沿一致的联合清洗。
+
+    ``to_numeric`` → 按行 ``dropna(how="all")`` → 再 ``dropna()``（任列为 NaN 的行删除），
+    并在关键步骤校验 ``min_history`` 与至少 2 列资产。
+    """
+    r = returns_df.copy()
+    r = r.apply(pd.to_numeric, errors="coerce")
+    r = r.dropna(how="all")
+    if r.shape[0] < min_history:
+        raise ValueError(
+            f"Need at least {min_history} rows of joint return history after cleaning; got {r.shape[0]}."
+        )
+    if r.shape[1] < 2:
+        raise ValueError("Fewer than 2 asset columns remain after dropping all-NaN rows.")
+    r = r.dropna()
+    if r.empty:
+        raise ValueError("Returns are empty after dropping rows with any NaN.")
+    if r.shape[0] < min_history:
+        raise ValueError(
+            f"Need at least {min_history} complete return rows; got {r.shape[0]} after dropna."
+        )
+    return r
+
+
+def returns_correlation_matrix(
+    returns_df: pd.DataFrame, min_history: int = 30
+) -> pd.DataFrame:
+    """皮尔逊相关矩阵；样本与列顺序与 ``clean_joint_returns`` 一致。"""
+    r = clean_joint_returns(returns_df, min_history=min_history)
+    return r.corr(method="pearson")
+
+
+def backtest_portfolio(
+    returns_df: pd.DataFrame,
+    optimal_weights: np.ndarray | Sequence[float],
+    *,
+    min_history: int = 30,
+) -> pd.DataFrame:
+    """最优权重组合与等权组合的归一化累计净值（样本首日净值为 1）。
+
+    权重与 ``clean_joint_returns`` 后的列顺序对齐；传入已清洗的 ``returns_df`` 时行为幂等。
+    """
+    r = clean_joint_returns(returns_df, min_history=min_history)
+    w = np.asarray(optimal_weights, dtype=float).ravel()
+    if w.size != r.shape[1]:
+        raise ValueError(
+            f"optimal_weights length ({w.size}) must match number of assets ({r.shape[1]})."
+        )
+    w = w / w.sum()
+    opt_daily = r.values @ w
+    eq_daily = r.mean(axis=1).values
+    rp_opt = pd.Series(opt_daily, index=r.index, dtype=float)
+    rp_eq = pd.Series(eq_daily, index=r.index, dtype=float)
+    raw_opt = (1 + rp_opt).cumprod()
+    raw_eq = (1 + rp_eq).cumprod()
+    v_opt = raw_opt / raw_opt.iloc[0]
+    v_eq = raw_eq / raw_eq.iloc[0]
+    return pd.DataFrame(
+        {
+            "Optimal_Portfolio": v_opt,
+            "Equal_Weight_Portfolio": v_eq,
+        },
+        index=r.index,
+    )
+
+
 def generate_efficient_frontier(
     returns_df: pd.DataFrame,
     num_portfolios: int = 5000,
@@ -252,22 +320,7 @@ def generate_efficient_frontier(
         raise ValueError("num_portfolios must be at least 1.")
     if returns_df.shape[1] < 2:
         raise ValueError("Efficient frontier requires at least 2 assets (columns).")
-    r = returns_df.copy()
-    r = r.apply(pd.to_numeric, errors="coerce")
-    r = r.dropna(how="all")
-    if r.shape[0] < min_history:
-        raise ValueError(
-            f"Need at least {min_history} rows of joint return history after cleaning; got {r.shape[0]}."
-        )
-    if r.shape[1] < 2:
-        raise ValueError("Fewer than 2 asset columns remain after dropping all-NaN rows.")
-    r = r.dropna()
-    if r.empty:
-        raise ValueError("Returns are empty after dropping rows with any NaN.")
-    if r.shape[0] < min_history:
-        raise ValueError(
-            f"Need at least {min_history} complete return rows; got {r.shape[0]} after dropna."
-        )
+    r = clean_joint_returns(returns_df, min_history=min_history)
 
     x = r.values.astype(float, copy=False)
     n_assets = x.shape[1]
@@ -312,7 +365,10 @@ def generate_efficient_frontier(
 __all__ = [
     "EfficientFrontierResult",
     "MonteCarloGBMResult",
+    "backtest_portfolio",
+    "clean_joint_returns",
     "generate_efficient_frontier",
     "normalize_close_to_base_one",
+    "returns_correlation_matrix",
     "run_monte_carlo_gbm",
 ]

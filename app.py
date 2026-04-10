@@ -41,6 +41,8 @@ from feature_engineering import OHLCVFeatureEngineer
 from quant_models import (
     EfficientFrontierResult,
     MonteCarloGBMResult,
+    backtest_portfolio,
+    clean_joint_returns,
     generate_efficient_frontier,
     normalize_close_to_base_one,
     run_monte_carlo_gbm,
@@ -1071,6 +1073,94 @@ def build_tab3_efficient_frontier_figure(ef: EfficientFrontierResult) -> Any:
     return figure
 
 
+def build_tab3_correlation_heatmap(corr_df: pd.DataFrame) -> Any:
+    """大类资产收益率皮尔逊相关热力图（z∈[-1,1]，RdBu 发散）。"""
+    go, _ = _load_plotly_modules()
+    labels = list(corr_df.columns)
+    z = corr_df.values.astype(float, copy=False)
+    figure = go.Figure(
+        data=[
+            go.Heatmap(
+                z=z,
+                x=labels,
+                y=labels,
+                zmin=-1.0,
+                zmax=1.0,
+                colorscale="RdBu",
+                reversescale=True,
+                texttemplate="%{z:.2f}",
+                textfont={"size": 15, "color": "#f0f0f0"},
+                hovertemplate="%{x} vs %{y}<br>ρ=%{z:.4f}<extra></extra>",
+            )
+        ]
+    )
+    figure.update_layout(
+        title="大类资产收益率相关性矩阵 (Correlation Matrix)",
+        height=560,
+        margin={"l": 28, "r": 28, "t": 56, "b": 110},
+        template="plotly_dark",
+        xaxis={
+            "side": "bottom",
+            "tickangle": -32,
+            "tickfont": {"size": 13},
+        },
+        yaxis={
+            "autorange": "reversed",
+            "tickfont": {"size": 13},
+        },
+    )
+    return figure
+
+
+def build_tab3_portfolio_backtest_figure(bt_df: pd.DataFrame) -> Any:
+    """最优组合与等权组合的归一化净值曲线。"""
+    go, _ = _load_plotly_modules()
+    idx = bt_df.index
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=idx,
+            y=bt_df["Optimal_Portfolio"],
+            mode="lines",
+            name="最优组合（最大夏普）",
+            line={"width": 2.4, "color": "#ff1744"},
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=idx,
+            y=bt_df["Equal_Weight_Portfolio"],
+            mode="lines",
+            name="等权重组合",
+            line={"width": 2.0, "color": "#888888"},
+        )
+    )
+    figure.update_layout(
+        title={
+            "text": "历史净值回测（样本首日归一为 1）",
+            "y": 0.97,
+            "x": 0.5,
+            "xanchor": "center",
+            "yanchor": "top",
+        },
+        height=500,
+        margin={"l": 56, "r": 28, "t": 64, "b": 96},
+        template="plotly_dark",
+        hovermode="x unified",
+        xaxis_title="日期",
+        yaxis_title="净值",
+        legend={
+            "orientation": "h",
+            "yanchor": "top",
+            "y": -0.22,
+            "xanchor": "center",
+            "x": 0.5,
+            "bgcolor": "rgba(0,0,0,0.35)",
+        },
+    )
+    return figure
+
+
 def _sync_sidebar_state(streamlit: Any, asset_type: str) -> None:
     """让侧边栏默认值在资产类型切换时保持联动。"""
     session_state = streamlit.session_state
@@ -1327,8 +1417,12 @@ def render_app() -> None:
                     streamlit.caption(
                         "联合样本中日收益需各列同时非缺失；重叠过少或序列近似线性相关时优化可能失败。"
                     )
+                    r_joint = clean_joint_returns(returns_wide)
+                    corr_df = r_joint.corr(method="pearson")
+                    fig_corr = build_tab3_correlation_heatmap(corr_df)
+                    streamlit.plotly_chart(fig_corr, use_container_width=True)
                     ef_res: EfficientFrontierResult = generate_efficient_frontier(
-                        returns_wide,
+                        r_joint,
                         num_portfolios=5000,
                         risk_free_rate=RISK_FREE_RATE,
                         trading_days=TRADING_DAYS,
@@ -1339,10 +1433,18 @@ def render_app() -> None:
                     w_best = ef_res.weights[ef_res.best_sharpe_idx]
                     weights_df = pd.DataFrame(
                         [w_best],
-                        columns=list(returns_wide.columns),
+                        columns=list(r_joint.columns),
                     )
                     streamlit.markdown("**最大夏普比率组合的权重**")
                     streamlit.dataframe(weights_df, use_container_width=True)
+                    streamlit.markdown("")
+                    streamlit.markdown("**净值回测曲线**")
+                    streamlit.caption(
+                        "上图权重对应红色曲线；灰色为等权基准；与热力图、前沿共用同一联合收益样本。"
+                    )
+                    bt_df = backtest_portfolio(r_joint, w_best)
+                    fig_bt = build_tab3_portfolio_backtest_figure(bt_df)
+                    streamlit.plotly_chart(fig_bt, use_container_width=True)
             except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
                 streamlit.error(format_diagnosis_user_message(exc))
 
