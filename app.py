@@ -201,6 +201,29 @@ def format_asset_guide_markdown(asset_type: str) -> str:
     ) % (title, g["kind"], g["social"], g["math"], g["examples"])
 
 
+def build_ef_multi_asset_codes_reference_df() -> pd.DataFrame:
+    """Tab3 有效前沿多标的：类型键、默认代码与示例，供前端表格展示。"""
+    rows: list[dict[str, str]] = []
+    for key in SUPPORTED_ASSET_TYPES:
+        default_sym = str(DEFAULT_SYMBOLS.get(key, "") or "").strip()
+        g = ASSET_TYPE_GUIDES.get(key, {})
+        examples_raw = str(g.get("examples", "") or "")
+        examples_plain = examples_raw.replace("`", "")
+        wide_example = ""
+        if default_sym:
+            wide_example = "%s,%s" % (key, default_sym)
+        rows.append(
+            {
+                "类型键（小写）": key,
+                "资产名称": ASSET_LABELS.get(key, key),
+                "默认代码": default_sym or "—",
+                "宽表列名示例": wide_example or "—",
+                "代码示例与说明": examples_plain or "—",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _identity_cache_data(*args: Any, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """在未安装 Streamlit 时提供无副作用的缓存装饰器占位。"""
 
@@ -1073,23 +1096,116 @@ def build_tab3_efficient_frontier_figure(ef: EfficientFrontierResult) -> Any:
     return figure
 
 
+def _relative_luminance_srgb_255(r: float, g: float, b: float) -> float:
+    """WCAG 2.1 相对亮度，输入 sRGB 通道 0–255。"""
+    def channel_lin(x: float) -> float:
+        x = x / 255.0
+        return x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4
+
+    return (
+        0.2126 * channel_lin(r)
+        + 0.7152 * channel_lin(g)
+        + 0.0722 * channel_lin(b)
+    )
+
+
+def _relative_luminance_from_plotly_color(color: object) -> float:
+    """从 Plotly ``sample_colorscale`` 等返回的颜色字符串估计相对亮度 (0–1)。"""
+    s = str(color).strip()
+    if not s:
+        return 0.5
+    if s.startswith("#"):
+        hex_s = s[1:]
+        if len(hex_s) >= 6:
+            r = int(hex_s[0:2], 16)
+            g = int(hex_s[2:4], 16)
+            b = int(hex_s[4:6], 16)
+            return _relative_luminance_srgb_255(float(r), float(g), float(b))
+        return 0.5
+    if s.startswith("rgb"):
+        inner = s.split("(", 1)[1].rsplit(")", 1)[0]
+        parts = [p.strip() for p in inner.split(",")]
+        if len(parts) >= 3:
+            r, g, b = float(parts[0]), float(parts[1]), float(parts[2])
+            return _relative_luminance_srgb_255(r, g, b)
+    return 0.45
+
+
+def _correlation_heatmap_text_colors(
+    z: np.ndarray,
+    zmin: float,
+    zmax: float,
+    *,
+    colorscale: str,
+    reversescale: bool,
+) -> list[list[str]]:
+    """与 Heatmap 相同色标采样单元填充色；格偏亮则用黑字，否则白字。"""
+    pc = _load_optional_dependency("plotly.colors", install_name="plotly")
+    nrows, ncols = z.shape
+    span = zmax - zmin
+    text_colors: list[list[str]] = []
+    for i in range(nrows):
+        row_colors: list[str] = []
+        for j in range(ncols):
+            val = float(z[i, j])
+            if not math.isfinite(val) or span == 0.0:
+                row_colors.append("#fafafa")
+                continue
+            t = (val - zmin) / span
+            if t < 0.0:
+                t = 0.0
+            elif t > 1.0:
+                t = 1.0
+            if reversescale:
+                t = 1.0 - t
+            sampled = pc.sample_colorscale(colorscale, [t])
+            bg_lum = _relative_luminance_from_plotly_color(sampled[0])
+            row_colors.append("#111111" if bg_lum > 0.56 else "#fafafa")
+        text_colors.append(row_colors)
+    return text_colors
+
+
 def build_tab3_correlation_heatmap(corr_df: pd.DataFrame) -> Any:
     """大类资产收益率皮尔逊相关热力图（z∈[-1,1]，RdBu 发散）。"""
     go, _ = _load_plotly_modules()
     labels = list(corr_df.columns)
     z = corr_df.values.astype(float, copy=False)
+    zmin, zmax = -1.0, 1.0
+    text_colors = _correlation_heatmap_text_colors(
+        z,
+        zmin,
+        zmax,
+        colorscale="RdBu",
+        reversescale=True,
+    )
+    # Plotly Heatmap 的 textfont.color 不支持按单元格二维数组，改用 layout.annotations 逐格写字与配色。
+    nrows, ncols = z.shape
+    cell_annotations: list[dict[str, Any]] = []
+    for i in range(nrows):
+        for j in range(ncols):
+            val = float(z[i, j])
+            label = "—" if not math.isfinite(val) else "%.2f" % val
+            cell_annotations.append(
+                {
+                    "x": labels[j],
+                    "y": labels[i],
+                    "xref": "x",
+                    "yref": "y",
+                    "text": label,
+                    "showarrow": False,
+                    "font": {"size": 15, "color": text_colors[i][j]},
+                }
+            )
     figure = go.Figure(
         data=[
             go.Heatmap(
                 z=z,
                 x=labels,
                 y=labels,
-                zmin=-1.0,
-                zmax=1.0,
+                zmin=zmin,
+                zmax=zmax,
                 colorscale="RdBu",
                 reversescale=True,
-                texttemplate="%{z:.2f}",
-                textfont={"size": 15, "color": "#f0f0f0"},
                 hovertemplate="%{x} vs %{y}<br>ρ=%{z:.4f}<extra></extra>",
             )
         ]
@@ -1099,6 +1215,7 @@ def build_tab3_correlation_heatmap(corr_df: pd.DataFrame) -> Any:
         height=560,
         margin={"l": 28, "r": 28, "t": 56, "b": 110},
         template="plotly_dark",
+        annotations=cell_annotations,
         xaxis={
             "side": "bottom",
             "tickangle": -32,
@@ -1386,6 +1503,13 @@ def render_app() -> None:
             "每行一条：`资产类型,代码` 或 `资产类型|代码`（与侧栏类型键一致，如 `etf`、`us_stock`、`crypto`）；"
             "同一行可用英文分号 `;` 写多条。列名为 `类型:代码`（如 `crypto:BTC/USDT`）。"
             "若含 **crypto**，侧栏代理与「加密货币」模式相同（请将侧栏资产类型选为加密货币以填写代理）。"
+        )
+        streamlit.markdown("**资产类型与代码对照**（输入格式：`类型键,代码`；下列默认代码与侧栏「代码」默认值一致）")
+        streamlit.dataframe(
+            build_ef_multi_asset_codes_reference_df(),
+            use_container_width=True,
+            hide_index=True,
+            height=min(520, 40 + len(SUPPORTED_ASSET_TYPES) * 36),
         )
         ef_default = "\n".join(
             (
