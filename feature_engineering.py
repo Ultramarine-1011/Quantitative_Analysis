@@ -95,6 +95,7 @@ class BaseFeatureEngineer(ABC):
         validated.index = pd.DatetimeIndex(validated.index)
         validated.index.name = validated.index.name or "Date"
 
+        # 把所有 OHLCV 列统一转成 float64，后续 rolling/pct_change 才能稳定计算。
         numeric_ohlcv = (
             validated.loc[:, required_columns]
             .replace([np.inf, -np.inf], np.nan)
@@ -210,9 +211,11 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
         price = self._get_price_series(validated, price_col)
 
         if log:
+            # 对数收益率 log(P_t/P_{t-k}) 在多期相加时更方便，常用于波动率建模。
             returns = np.log(price.div(price.shift(periods)))
             returns.name = "log_return_%d" % periods
         else:
+            # 普通收益率 (P_t/P_{t-k}-1) 更直观，适合展示累计涨跌幅。
             returns = price.pct_change(periods=periods)
             returns.name = "return_%d" % periods
 
@@ -257,6 +260,7 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
         window = self._validate_positive_int(window, "window")
         price = self._get_price_series(validated, price_col)
 
+        # rolling(window) 表示“每一天向前看 window 个交易日”。
         sma = price.rolling(window=window, min_periods=window).mean()
         sma.name = "sma_%d" % window
         return sma.astype("float64")
@@ -308,6 +312,7 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
         window = self._validate_positive_int(window, "window")
         trading_days = self._validate_positive_int(trading_days, "trading_days")
 
+        # 历史波动率先看日收益的离散程度，再乘 sqrt(252) 转为年化口径。
         log_returns = self.compute_returns(validated, price_col=price_col, periods=1, log=True)
         volatility = log_returns.rolling(window=window, min_periods=window).std()
         if annualize:
@@ -419,6 +424,7 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
         num_std = self._validate_positive_float(num_std, "num_std")
         price = self._get_price_series(validated, price_col)
 
+        # 布林带 = 移动均线 +/- N 倍滚动标准差，用来观察价格是否偏离近期均值。
         rolling_mean = price.rolling(window=window, min_periods=window).mean()
         rolling_std = price.rolling(window=window, min_periods=window).std()
 
@@ -468,6 +474,7 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
         validated = self.validate_input(df)
         price = self._get_price_series(validated, price_col)
 
+        # cummax 记录从样本开始到当前日期的历史最高价。
         running_peak = price.cummax()
         drawdown = 1.0 - price.div(running_peak)
         drawdown.name = "drawdown"
@@ -599,6 +606,7 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
             raise ValueError("sma_short_window must be smaller than sma_long_window.")
 
         transformed = self.validate_input(df)
+        # transform 是“批量生产指标”的入口：先分别计算序列，再拼回同一张表。
         short_sma = self.compute_sma(
             transformed, price_col=price_col, window=sma_short_window
         )
@@ -632,6 +640,7 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
         transformed.attrs["max_drawdown"] = self.compute_max_drawdown(
             transformed, price_col=price_col
         )
+        # attrs 保存本次特征生成参数，图表和报告可以据此找到对应列名。
         transformed.attrs["feature_summary"] = {
             "price_col": price_col,
             "sma_short_window": sma_short_window,

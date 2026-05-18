@@ -162,6 +162,7 @@ class MplfinanceVisualizer(BaseVisualizer):
         """根据 ``feature_summary`` 或默认约定推断特征列名。"""
         feature_summary = df.attrs.get("feature_summary", {})
 
+        # 特征工程会把窗口参数写到 attrs；绘图层据此找到实际列名。
         sma_short_window = int(feature_summary.get("sma_short_window", 20))
         sma_long_window = int(feature_summary.get("sma_long_window", 60))
         volatility_window = int(feature_summary.get("volatility_window", 20))
@@ -235,6 +236,7 @@ class MplfinanceVisualizer(BaseVisualizer):
         all_indicator_columns = resolved_main_cols + resolved_lower_cols
         validated = self._coerce_indicator_columns(df, all_indicator_columns)
 
+        # 颜色和线宽固定下来，保证 CLI 图表在不同运行环境下视觉含义一致。
         color_map = {
             inferred["sma_short"]: "#f39c12",
             inferred["sma_long"]: "#1f4e79",
@@ -255,6 +257,7 @@ class MplfinanceVisualizer(BaseVisualizer):
 
         addplots: list[object] = []
         for column in resolved_main_cols:
+            # 主图指标与 K 线共用价格轴，适合叠加均线和布林带。
             addplots.append(
                 mpf.make_addplot(
                     validated[column],
@@ -274,6 +277,7 @@ class MplfinanceVisualizer(BaseVisualizer):
             if column == inferred["volatility"]:
                 ylabel = "Ann.Vol"
             elif column == inferred["drawdown"]:
+                # 回撤按负值画在 0 轴下方，更符合“从高点下跌”的视觉直觉。
                 series = -series.abs()
                 drawdown_plot_column = column
                 ylabel = "Drawdown"
@@ -386,6 +390,7 @@ class MplfinanceVisualizer(BaseVisualizer):
 
         validated = self.validate_input(df)
         mpf, plt = self._load_plot_dependencies()
+        # addplots 是 mplfinance 的附加图层机制，用来叠加均线、布林带和副图指标。
         addplots, metadata = self._build_addplots(
             validated,
             main_panel_cols=main_panel_cols,
@@ -414,6 +419,7 @@ class MplfinanceVisualizer(BaseVisualizer):
         if volume:
             plot_kwargs["volume_panel"] = 1
 
+        # returnfig=True 让函数返回 Figure，便于测试、保存或由调用方继续加工。
         figure, axes = mpf.plot(
             plot_df,
             **plot_kwargs,
@@ -425,6 +431,7 @@ class MplfinanceVisualizer(BaseVisualizer):
         bollinger_lower = plot_df[metadata["bollinger_lower_col"]]
         valid_band_mask = bollinger_upper.notna() & bollinger_lower.notna()
         if valid_band_mask.any():
+            # 淡蓝色填充布林带区域，帮助初学者看到“正常波动区间”。
             main_axis.fill_between(
                 x_positions,
                 bollinger_lower.to_numpy(dtype=float),
@@ -449,6 +456,7 @@ class MplfinanceVisualizer(BaseVisualizer):
         drawdown_display = -plot_df[metadata["drawdown_col"]].abs()
         valid_drawdown_mask = drawdown_display.notna()
         if valid_drawdown_mask.any():
+            # 红色区域强调历史回撤深度，越向下表示离历史高点越远。
             drawdown_axis.fill_between(
                 x_positions,
                 drawdown_display.to_numpy(dtype=float),
@@ -471,10 +479,12 @@ class MplfinanceVisualizer(BaseVisualizer):
 
         if savepath is not None:
             output_path = Path(savepath).expanduser()
+            # 保存前创建目录，方便命令行用户直接传入新的输出路径。
             output_path.parent.mkdir(parents=True, exist_ok=True)
             figure.savefig(str(output_path), dpi=160, bbox_inches="tight")
 
         if show:
+            # CLI 场景默认弹出窗口；测试或批处理可传 show=False 禁用。
             plt.show()
 
         return figure

@@ -123,6 +123,8 @@ if TYPE_CHECKING:
 
 
 DateLike = Union[str, datetime, pd.Timestamp]
+# OHLCV 是金融行情最常见的五列：开盘、最高、最低、收盘、成交量。
+# 项目后续的特征工程和图表都依赖这五列名称完全一致。
 REQUIRED_OHLCV_COLUMNS: tuple[str, ...] = ("Open", "High", "Low", "Close", "Volume")
 
 # 东方财富 push2his 直连：浏览器风格头可降低被边缘节点直接断连的概率；
@@ -145,6 +147,7 @@ _EASTMONEY_KLINE_APIS: tuple[str, ...] = (
 )
 
 A_SHARE_COLUMN_MAPPING: dict[str, str] = {
+    # 第三方接口可能返回中文列名，也可能返回英文列名；统一映射到项目内部标准名。
     "日期": "Date",
     "date": "Date",
     "Date": "Date",
@@ -292,6 +295,7 @@ class BaseDataFetcher(ABC):
                     )
                 return data
             except EmptySymbolDataError:
+                # 空数据通常说明代码/资产类型不匹配，重试没有意义，直接交给界面提示用户。
                 raise
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -366,9 +370,11 @@ class BaseDataFetcher(ABC):
         if df.empty:
             raise EmptySymbolDataError("Input DataFrame is empty.")
 
+        # 先把各种来源的列名改成统一名字，后面的清洗逻辑就不用关心原始数据源差异。
         normalized = df.rename(columns=dict(column_mapping)).copy()
 
         if "Date" in normalized.columns:
+            # 有些接口把日期作为普通列返回；项目内部统一把日期放到索引上。
             normalized["Date"] = pd.to_datetime(normalized["Date"], errors="coerce")
             normalized = normalized.dropna(subset=["Date"])
             if normalized.empty:
@@ -391,12 +397,15 @@ class BaseDataFetcher(ABC):
                 % ", ".join(missing_columns)
             )
 
+        # 只保留核心行情列，避免成交额、涨跌幅等来源特有字段影响下游契约。
         normalized = normalized.loc[:, REQUIRED_OHLCV_COLUMNS].copy()
         for column in REQUIRED_OHLCV_COLUMNS:
             normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
 
         normalized = normalized.sort_index()
+        # 同一天若有重复记录，保留最后一条，通常代表数据源较新的修正值。
         normalized = normalized[~normalized.index.duplicated(keep="last")]
+        # 前向填充用于补中间偶发缺口；开头仍缺失的行会在下一步删除。
         normalized = normalized.ffill()
         normalized = normalized.dropna(subset=list(REQUIRED_OHLCV_COLUMNS))
         if normalized.empty:
@@ -554,6 +563,7 @@ class EastMoneyDailyKlineClient:
     ) -> pd.DataFrame:
         """多域名轮询东方财富 K 线（在新浪/腾讯与 AKShare 主源之后调用）。"""
         last_exc: BaseException | None = None
+        # 东财同一个接口有多个可用域名；逐个尝试可绕过单个节点抖动或限流。
         for api_url in _EASTMONEY_KLINE_APIS:
             try:
                 df = self._fetch_daily_klines_one_host(
@@ -607,6 +617,7 @@ class EastMoneyDailyKlineClient:
         def _dataframe_from_kline_payload(payload: dict[str, Any]) -> pd.DataFrame:
             if not (payload.get("data") and payload["data"].get("klines")):
                 return pd.DataFrame()
+            # 东财 klines 每行是逗号分隔字符串，这里拆成与 AKShare 相近的中文列名。
             rows = [item.split(",") for item in payload["data"]["klines"]]
             temp_df = pd.DataFrame(rows)
             temp_df.columns = [
@@ -657,6 +668,7 @@ class EastMoneyDailyKlineClient:
         market_ids: list[int] = [primary_id]
         alternate_id = 1 - primary_id if primary_id in (0, 1) else None
         if alternate_id is not None:
+            # 本地规则可能判断错沪/深市场，失败时再用另一个市场前缀试一次。
             market_ids.append(alternate_id)
 
         def pull_market_ids(get_with_params: Callable[[dict[str, str]], Any]) -> pd.DataFrame:
@@ -714,6 +726,7 @@ class EastMoneyDailyKlineClient:
 
         for te in trust_sequence:
             try:
+                # trust_env 控制是否读取系统代理；两种模式都试，兼容直连和必须代理的网络。
                 client_kwargs: dict[str, Any] = {
                     "timeout": 30.0,
                     "trust_env": te,
@@ -738,6 +751,7 @@ class EastMoneyDailyKlineClient:
                     raise
 
             try:
+                # httpx 失败后再用 requests 试一次，减少单一 HTTP 客户端兼容性问题。
                 session = requests.Session()
                 session.trust_env = te
                 session.headers.clear()
@@ -755,6 +769,7 @@ class EastMoneyDailyKlineClient:
 
         stdlib_status: int | None = None
         try:
+            # 最后用标准库 http.client 兜底，避开第三方 HTTP 库的部分协议差异。
             out, stdlib_status = pull_market_ids_stdlib()
             if not out.empty:
                 return out
@@ -792,6 +807,7 @@ class AKShareFetcher(BaseDataFetcher):
     ) -> None:
         _configure_windows_proxy_behavior(use_system_proxy=use_system_proxy)
         super().__init__(max_retries=max_retries, retry_delay=retry_delay)
+        # 默认绕开系统代理；若用户显式允许系统代理，则保留 AKShare 原始网络行为。
         if use_system_proxy is True:
             self._neutralize_env_for_ak_primary = False
         elif use_system_proxy is False:
@@ -855,6 +871,7 @@ class AKShareFetcher(BaseDataFetcher):
         try:
             if equity_route == "etf":
                 try:
+                    # ETF 先尝试新浪源，避免东方财富域名不可达时整个链路失败。
                     sina = importlib.import_module("akshare.fund.fund_etf_sina")
                     raw_s = sina.fund_etf_hist_sina(symbol=qq)
                     if not raw_s.empty and "volume" in raw_s.columns:
@@ -864,6 +881,7 @@ class AKShareFetcher(BaseDataFetcher):
                 except Exception:  # noqa: BLE001
                     pass
             mod_tx = importlib.import_module("akshare.stock_feature.stock_hist_tx")
+            # 腾讯源覆盖股票/部分 ETF，作为进入 AKShare 东财主源前的轻量备用路径。
             raw_tx = mod_tx.stock_zh_a_hist_tx(
                 symbol=qq,
                 start_date=start_s,
@@ -894,6 +912,7 @@ class AKShareFetcher(BaseDataFetcher):
             if not alt.empty:
                 return alt
 
+            # 2) AKShare 主路径。若上游返回空表，后面仍会尝试东财直连。
             first_error: BaseException | None = None
             try:
                 via_ak = fetch_primary()
@@ -905,6 +924,7 @@ class AKShareFetcher(BaseDataFetcher):
             except Exception as exc:  # noqa: BLE001
                 first_error = exc
 
+            # 3) 东方财富直连接口作为最终行情兜底，失败时汇总前面每一步的错误。
             em_fail: BaseException | None = None
             try:
                 direct = self._eastmoney.fetch_daily_klines(
@@ -1245,6 +1265,7 @@ def _filter_ohlcv_by_user_date_range(
     end_ts = _coerce_analysis_timestamp(end_date, "end_date")
     if start_ts > end_ts:
         raise ValueError("start_date must be earlier than or equal to end_date.")
+    # 所有数据源先清洗成完整时间序列，再按用户真正选择的日期窗口裁剪。
     filtered = df.loc[(df.index >= start_ts) & (df.index <= end_ts)].copy()
     if filtered.empty:
         raise ValueError(
@@ -1334,6 +1355,7 @@ def _fund_frame_to_sorted_nav(
         val_col = _fund_pick_cumulative_value_column(df, date_col)
     else:
         val_col = _fund_pick_primary_value_column(df, date_col)
+    # 基金接口返回的是净值序列，不是真正 K 线；先整理成日期 + 净值两列。
     out = pd.DataFrame(
         {
             "_dt": pd.to_datetime(df[date_col], errors="coerce"),
@@ -1359,6 +1381,7 @@ def _fund_build_pseudo_ohlcv_raw(close_series: pd.Series) -> pd.DataFrame:
         raise EmptySymbolDataError("No valid cumulative NAV points for pseudo OHLCV.")
     close = frame["收盘"].astype("float64")
     zeros = pd.Series(0.0, index=frame.index, dtype="float64")
+    # 公募基金没有日内开高低和成交量，这里用净值复制 O/H/L/C，成交量置 0。
     return pd.DataFrame(
         {
             "日期": frame["_dt"],
@@ -1454,6 +1477,7 @@ def get_fund_data(fund_code: str, start_date: DateLike, end_date: DateLike) -> p
     fetcher = AKShareFetcher(max_retries=3, retry_delay=1.0)
 
     if cum_col is not None:
+        # 优先使用同一张表里的累计净值列，避免多请求一次接口。
         cum_series = _fund_frame_to_sorted_nav(raw_unit, value_column=cum_col)
         cumulative_close = cum_series.set_index("_dt")["nav"]
         normalized = _fund_raw_to_normalized_ohlcv(fetcher, cumulative_close)
@@ -1720,6 +1744,7 @@ def _call_akshare(
     apply_default_network_proxy_policy()
     try:
         if _akshare_neutralize_proxy_like_fetcher():
+            # 与境内权益链路保持一致：默认临时屏蔽环境代理，降低坏代理导致的失败率。
             with _without_http_proxy_env():
                 return fn(*args, **kwargs)
         return fn(*args, **kwargs)
@@ -1735,6 +1760,7 @@ def _em_kline_frame_to_ohlcv_raw(df: pd.DataFrame) -> pd.DataFrame:
     """为缺少成交量列的东财 K 线表补 ``成交量``，再交给 ``A_SHARE_COLUMN_MAPPING`` 清洗。"""
     work = df.copy()
     if "成交量" not in work.columns:
+        # 指数、收益率等序列常没有成交量；补 0 是为了复用统一 OHLCV 契约。
         work["成交量"] = 0.0
     return work
 
@@ -1805,6 +1831,7 @@ def load_global_market_data(
         raise ValueError("代码不能为空。")
 
     if route_key == "us_stock":
+        # 美股和港股接口返回英文 OHLCV 列，可直接使用外盘映射清洗。
         raw = _call_akshare(
             "stock_us_daily(%r)" % sym,
             ak.stock_us_daily,
@@ -1829,6 +1856,7 @@ def load_global_market_data(
     elif route_key == "global_index":
         display_sym = sym.strip()
         if display_sym.startswith("."):
+            # 以点开头的美股指数代码走新浪接口，例如 .INX。
             raw = _call_akshare(
                 "index_us_stock_sina(%r)" % display_sym,
                 ak.index_us_stock_sina,
@@ -1838,6 +1866,7 @@ def load_global_market_data(
             atype = "global_index"
             caption = "美股指数（新浪）· 点"
         else:
+            # 常见简码先映射到东财接口需要的中文/英文指数名称。
             em_name = _resolve_global_index_em_name(display_sym)
             raw = _call_akshare(
                 "index_global_hist_em(%r)" % em_name,
@@ -1917,6 +1946,7 @@ def load_bond_data(
             raise EmptySymbolDataError("美债收益率解析后无有效行。")
         close = work["收盘"].astype("float64")
         zeros = pd.Series(0.0, index=work.index, dtype="float64")
+        # 美债收益率是“水平序列”，不是可交易价格；伪 OHLCV 只是为了复用图表和指标管线。
         pseudo = pd.DataFrame(
             {
                 "日期": work["日期"],

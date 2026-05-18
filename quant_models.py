@@ -57,6 +57,7 @@ def normalize_close_to_base_one(
         raise ValueError(
             "First closing price must be finite, non-NaN, and non-zero for base-one normalization."
         )
+    # 归一化后首日净值为 1，方便把不同价格量级的资产画在同一张图上比较。
     return close.astype(float) / float(first)
 
 
@@ -66,6 +67,7 @@ def _iqr_cross_check(sample_1d: np.ndarray) -> None:
     sample_1d = sample_1d[np.isfinite(sample_1d)]
     if sample_1d.size < 2:
         return
+    # IQR 是 75% 分位数与 25% 分位数的距离，可衡量样本中间 50% 的离散程度。
     q75, q25 = np.percentile(sample_1d, [75.0, 25.0])
     iqr_np = float(q75 - q25)
     iqr_sp = float(stats.iqr(sample_1d, rng=(25, 75)))
@@ -153,6 +155,7 @@ def run_monte_carlo_gbm(
     prices = prices.dropna()
     if prices.shape[0] < 3:
         raise ValueError("Need at least 3 valid closing prices to estimate GBM parameters.")
+    # 用历史日对数收益估计 GBM 的漂移 mu 与波动 sigma。
     log_ret = np.log(prices / prices.shift(1)).dropna()
     if log_ret.shape[0] < 2:
         raise ValueError("Insufficient log returns after differencing.")
@@ -165,11 +168,13 @@ def run_monte_carlo_gbm(
         raise ValueError("Last closing price S0 must be finite and positive.")
 
     rng = np.random.default_rng(random_state)
+    # 每条路径每天抽一个标准正态随机数，代表当天不可预测的市场冲击。
     z = rng.standard_normal(size=(num_simulations, days))
     increments = (mu - 0.5 * sigma**2) + sigma * z
     log_levels = np.log(s0) + np.cumsum(increments, axis=1)
     paths = np.exp(log_levels)
 
+    # 对所有模拟路径按日期取分位数，得到未来价格的概率区间。
     p05, p50, p95 = (
         np.percentile(paths, q, axis=0) for q in (5.0, 50.0, 95.0)
     )
@@ -215,6 +220,7 @@ def clean_joint_returns(returns_df: pd.DataFrame, min_history: int = 30) -> pd.D
     ``to_numeric`` → 按行 ``dropna(how="all")`` → 再 ``dropna()``（任列为 NaN 的行删除），
     并在关键步骤校验 ``min_history`` 与至少 2 列资产。
     """
+    # 多资产组合要求每个交易日都有所有资产收益，缺一个就无法正确相乘求组合收益。
     r = returns_df.copy()
     r = r.apply(pd.to_numeric, errors="coerce")
     r = r.dropna(how="all")
@@ -258,6 +264,7 @@ def backtest_portfolio(
         raise ValueError(
             f"optimal_weights length ({w.size}) must match number of assets ({r.shape[1]})."
         )
+    # 权重归一化保证所有资产权重加总为 1，即“满仓”组合。
     w = w / w.sum()
     opt_daily = r.values @ w
     eq_daily = r.mean(axis=1).values
@@ -327,6 +334,7 @@ def generate_efficient_frontier(
     if not np.isfinite(x).any():
         raise ValueError("Return matrix contains no finite values.")
 
+    # 协方差矩阵描述资产之间“同涨同跌”的程度，是组合波动率的核心输入。
     cov = np.cov(x, rowvar=False)
     if cov.shape != (n_assets, n_assets):
         raise ValueError("Internal error: covariance shape mismatch.")
@@ -342,8 +350,10 @@ def generate_efficient_frontier(
         )
 
     rng = np.random.default_rng(random_state)
+    # Dirichlet 抽样天然生成非负且总和为 1 的随机权重。
     w = rng.dirichlet(np.ones(n_assets), size=num_portfolios).astype(float, copy=False)
 
+    # 矩阵乘法一次性算出所有随机组合的日收益，比逐个组合循环更高效。
     port_daily = x @ w.T
     mean_d = np.mean(port_daily, axis=0)
     std_d = np.std(port_daily, axis=0, ddof=1)

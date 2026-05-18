@@ -14,6 +14,7 @@ from data_fetcher import (
 )
 
 CHINA_EQUITY_ASSET_TYPES: tuple[str, ...] = ("etf", "ashare")
+# 这些映射把程序内部使用的短 key 转成界面/报错里更容易理解的中文名称。
 CHINA_EQUITY_LABELS: dict[str, str] = {
     "etf": "A股 ETF",
     "ashare": "A股个股 (A-Share Stock)",
@@ -42,6 +43,7 @@ def coerce_analysis_date(value: object, field_name: str) -> pd.Timestamp:
     if pd.isna(ts):
         raise ValueError("%s 不是合法日期: %r" % (field_name, value))
     if ts.tzinfo is not None:
+        # 行情日线只关心“哪一天”，去掉时区可避免不同入口比较日期时报错。
         ts = ts.tz_localize(None)
     return ts.normalize()
 
@@ -65,6 +67,7 @@ def resolve_analysis_date_window(
     lookback_years: int = 3,
 ) -> tuple[pd.Timestamp, pd.Timestamp]:
     """解析 CLI/Web 共用的默认区间：缺省结束日为今天，缺省开始日为向前 ``lookback_years`` 年。"""
+    # 入口层可以不传日期；这里集中生成默认窗口，避免 CLI 和 Web 各自实现一套规则。
     if end_date is None:
         end_ts = pd.Timestamp.today().normalize()
     else:
@@ -117,9 +120,11 @@ def load_china_equity_ohlcv(
     asset_key = normalize_china_equity_asset_type(asset_type)
     sym = validate_china_equity_symbol(asset_key, symbol)
     start_ts, end_ts = validate_analysis_date_range(start_date, end_date)
+    # UI 里叫 ashare，数据层实际路由叫 stock；集中转换可减少下游分支。
     route = fetch_route_for_china_equity(asset_key)
     client = fetcher or AKShareFetcher(max_retries=3, retry_delay=1.0)
     df = client.fetch_china_equity(route, sym, start=start_ts, end=end_ts, adjust=adjust)
+    # attrs 是 Pandas 给 DataFrame 附带元信息的位置，不影响表格列本身。
     df.attrs["asset_type"] = asset_key
     df.attrs["symbol"] = sym
     return df
@@ -127,6 +132,7 @@ def load_china_equity_ohlcv(
 
 def format_diagnosis_user_message(exc: BaseException) -> str:
     """将异常转换为用户可见文案（多资产诊断统一入口）。"""
+    # 这里把技术异常归并为用户能理解的提示，避免把接口栈信息直接暴露到界面。
     if isinstance(exc, EmptySymbolDataError):
         return EMPTY_SYMBOL_FETCH_HINT
     if isinstance(

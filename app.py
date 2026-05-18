@@ -66,6 +66,7 @@ SUPPORTED_ASSET_TYPES: tuple[str, ...] = (
     "creit",
     "fx",
 )
+# UI 显示中文标签，内部仍使用稳定的英文 key 进行路由和缓存。
 ASSET_LABELS: dict[str, str] = {
     **CHINA_EQUITY_LABELS,
     "mutual_fund": "公募基金 (Mutual Fund)",
@@ -311,9 +312,11 @@ def _normalize_ohlcv(df: pd.DataFrame, column_mapping: dict[str, str]) -> pd.Dat
     if df.empty:
         raise ValueError("原始数据为空。")
 
+    # Web 侧保留一份轻量清洗函数，方便加密等非 data_fetcher 路由复用统一契约。
     normalized = df.rename(columns=column_mapping).copy()
 
     if "Date" in normalized.columns:
+        # 统一把日期列移到索引，Plotly 和特征工程都按时间索引工作。
         normalized["Date"] = pd.to_datetime(normalized["Date"], errors="coerce")
         normalized = normalized.dropna(subset=["Date"])
         if normalized.empty:
@@ -329,6 +332,7 @@ def _normalize_ohlcv(df: pd.DataFrame, column_mapping: dict[str, str]) -> pd.Dat
     if missing_columns:
         raise ValueError("标准化后缺少 OHLCV 列: %s" % ", ".join(missing_columns))
 
+    # 丢弃数据源额外字段，只把 Open/High/Low/Close/Volume 交给下游指标层。
     normalized = normalized.loc[:, list(REQUIRED_OHLCV_COLUMNS)].copy()
     for column in REQUIRED_OHLCV_COLUMNS:
         normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
@@ -336,6 +340,7 @@ def _normalize_ohlcv(df: pd.DataFrame, column_mapping: dict[str, str]) -> pd.Dat
     normalized = normalized.replace([float("inf"), float("-inf")], pd.NA)
     normalized = normalized.sort_index()
     normalized = normalized[~normalized.index.duplicated(keep="last")]
+    # 中间缺口用前值补齐，开头仍无法补齐的行会被 dropna 删除。
     normalized = normalized.ffill()
     normalized = normalized.dropna(subset=list(REQUIRED_OHLCV_COLUMNS))
     if normalized.empty:
@@ -449,6 +454,7 @@ def _fetch_crypto_ohlcv_rows(
 
         rows.extend(batch)
         last_ts = int(batch[-1][0])
+        # 下一页从最后一根 K 线之后开始，避免重复抓取同一天。
         next_since = last_ts + timeframe_ms
         if next_since <= since_ms:
             break
@@ -507,6 +513,7 @@ def _fetch_crypto_data(
 
     proxies = _build_ccxt_proxy_config(proxy_url)
     if proxies is not None:
+        # 代理只注入 CCXT 交易所客户端，不影响其他资产类型的数据源。
         exchange_config["proxies"] = proxies
 
     exchange = ccxt.binance(exchange_config)
@@ -537,6 +544,7 @@ def load_asset_data(
     if asset_key not in SUPPORTED_ASSET_TYPES:
         raise ValueError("不支持的资产类型: %s" % asset_type)
 
+    # 这里是 Web 应用的数据总路由：不同资产来源不同，但返回值都必须是 OHLCV。
     if asset_key == "etf":
         return _fetch_etf_data(symbol=symbol, start_date=start_date, end_date=end_date)
     if asset_key == "ashare":
@@ -567,6 +575,7 @@ def load_asset_data(
             col = sym
         else:
             col = US_TREASURY_YIELD_10Y_CN_COL
+        # 美债收益率用列名选择期限；默认 10Y，也允许用户填完整列名。
         return load_bond_data(
             "us_yield",
             "",
@@ -671,6 +680,7 @@ def load_multi_leg_close_wide(
 
     close_frames: list[pd.Series] = []
     for asset_key, symbol in legs_tuple:
+        # 每条 leg 独立拉取，再统一成 Close 宽表，列名包含类型以避免代码冲突。
         col = multi_asset_leg_column_name(asset_key, symbol)
         df_leg = load_asset_data(
             asset_type=asset_key,
@@ -693,6 +703,7 @@ def load_multi_leg_close_wide(
         close_frames.append(close.rename(col))
 
     wide = pd.concat(close_frames, axis=1, join="outer")
+    # 不同市场交易日不同，先 outer 对齐再前向填充，以保留尽可能多的联合样本。
     wide = wide.sort_index().ffill()
 
     for col in wide.columns:
@@ -719,6 +730,7 @@ def _compute_cagr(close: pd.Series) -> float:
     years = elapsed_days / 365.25
     if years <= 0:
         return float("nan")
+    # 与 CLI 一致：按自然日跨度折算年化复合增长率。
     return float((close.iloc[-1] / close.iloc[0]) ** (1.0 / years) - 1.0)
 
 
@@ -733,6 +745,7 @@ def _compute_sharpe_ratio(
     if log_returns.empty:
         return float("nan")
 
+    # Sharpe = 年化超额收益均值 / 超额收益波动率；这里用日对数收益口径。
     daily_rf_log = np.log1p(risk_free_rate) / float(trading_days)
     excess_log_returns = log_returns - daily_rf_log
     volatility = float(excess_log_returns.std())
@@ -774,6 +787,7 @@ def get_quant_metrics(
     """将 CLI 数学诊断逻辑迁移为 Web 指标字典输出。"""
     series_kind = str(df.attrs.get("series_kind", "price") or "price").strip().lower()
     engineer = OHLCVFeatureEngineer()
+    # 指标计算前先跑一遍特征工程，确保均线、布林带、回撤列都存在。
     featured_df = engineer.transform(df)
     featured_df.attrs.update(df.attrs)
     featured_df.attrs["series_kind"] = series_kind
@@ -797,6 +811,7 @@ def get_quant_metrics(
         "series_kind": series_kind,
     }
     if series_kind == "yield_level":
+        # 收益率水平不是资产净值，显示时需要换一套更准确的指标文案。
         metrics["metric_disclaimer"] = (
             "以下为收益率**水平**序列的统计（末/初比与波动），不代表债券持有期回报；"
             "夏普等指标基于水平序列的对数变化，仅作相对比较参考。"
@@ -843,6 +858,7 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
     show_volume_panel = not use_line and vol_max > 0.0
 
     if use_line:
+        # 基金净值和收益率水平没有真实 K 线含义，用折线图更直观。
         line_name = "累计净值" if asset_key == "mutual_fund" else "收盘序列"
         if series_kind == "yield_level":
             line_name = "收益率水平"
@@ -859,6 +875,7 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
             col=1,
         )
     elif show_volume_panel:
+        # 有成交量的价格资产使用上下双面板：上方 K 线，下方成交量。
         figure = make_subplots(
             rows=2,
             cols=1,
@@ -907,6 +924,7 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
     for column, trace_name, color in overlay_columns:
         if column not in df.columns:
             continue
+        # 均线和布林带都叠加在主图上，帮助观察趋势和价格偏离程度。
         figure.add_trace(
             go.Scatter(
                 x=df.index,
@@ -921,6 +939,7 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
         )
 
     if show_volume_panel:
+        # 收盘不低于开盘用绿色，反之用红色，符合常见行情图习惯。
         volume_colors = np.where(df["Close"] >= df["Open"], "#26a69a", "#ef5350")
         figure.add_trace(
             go.Bar(
@@ -1389,6 +1408,7 @@ def render_app() -> None:
     today = pd.Timestamp.today().normalize().date()
     default_start = (pd.Timestamp.today().normalize() - pd.DateOffset(years=LOOKBACK_YEARS)).date()
     streamlit.sidebar.header("参数设置")
+    # 侧边栏只收集“资产类型、代码、日期、代理”这些最小必要输入。
     asset_type = streamlit.sidebar.selectbox(
         "资产类型",
         options=list(SUPPORTED_ASSET_TYPES),
@@ -1448,6 +1468,7 @@ def render_app() -> None:
         if streamlit.button("显示归一化净值曲线", key="tab3_btn_normalize", use_container_width=True):
             try:
                 with streamlit.spinner("正在加载行情…"):
+                    # 进阶算法页也复用同一条 load_asset_data 数据入口，避免口径不一致。
                     df_norm = load_asset_data(
                         asset_type=asset_type,
                         symbol=symbol,
@@ -1472,6 +1493,7 @@ def render_app() -> None:
         if streamlit.button("运行 GBM 模拟", key="tab3_btn_gbm", use_container_width=True):
             try:
                 with streamlit.spinner("正在加载数据并模拟路径…"):
+                    # GBM 使用历史 Close 估计参数，输出的是模拟分布而不是确定预测。
                     df_gbm = load_asset_data(
                         asset_type=asset_type,
                         symbol=symbol,
@@ -1528,6 +1550,7 @@ def render_app() -> None:
             try:
                 legs = parse_multi_asset_legs(ef_legs_text)
                 with streamlit.spinner("正在拉取多标的收盘价并模拟组合…"):
+                    # 有效前沿需要多资产 Close 宽表，每列是一只资产的价格序列。
                     wide_close = load_multi_leg_close_wide(
                         legs,
                         start_date,
@@ -1580,6 +1603,7 @@ def render_app() -> None:
         else:
             try:
                 with streamlit.spinner("正在加载数据并计算量化指标..."):
+                    # 主看板流程：拉数 -> 特征工程/指标 -> 图表；异常统一转成用户文案。
                     df = load_asset_data(
                         asset_type=asset_type,
                         symbol=symbol,
@@ -1618,6 +1642,7 @@ def render_app() -> None:
                 start_date=start_date,
                 end_date=end_date,
             )
+            # 下载的是清洗后原始 OHLCV，便于用户自己复现看板指标。
             streamlit.download_button(
                 label="下载清洗后 OHLCV（CSV）",
                 data=csv_bytes,

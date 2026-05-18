@@ -40,6 +40,7 @@ def _compute_cagr(close: pd.Series) -> float:
     years = elapsed_days / 365.25
     if years <= 0:
         return float("nan")
+    # CAGR 把整个区间的涨跌折算成“每年平均复合增长率”，便于跨时间段比较。
     return float((close.iloc[-1] / close.iloc[0]) ** (1.0 / years) - 1.0)
 
 
@@ -54,6 +55,7 @@ def _compute_sharpe_ratio(
     if log_returns.empty:
         return float("nan")
 
+    # 年化无风险利率先换算为日频对数口径，再从每日收益中扣除。
     daily_rf_log = np.log1p(risk_free_rate) / float(trading_days)
     excess_log_returns = log_returns - daily_rf_log
     volatility = float(excess_log_returns.std())
@@ -74,6 +76,7 @@ def _describe_bollinger_position(df: pd.DataFrame) -> str:
     if upper_col not in df.columns or lower_col not in df.columns:
         return "布林带数据缺失"
 
+    # 这里只看最后一个交易日，用于给控制台报告生成一句简短信号描述。
     latest = df.iloc[-1]
     latest_close = float(latest["Close"])
     upper = latest.get(upper_col)
@@ -98,6 +101,7 @@ def build_diagnostic_report(
     if close.isna().any():
         raise ValueError("Close column contains NaN values; cannot build diagnostic report.")
 
+    # 报告指标和 Web 看板保持同一口径：收益、回撤、Sharpe、布林带位置。
     cumulative_return = _compute_cumulative_return(close)
     cagr = _compute_cagr(close)
     max_drawdown = df.attrs.get("max_drawdown")
@@ -146,6 +150,7 @@ def run_analysis(
 ) -> dict[str, Any]:
     """Run the end-to-end quantitative analysis workflow for 境内 ETF / A 股."""
     apply_default_network_proxy_policy()
+    # CLI 只开放境内 ETF/A 股；资产类型先规范化，避免大小写或空格造成分支错误。
     asset_key = normalize_china_equity_asset_type(asset_type)
     sym = symbol if symbol is not None else DEFAULT_CHINA_EQUITY_SYMBOLS[asset_key]
     start_ts, end_ts = resolve_analysis_date_window(
@@ -157,6 +162,7 @@ def run_analysis(
     engineer = OHLCVFeatureEngineer()
     visualizer = MplfinanceVisualizer()
 
+    # 典型流水线：拉取标准 OHLCV -> 生成技术指标 -> 绘图 -> 输出文本报告。
     raw_df = load_china_equity_ohlcv(
         asset_key,
         sym,
