@@ -134,6 +134,22 @@ pytest
 
 测试目录为 `tests/`（配置见 `pytest.ini`）。更完整的境内权益验证说明可参考 `docs/CHINA_EQUITY_VERIFICATION.md`。
 
+### 4. 家庭资产组合与研究实验
+
+Web 应用新增 **「我的资产组合」** 页面，可手动编辑家庭资产台账，也可导入/导出 CSV。CSV 推荐字段如下：
+
+```text
+account,item_type,asset_class,asset_type,symbol,name,quantity,current_price,currency,is_risk_asset,target_weight,notes
+```
+
+- `item_type`：`asset` 或 `liability`；负债参与净资产计算，但不参与组合收益曲线。
+- `asset_class`：如 `权益`、`现金`、`固收`、`负债`。
+- `asset_type` / `symbol`：若希望加载行情做组合分析，需与应用支持的资产类型键一致，如 `etf,510300`。
+- `is_risk_asset`：可填 `true/false`、`1/0`、`是/否`。
+- `target_weight`：目标配置权重，可填小数（`0.5`）或百分数（`50`）。
+
+「研究实验」页面会把实验 JSON 保存到本地 `outputs/experiments/`；该目录已加入 `.gitignore`，避免污染版本库。所有组合分析与回测仅用于研究和教育，不会连接券商或执行交易。
+
 ---
 
 ## 网络与代理说明

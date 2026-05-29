@@ -24,5 +24,8 @@ Thumbs.db
 # Streamlit (local secrets only; do not commit real secrets)
 .streamlit/secrets.toml
 
+# Local experiment outputs
+outputs/
+
 # Editor (optional local overrides)
 .idea/

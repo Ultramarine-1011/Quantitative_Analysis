@@ -38,6 +38,27 @@ from data_fetcher import (
     load_reit_data,
 )
 from feature_engineering import OHLCVFeatureEngineer
+from backtesting import BacktestConfig, make_equal_weights, run_weighted_backtest
+from data_quality import inspect_price_wide
+from experiment_store import save_experiment
+from factor_research import compute_information_coefficient, make_price_factors
+from portfolio import (
+    PORTFOLIO_COLUMNS,
+    compute_holdings_values,
+    empty_holdings_frame,
+    holdings_to_csv_bytes,
+    normalize_holdings,
+    read_holdings_csv,
+    summarize_assets,
+)
+from portfolio_analysis import (
+    compute_portfolio_curve,
+    compute_portfolio_metrics,
+    compute_rebalance_suggestions,
+    current_asset_class_weights,
+    target_asset_class_weights,
+)
+from reporting import build_markdown_report
 from quant_models import (
     EfficientFrontierResult,
     MonteCarloGBMResult,
@@ -1297,6 +1318,130 @@ def build_tab3_portfolio_backtest_figure(bt_df: pd.DataFrame) -> Any:
     return figure
 
 
+def build_series_line_figure(series: pd.Series, title: str, yaxis_title: str = "净值") -> Any:
+    """单序列折线图，用于家庭组合净值、IC 等轻量结果。"""
+    go, _ = _load_plotly_modules()
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=series.index,
+            y=series.values,
+            mode="lines",
+            name=series.name or title,
+            line={"width": 2.2, "color": "#2563eb"},
+        )
+    )
+    figure.update_layout(
+        title=title,
+        height=420,
+        margin={"l": 24, "r": 24, "t": 48, "b": 32},
+        template="plotly_white",
+        hovermode="x unified",
+        yaxis_title=yaxis_title,
+        xaxis_title="日期",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
+    )
+    return figure
+
+
+def build_backtest_nav_figure(bt_df: pd.DataFrame) -> Any:
+    """真实回测净值图。"""
+    return build_series_line_figure(bt_df["nav"], "真实回测净值曲线", yaxis_title="净值")
+
+
+def default_household_holdings_df() -> pd.DataFrame:
+    """给首次打开页面的用户一个可直接编辑的家庭资产样例。"""
+    return pd.DataFrame(
+        [
+            {
+                "account": "家庭账户",
+                "item_type": "asset",
+                "asset_class": "权益",
+                "asset_type": "etf",
+                "symbol": "510300",
+                "name": "沪深300ETF",
+                "quantity": 100.0,
+                "current_price": 4.0,
+                "currency": "CNY",
+                "is_risk_asset": True,
+                "target_weight": 0.5,
+                "notes": "",
+            },
+            {
+                "account": "家庭账户",
+                "item_type": "asset",
+                "asset_class": "现金",
+                "asset_type": "cash",
+                "symbol": "",
+                "name": "现金",
+                "quantity": 1.0,
+                "current_price": 200.0,
+                "currency": "CNY",
+                "is_risk_asset": False,
+                "target_weight": 0.3,
+                "notes": "",
+            },
+            {
+                "account": "住房贷款",
+                "item_type": "liability",
+                "asset_class": "负债",
+                "asset_type": "loan",
+                "symbol": "",
+                "name": "房贷",
+                "quantity": 1.0,
+                "current_price": 150.0,
+                "currency": "CNY",
+                "is_risk_asset": False,
+                "target_weight": 0.0,
+                "notes": "",
+            },
+        ],
+        columns=PORTFOLIO_COLUMNS,
+    )
+
+
+def _portfolio_legs_and_weights(valued: pd.DataFrame) -> tuple[tuple[tuple[str, str], ...], pd.Series]:
+    """从台账提取可拉行情的持仓 legs 与对应市值权重。"""
+    rows = valued[
+        (valued["item_type"] == "asset")
+        & valued["symbol"].astype(str).str.strip().ne("")
+        & valued["asset_type"].astype(str).str.lower().isin(SUPPORTED_ASSET_TYPES)
+    ].copy()
+    if rows.empty:
+        raise ValueError("没有可用于加载行情的有代码资产，请填写 asset_type 与 symbol。")
+    weight_values: dict[str, float] = {}
+    legs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for _, row in rows.iterrows():
+        asset_key = str(row["asset_type"]).strip().lower()
+        sym = str(row["symbol"]).strip()
+        leg = (asset_key, sym)
+        col = multi_asset_leg_column_name(asset_key, sym)
+        weight_values[col] = weight_values.get(col, 0.0) + float(row["market_value"])
+        if leg not in seen:
+            seen.add(leg)
+            legs.append(leg)
+    weights = pd.Series(weight_values, dtype="float64")
+    weights = weights / float(weights.sum())
+    return tuple(legs), weights
+
+
+def _parse_weight_text(text: str, columns: list[str]) -> pd.Series:
+    """解析真实回测权重文本，格式为 `列名=权重`。"""
+    values: dict[str, float] = {}
+    for line in str(text).splitlines():
+        item = line.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError("权重行需为 `列名=权重`，无效行：%r" % item)
+        key, val = item.split("=", 1)
+        values[key.strip()] = float(val.strip())
+    if not values:
+        return make_equal_weights(columns)
+    return pd.Series(values, dtype="float64").reindex(columns).fillna(0.0)
+
+
 def _sync_sidebar_state(streamlit: Any, asset_type: str) -> None:
     """让侧边栏默认值在资产类型切换时保持联动。"""
     session_state = streamlit.session_state
@@ -1443,12 +1588,114 @@ def render_app() -> None:
 
     clicked = streamlit.sidebar.button("开始诊断", use_container_width=True)
 
-    tab1, tab2, tab3 = streamlit.tabs(
-        ["📊 量化诊断看板", "📚 系统数学原理解析", "🧮 进阶金融算法"]
+    default_multi_asset_legs = "\n".join(
+        (
+            "etf,%s" % DEFAULT_SYMBOLS.get("etf", "510300"),
+            "etf,510500",
+            "us_stock,%s" % DEFAULT_SYMBOLS.get("us_stock", "AAPL"),
+        )
+    )
+
+    tab1, tab_portfolio, tab2, tab3, tab_research = streamlit.tabs(
+        ["📊 量化诊断看板", "💼 我的资产组合", "📚 系统数学原理解析", "🧮 进阶金融算法", "🔬 研究实验"]
     )
 
     with tab2:
         streamlit.markdown(_TAB2_SYSTEM_MATH_MARKDOWN)
+
+    with tab_portfolio:
+        streamlit.subheader("我的资产组合")
+        streamlit.caption("本页仅做家庭资产台账、配置诊断与再平衡提醒，不连接券商、不执行交易。")
+        uploaded_holdings = streamlit.file_uploader(
+            "导入家庭资产 CSV",
+            type=["csv"],
+            key="household_holdings_csv",
+        )
+        if uploaded_holdings is not None:
+            try:
+                streamlit.session_state["household_holdings_df"] = read_holdings_csv(uploaded_holdings)
+            except (TypeError, ValueError) as exc:
+                streamlit.error("CSV 导入失败：%s" % exc)
+
+        if "household_holdings_df" not in streamlit.session_state:
+            streamlit.session_state["household_holdings_df"] = default_household_holdings_df()
+
+        edited_holdings = streamlit.data_editor(
+            streamlit.session_state["household_holdings_df"],
+            use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True,
+            key="household_holdings_editor",
+        )
+        streamlit.session_state["household_holdings_df"] = edited_holdings
+
+        try:
+            normalized_holdings = normalize_holdings(edited_holdings)
+            valued_holdings = compute_holdings_values(normalized_holdings)
+            household_summary = summarize_assets(valued_holdings)
+            metric_a, metric_b, metric_c, metric_d = streamlit.columns(4)
+            metric_a.metric("净资产", "%.2f" % household_summary["net_asset_value"])
+            metric_b.metric("总资产", "%.2f" % household_summary["gross_asset_value"])
+            metric_c.metric("总负债", "%.2f" % household_summary["total_liability_value"])
+            metric_d.metric("风险资产占比", _format_percent_metric(household_summary["risk_asset_ratio"]))
+
+            streamlit.download_button(
+                "导出家庭资产 CSV",
+                data=holdings_to_csv_bytes(normalized_holdings),
+                file_name="household_holdings.csv",
+                mime="text/csv",
+                key="download_household_holdings",
+            )
+            streamlit.markdown("**资产类别汇总**")
+            streamlit.dataframe(household_summary["asset_class_summary"], use_container_width=True)
+            with streamlit.expander("查看估值后台账", expanded=False):
+                streamlit.dataframe(valued_holdings, use_container_width=True)
+
+            streamlit.subheader("组合分析与再平衡提醒")
+            tolerance_pct = streamlit.number_input(
+                "再平衡容忍度（百分点）",
+                min_value=0.0,
+                max_value=100.0,
+                value=5.0,
+                step=0.5,
+            )
+            current_weights = current_asset_class_weights(valued_holdings)
+            target_weights = target_asset_class_weights(valued_holdings)
+            rebalance_df = compute_rebalance_suggestions(
+                current_weights,
+                target_weights,
+                tolerance=float(tolerance_pct) / 100.0,
+                total_value=household_summary["gross_asset_value"],
+            )
+            streamlit.dataframe(rebalance_df, use_container_width=True)
+            streamlit.caption("再平衡仅为配置偏离提醒，不构成投资建议，也不会自动下单。")
+
+            if streamlit.button("加载有代码持仓行情并生成组合收益曲线", use_container_width=True):
+                try:
+                    legs, weights = _portfolio_legs_and_weights(valued_holdings)
+                    with streamlit.spinner("正在加载持仓行情并计算组合指标…"):
+                        close_wide = load_multi_leg_close_wide(
+                            legs,
+                            start_date,
+                            end_date,
+                            proxy_url=proxy_url,
+                        )
+                    returns_wide = close_wide.pct_change().dropna()
+                    nav = compute_portfolio_curve(returns_wide, weights)
+                    pf_metrics = compute_portfolio_metrics(nav, risk_free_rate=RISK_FREE_RATE)
+                    pf_a, pf_b, pf_c, pf_d = streamlit.columns(4)
+                    pf_a.metric("组合累计收益", _format_percent_metric(pf_metrics["cumulative_return"]))
+                    pf_b.metric("组合最大回撤", _format_percent_metric(-abs(pf_metrics["max_drawdown"]), signed=True))
+                    pf_c.metric("组合年化波动", _format_percent_metric(pf_metrics["annualized_volatility"]))
+                    pf_d.metric("组合 Sharpe", _format_ratio_metric(pf_metrics["sharpe_ratio"]))
+                    streamlit.plotly_chart(
+                        build_series_line_figure(nav, "家庭组合收益曲线"),
+                        use_container_width=True,
+                    )
+                except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
+                    streamlit.error(format_diagnosis_user_message(exc))
+        except (TypeError, ValueError) as exc:
+            streamlit.error("资产台账无法汇总：%s" % exc)
 
     with tab3:
         streamlit.markdown(
@@ -1592,6 +1839,141 @@ def render_app() -> None:
                     bt_df = backtest_portfolio(r_joint, w_best)
                     fig_bt = build_tab3_portfolio_backtest_figure(bt_df)
                     streamlit.plotly_chart(fig_bt, use_container_width=True)
+            except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
+                streamlit.error(format_diagnosis_user_message(exc))
+
+        streamlit.subheader("C · 真实回测（成本与调仓）")
+        streamlit.caption("历史模拟默认在调仓日先按目标权重换仓并扣除线性交易成本，再应用当日收益。")
+        bt_legs_text = streamlit.text_area(
+            "真实回测标的（每行 `资产类型,代码`）",
+            value=default_multi_asset_legs,
+            height=110,
+            key="tab3_backtest_legs_input",
+        )
+        bt_strategy = streamlit.selectbox(
+            "回测策略",
+            options=["equal_weight", "fixed_weight", "target_weight"],
+            format_func=lambda x: {
+                "equal_weight": "等权",
+                "fixed_weight": "固定权重",
+                "target_weight": "目标权重",
+            }[x],
+            key="tab3_backtest_strategy",
+        )
+        bt_freq = streamlit.selectbox(
+            "调仓频率",
+            options=["D", "W", "M", "Q"],
+            format_func=lambda x: {"D": "每日", "W": "每周", "M": "每月", "Q": "每季"}[x],
+            key="tab3_backtest_freq",
+        )
+        cost_col_1, cost_col_2 = streamlit.columns(2)
+        commission_bps = cost_col_1.number_input("手续费（bps）", min_value=0.0, value=5.0, step=1.0)
+        slippage_bps = cost_col_2.number_input("滑点（bps）", min_value=0.0, value=5.0, step=1.0)
+        bt_weights_text = streamlit.text_area(
+            "固定/目标权重（可留空=等权；格式：`列名=权重`，列名如 `etf:510300`）",
+            value="",
+            height=90,
+            key="tab3_backtest_weights_input",
+        )
+        if streamlit.button("运行真实回测", key="tab3_btn_real_backtest", use_container_width=True):
+            try:
+                legs = parse_multi_asset_legs(bt_legs_text)
+                with streamlit.spinner("正在拉取多标的收盘价并运行真实回测…"):
+                    close_wide = load_multi_leg_close_wide(
+                        legs,
+                        start_date,
+                        end_date,
+                        proxy_url=proxy_url,
+                    )
+                returns_wide = close_wide.pct_change().dropna()
+                if returns_wide.empty:
+                    streamlit.error("收益率样本为空，请放宽日期区间或更换标的。")
+                else:
+                    columns = list(returns_wide.columns)
+                    if bt_strategy == "equal_weight":
+                        target_w = make_equal_weights(columns)
+                    else:
+                        target_w = _parse_weight_text(bt_weights_text, columns)
+                    bt_config = BacktestConfig(
+                        strategy=bt_strategy,
+                        rebalance_frequency=bt_freq,
+                        commission_bps=float(commission_bps),
+                        slippage_bps=float(slippage_bps),
+                    )
+                    bt_result = run_weighted_backtest(returns_wide, target_w, bt_config)
+                    bt_metrics = compute_portfolio_metrics(bt_result["nav"], risk_free_rate=RISK_FREE_RATE)
+                    bt_m1, bt_m2, bt_m3, bt_m4 = streamlit.columns(4)
+                    bt_m1.metric("累计收益", _format_percent_metric(bt_metrics["cumulative_return"]))
+                    bt_m2.metric("最大回撤", _format_percent_metric(-abs(bt_metrics["max_drawdown"]), signed=True))
+                    bt_m3.metric("平均换手率", _format_percent_metric(float(bt_result["turnover"].mean())))
+                    bt_m4.metric("累计成本", "%.6f" % float(bt_result["cumulative_cost"].iloc[-1]))
+                    streamlit.plotly_chart(build_backtest_nav_figure(bt_result), use_container_width=True)
+                    with streamlit.expander("查看回测明细", expanded=False):
+                        streamlit.dataframe(bt_result.tail(30), use_container_width=True)
+            except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
+                streamlit.error(format_diagnosis_user_message(exc))
+
+    with tab_research:
+        streamlit.subheader("研究实验")
+        streamlit.caption("本页提供数据质量检查、基础价格因子、IC 与 Markdown 报告导出；实验记录保存到本地 outputs/experiments。")
+        research_legs_text = streamlit.text_area(
+            "研究标的（每行 `资产类型,代码`）",
+            value=default_multi_asset_legs,
+            height=120,
+            key="research_legs_input",
+        )
+        if streamlit.button("运行数据质量与基础因子研究", key="research_run_btn", use_container_width=True):
+            try:
+                legs = parse_multi_asset_legs(research_legs_text)
+                with streamlit.spinner("正在加载数据并运行基础因子研究…"):
+                    close_wide = load_multi_leg_close_wide(
+                        legs,
+                        start_date,
+                        end_date,
+                        proxy_url=proxy_url,
+                    )
+                quality = inspect_price_wide(close_wide)
+                factors = make_price_factors(close_wide, momentum_window=20, volatility_window=20)
+                forward_returns = close_wide.pct_change().shift(-1)
+                ic = compute_information_coefficient(factors["momentum_20"], forward_returns)
+                streamlit.markdown("**数据质量报告**")
+                streamlit.json(quality)
+                if ic.empty:
+                    streamlit.warning("有效 IC 样本为空，请增加资产数量或放宽日期区间。")
+                else:
+                    streamlit.metric("Momentum 20 平均 IC", _format_ratio_metric(float(ic.mean())))
+                    streamlit.plotly_chart(
+                        build_series_line_figure(ic, "Momentum 20 信息系数（IC）", yaxis_title="IC"),
+                        use_container_width=True,
+                    )
+                report_text = build_markdown_report(
+                    {
+                        "title": "Quantitative_Analysis 研究实验报告",
+                        "metrics": {
+                            "mean_ic": float(ic.mean()) if not ic.empty else "N/A",
+                            "assets": len(close_wide.columns),
+                            "rows": len(close_wide),
+                        },
+                        "assumptions": [
+                            "因子为价格衍生因子，非基本面因子。",
+                            "forward return 使用下一期收益，避免同日前视。",
+                            "数据质量以当前拉取到的 Close 宽表为准。",
+                        ],
+                    }
+                )
+                save_path = save_experiment(
+                    {"legs": list(legs), "start_date": str(start_date), "end_date": str(end_date)},
+                    {"mean_ic": float(ic.mean()) if not ic.empty else None},
+                    {"quality": quality},
+                )
+                streamlit.caption("实验记录已保存：%s" % save_path)
+                streamlit.download_button(
+                    "下载 Markdown 报告",
+                    data=report_text.encode("utf-8-sig"),
+                    file_name="research_report.md",
+                    mime="text/markdown",
+                    key="download_research_report",
+                )
             except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
                 streamlit.error(format_diagnosis_user_message(exc))
 
