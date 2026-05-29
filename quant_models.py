@@ -9,7 +9,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
-from scipy import stats
 
 
 def _resolve_price_column(df: pd.DataFrame, price_col: str | None) -> str:
@@ -62,7 +61,7 @@ def normalize_close_to_base_one(
 
 
 def _iqr_cross_check(sample_1d: np.ndarray) -> None:
-    """用 ``numpy.percentile`` 与 ``scipy.stats.iqr`` 对四分位距做一致性校验。"""
+    """用 NumPy 分位数对四分位距做轻量自检，避免模型层导入阶段硬依赖 SciPy。"""
     sample_1d = np.asarray(sample_1d, dtype=float)
     sample_1d = sample_1d[np.isfinite(sample_1d)]
     if sample_1d.size < 2:
@@ -70,11 +69,8 @@ def _iqr_cross_check(sample_1d: np.ndarray) -> None:
     # IQR 是 75% 分位数与 25% 分位数的距离，可衡量样本中间 50% 的离散程度。
     q75, q25 = np.percentile(sample_1d, [75.0, 25.0])
     iqr_np = float(q75 - q25)
-    iqr_sp = float(stats.iqr(sample_1d, rng=(25, 75)))
-    if not np.isclose(iqr_np, iqr_sp, rtol=1e-12, atol=1e-10):
-        raise RuntimeError(
-            "NumPy percentile IQR and SciPy stats.iqr disagree; check inputs and library versions."
-        )
+    if not np.isfinite(iqr_np) or iqr_np < 0:
+        raise RuntimeError("NumPy percentile IQR is invalid; check simulation inputs.")
 
 
 @dataclass
@@ -112,8 +108,7 @@ def run_monte_carlo_gbm(
     模拟递推：:math:`S_{t+1}=S_t\\exp((\\mu-\\sigma^2/2)+\\sigma\\sqrt{\\Delta t}\\,Z)`，
     :math:`\\Delta t=1` 时即 :math:`S_{t+1}=S_t\\exp((\\mu-\\sigma^2/2)+\\sigma Z)`。
 
-    沿时间轴的分位数由 ``numpy.percentile`` 计算；对首末步横截面价格与 SciPy
-    ``stats.iqr`` 做四分位距交叉校验（生产仍以 NumPy 为准）。
+    沿时间轴的分位数由 ``numpy.percentile`` 计算；对首末步横截面价格做四分位距轻量自检。
 
     Parameters
     ----------
