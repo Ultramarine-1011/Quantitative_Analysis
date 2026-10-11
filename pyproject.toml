@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantitative-analysis"
+version = "0.1.0"
+description = "Multi-asset OHLCV diagnostics with Streamlit and a Python CLI"
+readme = "README.md"
+requires-python = ">=3.9"
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "ruff>=0.6"]
+
+[project.scripts]
+quantitative-analysis = "main:main"
+
+[tool.setuptools]
+py-modules = [
+    "app", "main", "asset_resolver", "china_equity_entry", "data_fetcher",
+    "feature_engineering", "visualizer", "quant_models", "ohlcv",
+    "analysis_metrics", "asset_catalog", "asset_loader", "charts",
+]
+
+[tool.setuptools.packages.find]
+include = ["data_sources*"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# These modules also preserve import paths used by existing callers.
+"app.py" = ["F401"]
+"data_fetcher.py" = ["F401"]

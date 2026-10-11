@@ -1,0 +1,114 @@
+"""资产入口：日期/代码校验、境内权益加载路由与诊断错误文案（Web / CLI 共用）。"""
+
+from __future__ import annotations
+
+import pandas as pd
+
+from ohlcv import coerce_analysis_date, validate_analysis_date_range
+
+from data_fetcher import (
+    AKShareFetcher,
+    DataFetchError,
+    EmptySymbolDataError,
+)
+
+from asset_catalog import (
+    CHINA_EQUITY_ASSET_TYPES as CHINA_EQUITY_ASSET_TYPES,
+    CHINA_EQUITY_LABELS as CHINA_EQUITY_LABELS,
+    DEFAULT_CHINA_EQUITY_SYMBOLS as DEFAULT_CHINA_EQUITY_SYMBOLS,
+)
+
+EMPTY_SYMBOL_FETCH_HINT = (
+    "未找到该代码的数据，请检查代码是否输入正确，或该资产类别是否匹配"
+    "（例如不要把股票代码输入到 ETF 选项中）。"
+)
+GENERIC_DIAGNOSIS_FAILURE_PREFIX = "诊断失败"
+DATA_SOURCE_UNAVAILABLE_HINT = "资产代码可能无效，或当前数据源/接口暂不可用，请稍后重试或更换代码。"
+
+
+def resolve_analysis_date_window(
+    start_date: object | None,
+    end_date: object | None,
+    *,
+    lookback_years: int = 3,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """解析 CLI/Web 共用的默认区间：缺省结束日为今天，缺省开始日为向前 ``lookback_years`` 年。"""
+    # 入口层可以不传日期；这里集中生成默认窗口，避免 CLI 和 Web 各自实现一套规则。
+    if end_date is None:
+        end_ts = pd.Timestamp.today().normalize()
+    else:
+        end_ts = coerce_analysis_date(end_date, "end_date")
+    if start_date is None:
+        start_ts = end_ts - pd.DateOffset(years=lookback_years)
+    else:
+        start_ts = coerce_analysis_date(start_date, "start_date")
+    return validate_analysis_date_range(start_ts, end_ts)
+
+
+def normalize_china_equity_asset_type(value: object) -> str:
+    """解析并校验资产类型关键字，返回小写 ``etf`` 或 ``ashare``。"""
+    key = str(value).strip().lower()
+    if key not in CHINA_EQUITY_ASSET_TYPES:
+        raise ValueError(
+            "不支持的境内权益类型: %r，可选: %s" % (value, ", ".join(CHINA_EQUITY_ASSET_TYPES))
+        )
+    return key
+
+
+def validate_china_equity_symbol(asset_type: str, symbol: object) -> str:
+    """校验非空代码；文案与 Streamlit 侧一致。"""
+    sym = "" if symbol is None else str(symbol).strip()
+    if not sym:
+        if asset_type == "etf":
+            raise ValueError("ETF 代码不能为空。")
+        raise ValueError("A 股代码不能为空。")
+    return sym
+
+
+def fetch_route_for_china_equity(asset_type: str) -> str:
+    """将 UI 资产类型映射到 ``AKShareFetcher.fetch_china_equity`` 的路由。"""
+    if normalize_china_equity_asset_type(asset_type) == "etf":
+        return "etf"
+    return "stock"
+
+
+def load_china_equity_ohlcv(
+    asset_type: object,
+    symbol: object,
+    start_date: object,
+    end_date: object,
+    *,
+    adjust: str | None = "hfq",
+    fetcher: AKShareFetcher | None = None,
+) -> pd.DataFrame:
+    """拉取境内 ETF 或 A 股 OHLCV，并写入 ``attrs``（``asset_type`` / ``symbol``）。"""
+    asset_key = normalize_china_equity_asset_type(asset_type)
+    sym = validate_china_equity_symbol(asset_key, symbol)
+    start_ts, end_ts = validate_analysis_date_range(start_date, end_date)
+    # UI 里叫 ashare，数据层实际路由叫 stock；集中转换可减少下游分支。
+    route = fetch_route_for_china_equity(asset_key)
+    client = fetcher if fetcher is not None else AKShareFetcher(max_retries=3, retry_delay=1.0)
+    df = client.fetch_china_equity(route, sym, start=start_ts, end=end_ts, adjust=adjust)
+    # attrs 是 Pandas 给 DataFrame 附带元信息的位置，不影响表格列本身。
+    df.attrs["asset_type"] = asset_key
+    df.attrs["symbol"] = sym
+    return df
+
+
+def format_diagnosis_user_message(exc: BaseException) -> str:
+    """将异常转换为用户可见文案（多资产诊断统一入口）。"""
+    # 这里把技术异常归并为用户能理解的提示，避免把接口栈信息直接暴露到界面。
+    if isinstance(exc, EmptySymbolDataError):
+        return EMPTY_SYMBOL_FETCH_HINT
+    if isinstance(exc, DataFetchError):
+        return "%s %s（详情：%s）" % (
+            GENERIC_DIAGNOSIS_FAILURE_PREFIX,
+            DATA_SOURCE_UNAVAILABLE_HINT,
+            exc,
+        )
+    return "%s: %s" % (GENERIC_DIAGNOSIS_FAILURE_PREFIX, exc)
+
+
+def format_china_equity_user_message(exc: BaseException) -> str:
+    """兼容旧名：等同 ``format_diagnosis_user_message``。"""
+    return format_diagnosis_user_message(exc)
