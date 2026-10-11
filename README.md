@@ -14,6 +14,7 @@
 - **数据导出**：可下载与看板一致的 **清洗后 OHLCV CSV**（UTF-8 BOM，列：`Date`, `Open`, `High`, `Low`, `Close`, `Volume`）。
 - **说明页**：第二个标签页提供指标相关的数学定义说明（Markdown + LaTeX）。
 - **缓存**：拉取数据使用 Streamlit `cache_data`（约 1 小时 TTL），减轻重复请求压力。
+- **结果保留**：诊断、归一化、GBM 和组合优化分别保存本次会话的最新结果。下载 CSV 或运行其他分析后仍可查看；修改对应输入后清除旧结果，点击按钮重新计算。
 
 ### 命令行（`main.py`）
 
@@ -65,6 +66,8 @@ pip install -r requirements.txt
 
 主要依赖包括：`pandas`、`numpy`、`streamlit`、`plotly`、`akshare`、`ccxt`、`matplotlib`、`mplfinance` 等（详见 `requirements.txt`）。
 
+Web 入口要求 Streamlit **1.50+**，避免旧版前端与新版 Plotly 数组格式不兼容造成错误图表。PyArrow 保留 `<26` 约束，兼容本项目支持的 NumPy 1.x / pandas 2.x 环境；详见前端验收记录。
+
 开发环境（同时安装项目、测试与静态检查工具）：
 
 ```bash
@@ -94,7 +97,10 @@ streamlit.bat run app.py
 1. 在左侧 **「参数设置」** 中选择 **资产类型**、输入 **代码**、**开始/结束日期**。
 2. 点击 **「开始诊断」**。
 3. 在 **「量化诊断看板」** 查看指标与图表；需要时可 **下载 CSV**。
-4. **「系统数学原理解析」** 标签可阅读指标定义说明。
+4. **「数学原理」** 标签可阅读指标定义说明。
+5. **「进阶金融算法」** 可独立运行归一化、GBM 和多资产组合分析。组合输入与代码参考分开展示，权重以百分比显示；代码参考与相关系数明细可按需展开。
+
+手机上可通过左上角箭头展开参数栏。开始日期晚于结束日期或单标的代码为空时，页面会提示并禁用相应计算按钮；美债收益率列留空仍使用默认 10Y。
 
 **各类型代码示例（默认值可参考应用内侧边栏）**：
 
@@ -149,7 +155,7 @@ ruff check .
 python -m pip check
 ```
 
-测试目录为 `tests/`（配置见 `pytest.ini`），使用固定样本和模拟数据源，不访问行情网络。覆盖清洗、计算公式、回退/复权、代理隔离、组合模型、CSV、CLI 和 Streamlit。GitHub Actions 对 Python 3.9/3.12 执行检查。验证说明见 `docs/CHINA_EQUITY_VERIFICATION.md`；重构说明与兼容边界见 `docs/ARCHITECTURE.md`。
+测试目录为 `tests/`（配置见 `pytest.ini`），使用固定样本和模拟数据源，不访问行情网络。覆盖清洗、计算公式、回退/复权、代理隔离、组合模型、CSV、CLI 和 Streamlit。GitHub Actions 对 Python 3.9/3.12 执行检查。验证说明见 `docs/CHINA_EQUITY_VERIFICATION.md`；重构说明与兼容边界见 `docs/ARCHITECTURE.md`；实际浏览器验收记录见 `docs/FRONTEND_VERIFICATION.md`。
 
 ---
 

@@ -27,7 +27,7 @@ from asset_loader import (
     multi_asset_leg_column_name,
 )
 from asset_resolver import EMPTY_SYMBOL_FETCH_HINT, format_diagnosis_user_message
-from data_fetcher import DataFetchError, apply_default_network_proxy_policy
+from data_fetcher import DataFetchError, EmptySymbolDataError, apply_default_network_proxy_policy
 from ohlcv import REQUIRED_OHLCV_COLUMNS
 from analysis_metrics import (
     RISK_FREE_RATE,
@@ -165,21 +165,226 @@ def _cleaned_ohlcv_to_csv_bytes_and_filename(
     return csv_bytes, filename
 
 
+def _analysis_result(
+    streamlit: Any,
+    name: str,
+    parameters: tuple,
+    requested: bool,
+    compute: Callable[[], Any],
+    spinner: str,
+) -> Any:
+    """Retain one result per action and discard it when its inputs change."""
+    results = streamlit.session_state.setdefault("_analysis_results", {})
+    saved = results.get(name, {})
+    if saved.get("parameters") != parameters:
+        saved = {}
+        results.pop(name, None)
+    if requested:
+        saved = {"parameters": parameters}
+        try:
+            with streamlit.spinner(spinner):
+                saved["value"] = compute()
+        except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
+            saved["error"] = format_diagnosis_user_message(exc)
+        results[name] = saved
+    if "error" in saved:
+        streamlit.error(saved["error"])
+    return saved.get("value")
+
+
+def _plot_chart(streamlit: Any, builder: Callable[..., Any], *args: Any) -> None:
+    """Keep chart dependency/validation errors in the same user-facing error format."""
+    try:
+        streamlit.plotly_chart(builder(*args), use_container_width=True)
+    except (ImportError, TypeError, ValueError) as exc:
+        streamlit.error(format_diagnosis_user_message(exc))
+
+
+def _render_diagnosis(streamlit: Any, df: pd.DataFrame, metrics: dict, query: tuple) -> None:
+    asset_type, symbol, start_date, end_date, _ = query
+    display_symbol = str(df.attrs.get("symbol", symbol)).strip() or symbol
+    streamlit.subheader("%s · %s" % (ASSET_LABELS[asset_type], display_symbol))
+    streamlit.caption(
+        "样本区间：%s 至 %s · %d 条记录"
+        % (df.index[0].strftime("%Y-%m-%d"), df.index[-1].strftime("%Y-%m-%d"), len(df))
+    )
+    unit_cap = str(df.attrs.get("unit_caption", "") or "").strip()
+    if unit_cap:
+        streamlit.caption("单位与口径：%s" % unit_cap)
+    if metrics.get("metric_disclaimer"):
+        streamlit.warning(metrics["metric_disclaimer"])
+
+    columns = streamlit.columns(3)
+    columns[0].metric(metrics["cagr_label"], _format_percent_metric(metrics["cagr"]))
+    columns[1].metric(
+        "最大回撤", _format_percent_metric(-abs(metrics["max_drawdown"]), signed=True)
+    )
+    columns[2].metric("Sharpe", _format_ratio_metric(metrics["sharpe_ratio"]))
+    streamlit.info(
+        "最新信号：%s | %s：%s"
+        % (
+            metrics["latest_signal"],
+            metrics["cumulative_return_label"],
+            _format_percent_metric(metrics["cumulative_return"], signed=True),
+        )
+    )
+    _plot_chart(streamlit, build_price_volume_figure, metrics["featured_df"])
+    csv_bytes, csv_filename = _cleaned_ohlcv_to_csv_bytes_and_filename(
+        df, asset_type, display_symbol, start_date, end_date
+    )
+    streamlit.download_button(
+        "下载清洗后 OHLCV（CSV）",
+        data=csv_bytes,
+        file_name=csv_filename,
+        mime="text/csv",
+        key="download_cleaned_ohlcv_csv",
+        help="包含 Date、Open、High、Low、Close、Volume；可用于复现看板指标。",
+    )
+    with streamlit.expander("查看清洗后与特征后数据", expanded=False):
+        streamlit.markdown("**清洗后 OHLCV 数据尾部**")
+        streamlit.dataframe(df.tail(20), width="stretch")
+        streamlit.markdown("**特征工程结果尾部**")
+        streamlit.dataframe(metrics["featured_df"].tail(20), width="stretch")
+        streamlit.caption("标准列: %s" % ", ".join(list(REQUIRED_OHLCV_COLUMNS)))
+
+
+def _render_advanced(
+    streamlit: Any,
+    query: tuple,
+    load_single: Callable[[], pd.DataFrame],
+    single_valid: bool,
+    dates_valid: bool,
+) -> None:
+    _, _, start_date, end_date, proxy_url = query
+    streamlit.caption("单标的分析使用参数栏；组合分析可独立配置标的。计算结果保留至对应参数变更。")
+    with streamlit.expander("基准归一化", expanded=True):
+        streamlit.markdown(r"收盘价除以样本首日价格，得到期初为 1 的净值：$N_t = P_t / P_0$。")
+        requested = streamlit.button(
+            "显示归一化净值曲线", key="tab3_btn_normalize", disabled=not single_valid
+        )
+
+        def normalize():
+            df = load_single()
+            return normalize_close_to_base_one(df)
+
+        normalized = _analysis_result(
+            streamlit, "normalize", query, requested, normalize, "正在加载行情…"
+        )
+        if normalized is not None:
+            _plot_chart(streamlit, build_tab3_normalize_figure, normalized.index, normalized)
+
+    with streamlit.expander("GBM 蒙特卡洛", expanded=True):
+        streamlit.markdown(
+            "根据历史日对数收益估计漂移与波动，模拟未来 **252** 个交易日。"
+            "分位数带与示例路径展示模拟分布。"
+        )
+        requested = streamlit.button("运行 GBM 模拟", key="tab3_btn_gbm", disabled=not single_valid)
+        mc = _analysis_result(
+            streamlit,
+            "gbm",
+            query,
+            requested,
+            lambda: run_monte_carlo_gbm(
+                load_single(),
+                days=TRADING_DAYS,
+                num_simulations=500,
+                random_state=42,
+                num_sample_paths=5,
+            ),
+            "正在加载数据并模拟路径…",
+        )
+        if mc is not None:
+            streamlit.caption(
+                "日漂移 μ≈%.6f · 日波动 σ≈%.6f · 起点 S₀=%.4f"
+                % (mc.mu_daily, mc.sigma_daily, mc.s0)
+            )
+            _plot_chart(streamlit, build_tab3_gbm_figure, mc)
+
+    streamlit.subheader("组合有效前沿")
+    streamlit.markdown(
+        "每行输入 `资产类型,代码`，至少两个不同标的。"
+        "也支持 `类型|代码` 或用英文分号分隔；示例：`etf,510300`。"
+    )
+    ef_default = "\n".join(("etf,510300", "etf,510500", "us_stock,AAPL"))
+    ef_legs_text = streamlit.text_area(
+        "多标的组合（至少 2 条，不重复）",
+        value=ef_default,
+        height=120,
+        key="tab3_ef_legs_input",
+    )
+    requested = streamlit.button("运行协方差矩阵优化", key="tab3_btn_ef", disabled=not dates_valid)
+    with streamlit.expander("资产类型与代码对照", expanded=False):
+        streamlit.dataframe(
+            build_ef_multi_asset_codes_reference_df(),
+            width="stretch",
+            hide_index=True,
+            height=360,
+        )
+    streamlit.caption(
+        "组合使用参数栏的起止日期。混合市场按共同有效收益样本计算；"
+        "如含加密货币，可在参数栏切换到加密货币后填写代理。"
+    )
+
+    def optimize():
+        legs = parse_multi_asset_legs(ef_legs_text)
+        wide_close = load_multi_leg_close_wide(legs, start_date, end_date, proxy_url=proxy_url)
+        returns = clean_joint_returns(wide_close.pct_change(fill_method=None).dropna())
+        if returns.shape[1] < 2:
+            raise ValueError("有效资产列不足，请检查标的与日期区间。")
+        ef = generate_efficient_frontier(
+            returns,
+            num_portfolios=5000,
+            risk_free_rate=RISK_FREE_RATE,
+            trading_days=TRADING_DAYS,
+            random_state=42,
+        )
+        weights = ef.weights[ef.best_sharpe_idx]
+        return (
+            returns.corr(),
+            ef,
+            pd.DataFrame([weights], columns=returns.columns),
+            backtest_portfolio(returns, weights),
+        )
+
+    result = _analysis_result(
+        streamlit,
+        "frontier",
+        (start_date, end_date, proxy_url, ef_legs_text.strip()),
+        requested,
+        optimize,
+        "正在拉取多标的收盘价并模拟组合…",
+    )
+    if result is not None:
+        corr, ef, weights, backtest = result
+        _plot_chart(streamlit, build_tab3_correlation_heatmap, corr)
+        with streamlit.expander("查看相关系数数据"):
+            streamlit.dataframe(corr.style.format("{:.3f}"), width="stretch")
+        _plot_chart(streamlit, build_tab3_efficient_frontier_figure, ef)
+        streamlit.markdown("**最大夏普比率组合的权重**")
+        streamlit.dataframe(weights.style.format("{:.2%}"), width="stretch", hide_index=True)
+        streamlit.markdown("**净值回测曲线**")
+        streamlit.caption("最优与等权组合共用同一联合收益样本。")
+        _plot_chart(streamlit, build_tab3_portfolio_backtest_figure, backtest)
+
+
 def render_app() -> None:
     """渲染 Streamlit 量化诊断应用。"""
     streamlit = _require_streamlit()
     apply_default_network_proxy_policy()
     streamlit.set_page_config(page_title="量化诊断应用", layout="wide")
-    streamlit.title("量化诊断应用")
-    streamlit.caption(
-        "支持 A 股、公募、贵金属、加密、美股/港股/全球指数、国债与美债收益率、外盘商品、REITs、外汇等；"
-        "统一 OHLCV 契约下的诊断与图表（收益率水平类资产见看板说明）。"
+    streamlit.markdown(
+        """<style>
+        .block-container {padding-top: 3.5rem; padding-bottom: 2rem;}
+        [data-testid="stAppViewContainer"] h1 {font-size: clamp(1.65rem, 3vw, 2.25rem);}
+        </style>""",
+        unsafe_allow_html=True,
     )
+    streamlit.title("量化诊断应用")
+    streamlit.caption("覆盖 13 类资产的历史行情、风险收益诊断与组合分析。")
 
     today = pd.Timestamp.today().normalize().date()
-    default_start = (pd.Timestamp.today().normalize() - pd.DateOffset(years=LOOKBACK_YEARS)).date()
+    default_start = (pd.Timestamp(today) - pd.DateOffset(years=LOOKBACK_YEARS)).date()
     streamlit.sidebar.header("参数设置")
-    # 侧边栏只收集“资产类型、代码、日期、代理”这些最小必要输入。
     asset_type = streamlit.sidebar.selectbox(
         "资产类型",
         options=list(SUPPORTED_ASSET_TYPES),
@@ -187,272 +392,69 @@ def render_app() -> None:
         key="asset_type",
     )
     _sync_sidebar_state(streamlit, asset_type)
-    code_label = "代码"
-    if asset_type == "bond_us_yield":
-        code_label = "收益率列（默认 10Y=美债10年，可填表中完整列名）"
+    code_label = "收益率列（留空默认 10Y）" if asset_type == "bond_us_yield" else "代码"
     symbol = streamlit.sidebar.text_input(code_label, key="symbol_input").strip()
     start_date = streamlit.sidebar.date_input(
-        "开始日期",
-        value=default_start,
+        "开始日期", value=default_start, key="start_date_input"
     )
-    end_date = streamlit.sidebar.date_input(
-        "结束日期",
-        value=today,
-    )
-
-    proxy_url: str | None = None
+    end_date = streamlit.sidebar.date_input("结束日期", value=today, key="end_date_input")
+    proxy_url = None
     if asset_type == "crypto":
         proxy_url = streamlit.sidebar.text_input(
-            "代理地址",
-            key="proxy_url_input",
-            placeholder="http://127.0.0.1:33210",
+            "代理地址", key="proxy_url_input", placeholder="http://127.0.0.1:33210"
         )
-        streamlit.sidebar.caption("代理仅在加密货币模式下生效。")
+        streamlit.sidebar.caption("代理仅用于加密货币数据。")
 
+    dates_present = start_date is not None and end_date is not None
+    dates_valid = dates_present and start_date <= end_date
+    single_valid = dates_valid and (bool(symbol) or asset_type == "bond_us_yield")
+    if not dates_present:
+        streamlit.sidebar.error("请选择开始和结束日期。")
+    elif not dates_valid:
+        streamlit.sidebar.error("开始日期不能晚于结束日期。")
+    if not symbol and asset_type != "bond_us_yield":
+        streamlit.sidebar.error("请输入资产代码。")
     with streamlit.sidebar.expander("资产类型说明", expanded=False):
         streamlit.markdown(format_asset_guide_markdown(asset_type))
+    clicked = streamlit.sidebar.button(
+        "开始诊断", width="stretch", type="primary", disabled=not single_valid
+    )
+    query = (asset_type, symbol, start_date, end_date, proxy_url)
 
-    clicked = streamlit.sidebar.button("开始诊断", use_container_width=True)
+    def load_single():
+        df = load_asset_data(
+            asset_type=asset_type,
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            proxy_url=proxy_url,
+        )
+        if df.empty:
+            raise EmptySymbolDataError(EMPTY_SYMBOL_FETCH_HINT)
+        return df
 
-    tab1, tab2, tab3 = streamlit.tabs(["📊 量化诊断看板", "📚 系统数学原理解析", "🧮 进阶金融算法"])
+    tab1, tab2, tab3 = streamlit.tabs(["量化诊断看板", "数学原理", "进阶金融算法"])
+    with tab1:
 
+        def diagnose():
+            df = load_single()
+            return df, get_quant_metrics(df)
+
+        result = _analysis_result(
+            streamlit, "diagnosis", query, clicked, diagnose, "正在加载数据并计算量化指标…"
+        )
+        if result is None:
+            streamlit.info("在参数栏选择资产和日期，点击「开始诊断」查看指标与行情图。")
+            streamlit.caption(
+                "当前选择：%s · %s · %s 至 %s"
+                % (ASSET_LABELS[asset_type], symbol or "10Y", start_date, end_date)
+            )
+        else:
+            _render_diagnosis(streamlit, *result, query)
     with tab2:
         streamlit.markdown(_TAB2_SYSTEM_MATH_MARKDOWN)
-
     with tab3:
-        streamlit.markdown(
-            "本页使用**左侧**资产类型、代码与起止日期；各区块**独立按钮**拉数与计算，无需先点击「开始诊断」。"
-        )
-        streamlit.caption(
-            "有效前沿（模块 B）支持在下方按行配置多标的（类型与侧栏「资产类型」一致）；"
-            "不同市场日历 **outer 对齐 + 前向填充** 后与 ETF 批量路径语义相同。"
-            "混合资产时重叠交易日可能变短；夏普等横比需谨慎（参见侧栏各类资产说明）。"
-            "GBM 与归一化仍用侧栏单一标的。"
-        )
-
-        streamlit.subheader("0 · 基准归一化")
-        streamlit.markdown(
-            r"将收盘价序列归一化为以样本首日价格为 1 的净值：$N_t = P_t / P_{t_0}$（$P$ 为 `Close`）。"
-        )
-        if streamlit.button(
-            "显示归一化净值曲线", key="tab3_btn_normalize", use_container_width=True
-        ):
-            try:
-                with streamlit.spinner("正在加载行情…"):
-                    # 进阶算法页也复用同一条 load_asset_data 数据入口，避免口径不一致。
-                    df_norm = load_asset_data(
-                        asset_type=asset_type,
-                        symbol=symbol,
-                        start_date=start_date,
-                        end_date=end_date,
-                        proxy_url=proxy_url,
-                    )
-                if df_norm.empty:
-                    streamlit.error(EMPTY_SYMBOL_FETCH_HINT)
-                else:
-                    series_n = normalize_close_to_base_one(df_norm)
-                    fig_n = build_tab3_normalize_figure(df_norm.index, series_n)
-                    streamlit.plotly_chart(fig_n, use_container_width=True)
-            except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
-                streamlit.error(format_diagnosis_user_message(exc))
-
-        streamlit.subheader("A · GBM 蒙特卡洛")
-        streamlit.markdown(
-            "基于历史日对数收益估计波动与漂移，按几何布朗运动离散递推未来 **252** 个交易日路径；"
-            "图中为分位数带与若干示例路径。"
-        )
-        if streamlit.button("运行 GBM 模拟", key="tab3_btn_gbm", use_container_width=True):
-            try:
-                with streamlit.spinner("正在加载数据并模拟路径…"):
-                    # GBM 使用历史 Close 估计参数，输出的是模拟分布而不是确定预测。
-                    df_gbm = load_asset_data(
-                        asset_type=asset_type,
-                        symbol=symbol,
-                        start_date=start_date,
-                        end_date=end_date,
-                        proxy_url=proxy_url,
-                    )
-                if df_gbm.empty:
-                    streamlit.error(EMPTY_SYMBOL_FETCH_HINT)
-                else:
-                    mc = run_monte_carlo_gbm(
-                        df_gbm,
-                        days=TRADING_DAYS,
-                        num_simulations=500,
-                        random_state=42,
-                        num_sample_paths=5,
-                    )
-                    streamlit.caption(
-                        "估计参数：日漂移 μ≈%.6f，日波动 σ≈%.6f，起点 S₀=%.4f。"
-                        % (mc.mu_daily, mc.sigma_daily, mc.s0)
-                    )
-                    fig_g = build_tab3_gbm_figure(mc)
-                    streamlit.plotly_chart(fig_g, use_container_width=True)
-            except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
-                streamlit.error(format_diagnosis_user_message(exc))
-
-        streamlit.subheader("B · 有效前沿（随机权重）")
-        streamlit.markdown(
-            "每行一条：`资产类型,代码` 或 `资产类型|代码`（与侧栏类型键一致，如 `etf`、`us_stock`、`crypto`）；"
-            "同一行可用英文分号 `;` 写多条。列名为 `类型:代码`（如 `crypto:BTC/USDT`）。"
-            "若含 **crypto**，侧栏代理与「加密货币」模式相同（请将侧栏资产类型选为加密货币以填写代理）。"
-        )
-        streamlit.markdown(
-            "**资产类型与代码对照**（输入格式：`类型键,代码`；下列默认代码与侧栏「代码」默认值一致）"
-        )
-        streamlit.dataframe(
-            build_ef_multi_asset_codes_reference_df(),
-            use_container_width=True,
-            hide_index=True,
-            height=min(520, 40 + len(SUPPORTED_ASSET_TYPES) * 36),
-        )
-        ef_default = "\n".join(
-            (
-                "etf,%s" % DEFAULT_SYMBOLS.get("etf", "510300"),
-                "etf,510500",
-                "us_stock,%s" % DEFAULT_SYMBOLS.get("us_stock", "AAPL"),
-            )
-        )
-        ef_legs_text = streamlit.text_area(
-            "多标的组合（至少 2 条，不重复）",
-            value=ef_default,
-            height=120,
-            key="tab3_ef_legs_input",
-        )
-        if streamlit.button("运行协方差矩阵优化", key="tab3_btn_ef", use_container_width=True):
-            try:
-                legs = parse_multi_asset_legs(ef_legs_text)
-                with streamlit.spinner("正在拉取多标的收盘价并模拟组合…"):
-                    # 有效前沿需要多资产 Close 宽表，每列是一只资产的价格序列。
-                    wide_close = load_multi_leg_close_wide(
-                        legs,
-                        start_date,
-                        end_date,
-                        proxy_url=proxy_url,
-                    )
-                returns_wide = wide_close.pct_change(fill_method=None).dropna()
-                if returns_wide.shape[1] < 2:
-                    streamlit.error("有效资产列不足，请检查标的与日期区间。")
-                else:
-                    streamlit.caption(
-                        "联合样本中日收益需各列同时非缺失；重叠过少或序列近似线性相关时优化可能失败。"
-                    )
-                    r_joint = clean_joint_returns(returns_wide)
-                    corr_df = r_joint.corr(method="pearson")
-                    fig_corr = build_tab3_correlation_heatmap(corr_df)
-                    streamlit.plotly_chart(fig_corr, use_container_width=True)
-                    ef_res: EfficientFrontierResult = generate_efficient_frontier(
-                        r_joint,
-                        num_portfolios=5000,
-                        risk_free_rate=RISK_FREE_RATE,
-                        trading_days=TRADING_DAYS,
-                        random_state=42,
-                    )
-                    fig_ef = build_tab3_efficient_frontier_figure(ef_res)
-                    streamlit.plotly_chart(fig_ef, use_container_width=True)
-                    w_best = ef_res.weights[ef_res.best_sharpe_idx]
-                    weights_df = pd.DataFrame(
-                        [w_best],
-                        columns=list(r_joint.columns),
-                    )
-                    streamlit.markdown("**最大夏普比率组合的权重**")
-                    streamlit.dataframe(weights_df, use_container_width=True)
-                    streamlit.markdown("")
-                    streamlit.markdown("**净值回测曲线**")
-                    streamlit.caption(
-                        "上图权重对应红色曲线；灰色为等权基准；与热力图、前沿共用同一联合收益样本。"
-                    )
-                    bt_df = backtest_portfolio(r_joint, w_best)
-                    fig_bt = build_tab3_portfolio_backtest_figure(bt_df)
-                    streamlit.plotly_chart(fig_bt, use_container_width=True)
-            except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
-                streamlit.error(format_diagnosis_user_message(exc))
-
-    with tab1:
-        if not clicked:
-            streamlit.info(
-                "在左侧选择资产和时间区间后点击“开始诊断”，即可查看 Web 版量化分析结果。"
-            )
-            with streamlit.expander("资产类型说明（与左侧「资产类型」联动）", expanded=False):
-                streamlit.markdown(format_asset_guide_markdown(asset_type))
-        else:
-            try:
-                with streamlit.spinner("正在加载数据并计算量化指标..."):
-                    # 主看板流程：拉数 -> 特征工程/指标 -> 图表；异常统一转成用户文案。
-                    df = load_asset_data(
-                        asset_type=asset_type,
-                        symbol=symbol,
-                        start_date=start_date,
-                        end_date=end_date,
-                        proxy_url=proxy_url,
-                    )
-                    if df.empty:
-                        streamlit.error(EMPTY_SYMBOL_FETCH_HINT)
-                        return
-                    metrics = get_quant_metrics(df)
-                    figure = build_price_volume_figure(metrics["featured_df"])
-            except (ImportError, DataFetchError, RuntimeError, TypeError, ValueError) as exc:
-                streamlit.error(format_diagnosis_user_message(exc))
-                return
-
-            display_symbol = str(df.attrs.get("symbol", symbol)).strip() or symbol
-            streamlit.subheader("%s · %s" % (ASSET_LABELS[asset_type], display_symbol))
-            unit_cap = str(df.attrs.get("unit_caption", "") or "").strip()
-            if unit_cap:
-                streamlit.caption("单位与口径：%s" % unit_cap)
-            streamlit.caption(
-                "样本区间：%s 至 %s，共 %d 条记录。"
-                % (
-                    df.index[0].strftime("%Y-%m-%d"),
-                    df.index[-1].strftime("%Y-%m-%d"),
-                    len(df),
-                )
-            )
-            if metrics.get("metric_disclaimer"):
-                streamlit.warning(metrics["metric_disclaimer"])
-            csv_bytes, csv_filename = _cleaned_ohlcv_to_csv_bytes_and_filename(
-                df,
-                asset_type=asset_type,
-                display_symbol=display_symbol,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            # 下载的是清洗后原始 OHLCV，便于用户自己复现看板指标。
-            streamlit.download_button(
-                label="下载清洗后 OHLCV（CSV）",
-                data=csv_bytes,
-                file_name=csv_filename,
-                mime="text/csv",
-                use_container_width=False,
-                key="download_cleaned_ohlcv_csv",
-            )
-            streamlit.caption(
-                "CSV 含 Date 与 Open、High、Low、Close、Volume 五列，与看板清洗后数据一致（不含均线、布林带等特征列）。"
-            )
-
-            metric_col_1, metric_col_2, metric_col_3 = streamlit.columns(3)
-            metric_col_1.metric(metrics["cagr_label"], _format_percent_metric(metrics["cagr"]))
-            metric_col_2.metric(
-                "最大回撤", _format_percent_metric(-abs(metrics["max_drawdown"]), signed=True)
-            )
-            metric_col_3.metric("Sharpe", _format_ratio_metric(metrics["sharpe_ratio"]))
-
-            streamlit.info(
-                "最新信号：%s | %s：%s"
-                % (
-                    metrics["latest_signal"],
-                    metrics["cumulative_return_label"],
-                    _format_percent_metric(metrics["cumulative_return"], signed=True),
-                )
-            )
-            streamlit.plotly_chart(figure, use_container_width=True)
-
-            with streamlit.expander("查看清洗后与特征后数据", expanded=False):
-                streamlit.markdown("**清洗后 OHLCV 数据尾部**")
-                streamlit.dataframe(df.tail(20), use_container_width=True)
-                streamlit.markdown("**特征工程结果尾部**")
-                streamlit.dataframe(metrics["featured_df"].tail(20), use_container_width=True)
-                streamlit.caption("标准列: %s" % ", ".join(list(REQUIRED_OHLCV_COLUMNS)))
+        _render_advanced(streamlit, query, load_single, single_valid, dates_valid)
 
 
 if __name__ == "__main__":

@@ -135,7 +135,7 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
         )
 
     figure.update_layout(
-        height=760,
+        height=620,
         margin={"l": 20, "r": 20, "t": 50, "b": 20},
         template="plotly_white",
         hovermode="x unified",
@@ -154,7 +154,7 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
 
 
 def build_tab3_normalize_figure(dates: pd.Index, normalized: pd.Series) -> Any:
-    """侧栏单一标的：收盘价归一化为期初=1 的净值曲线（暗色主题）。"""
+    """侧栏单一标的：收盘价归一化为期初=1 的净值曲线。"""
     go, _ = _load_plotly_modules()
     figure = go.Figure()
     figure.add_trace(
@@ -163,13 +163,13 @@ def build_tab3_normalize_figure(dates: pd.Index, normalized: pd.Series) -> Any:
             y=normalized,
             mode="lines",
             name="Nₜ = Pₜ / P₀",
-            line={"width": 2.2, "color": "#7fdbff"},
+            line={"width": 2.2, "color": "#3b82f6"},
         )
     )
     figure.update_layout(
         height=420,
         margin={"l": 20, "r": 20, "t": 40, "b": 20},
-        template="plotly_dark",
+        template="plotly_white",
         hovermode="x unified",
         yaxis_title="归一化净值",
         xaxis_title="日期",
@@ -188,7 +188,7 @@ def build_tab3_gbm_figure(result: MonteCarloGBMResult) -> Any:
             y=result.historical_close,
             mode="lines",
             name="历史收盘价",
-            line={"width": 2.0, "color": "#00d4ff"},
+            line={"width": 2.0, "color": "#3b82f6"},
         )
     )
     fut_x = result.future_dates
@@ -223,7 +223,7 @@ def build_tab3_gbm_figure(result: MonteCarloGBMResult) -> Any:
                 name="示例路径" if i == 0 else None,
                 legendgroup="samples",
                 showlegend=(i == 0),
-                line={"width": 0.9, "color": "rgba(180, 180, 200, 0.45)"},
+                line={"width": 0.9, "color": "rgba(100, 116, 139, 0.6)"},
             )
         )
     figure.add_trace(
@@ -232,13 +232,13 @@ def build_tab3_gbm_figure(result: MonteCarloGBMResult) -> Any:
             y=result.quantiles_p50,
             mode="lines",
             name="中位数路径",
-            line={"width": 2.2, "color": "#ffcc00"},
+            line={"width": 2.2, "color": "#d97706", "dash": "dash"},
         )
     )
     figure.update_layout(
         height=520,
         margin={"l": 20, "r": 20, "t": 50, "b": 20},
-        template="plotly_dark",
+        template="plotly_white",
         hovermode="x unified",
         yaxis_title="价格",
         xaxis_title="日期",
@@ -288,10 +288,14 @@ def build_tab3_efficient_frontier_figure(ef: EfficientFrontierResult) -> Any:
     figure.update_layout(
         height=520,
         margin={"l": 20, "r": 20, "t": 40, "b": 20},
-        template="plotly_dark",
+        template="plotly_white",
         hovermode="closest",
         xaxis_title="年化波动率",
         yaxis_title="年化收益",
+        xaxis_tickformat=".0%",
+        yaxis_tickformat=".0%",
+        xaxis_hoverformat=".2%",
+        yaxis_hoverformat=".2%",
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
     )
     return figure
@@ -409,10 +413,10 @@ def build_tab3_correlation_heatmap(corr_df: pd.DataFrame) -> Any:
         ]
     )
     figure.update_layout(
-        title="大类资产收益率相关性矩阵 (Correlation Matrix)",
+        title={"text": "资产收益率相关性", "font": {"size": 16}},
         height=560,
         margin={"l": 28, "r": 28, "t": 56, "b": 110},
-        template="plotly_dark",
+        template="plotly_white",
         annotations=cell_annotations,
         xaxis={
             "side": "bottom",
@@ -452,7 +456,8 @@ def build_tab3_portfolio_backtest_figure(bt_df: pd.DataFrame) -> Any:
     )
     figure.update_layout(
         title={
-            "text": "历史净值回测（样本首日归一为 1）",
+            "text": "历史净值回测（期初 = 1）",
+            "font": {"size": 16},
             "y": 0.97,
             "x": 0.5,
             "xanchor": "center",
@@ -460,7 +465,7 @@ def build_tab3_portfolio_backtest_figure(bt_df: pd.DataFrame) -> Any:
         },
         height=500,
         margin={"l": 56, "r": 28, "t": 64, "b": 96},
-        template="plotly_dark",
+        template="plotly_white",
         hovermode="x unified",
         xaxis_title="日期",
         yaxis_title="净值",
@@ -470,7 +475,7 @@ def build_tab3_portfolio_backtest_figure(bt_df: pd.DataFrame) -> Any:
             "y": -0.22,
             "xanchor": "center",
             "x": 0.5,
-            "bgcolor": "rgba(0,0,0,0.35)",
+            "bgcolor": "rgba(0,0,0,0)",
         },
     )
     return figure
