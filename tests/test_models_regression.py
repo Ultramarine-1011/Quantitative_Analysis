@@ -46,7 +46,7 @@ def test_backtest_rejects_invalid_weight_sum(weights):
 def test_backtest_rejects_zero_first_day_wealth():
     returns = sample_returns()
     returns.iloc[0, :] = -1
-    with pytest.raises(ValueError, match="zero first-day"):
+    with pytest.raises(ValueError, match="zero or below"):
         backtest_portfolio(returns, [1, 1, 1])
 
 

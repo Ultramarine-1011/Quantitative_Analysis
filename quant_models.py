@@ -7,9 +7,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from numbers import Real
+from typing import Literal
+
 import numpy as np
 import pandas as pd
-from numbers import Real
+
+from asset_catalog import get_asset_trading_days
 
 
 def _resolve_price_column(df: pd.DataFrame, price_col: str | None) -> str:
@@ -96,48 +100,32 @@ def run_monte_carlo_gbm(
     random_state: int | np.random.Generator | None = None,
     price_col: str | None = None,
     num_sample_paths: int = 5,
+    trading_days: int | None = None,
+    annual_drift: float | None = None,
 ) -> MonteCarloGBMResult:
     """基于历史对数收益估计参数，按 GBM 离散格式做未来路径蒙特卡洛模拟。
 
-    日对数收益 :math:`R_t=\\ln(P_t/P_{t-1})`；样本标准差为 :math:`\\hat\\sigma`，
-    漂移按 :math:`\\hat\\mu=\\bar R+\\hat\\sigma^2/2` 校准，使与
-    :math:`dS=\\mu S\\,dt+\\sigma S\\,dW` 及
-    :math:`\\ln(S_{t+1}/S_t)\\sim N((\\mu-\\sigma^2/2)\\Delta t,\\sigma^2\\Delta t)`
-    （取 :math:`\\Delta t=1` 日）一致。
-
-    模拟递推：:math:`S_{t+1}=S_t\\exp((\\mu-\\sigma^2/2)+\\sigma\\sqrt{\\Delta t}\\,Z)`，
-    :math:`\\Delta t=1` 时即 :math:`S_{t+1}=S_t\\exp((\\mu-\\sigma^2/2)+\\sigma Z)`。
-
-    沿时间轴的分位数由 ``numpy.percentile`` 一次性计算。
-
-    Parameters
-    ----------
-    df
-        含收盘价与日期索引的表。
-    days
-        向前模拟的交易日个数（默认 252）。
-    num_simulations
-        路径条数。
-    random_state
-        可重复的随机种子或 ``numpy.random.Generator``。
-    price_col
-        价格列；``None`` 时自动 ``Close`` / ``close``。
-    num_sample_paths
-        返回用于展示的样本路径条数（不超过 ``num_simulations``）。
-
-    Returns
-    -------
-    MonteCarloGBMResult
-        历史序列、未来交易日索引、分位数带、若干示例路径及估计的日漂移、日波动与 S0。
-
-    Raises
-    ------
-    ValueError
-        数据不足以估计波动、波动非正、或 ``days`` / ``num_simulations`` 非法。
+    默认由历史日对数收益估计样本标准差 :math:`\\hat\\sigma` 与漂移
+    :math:`\\hat\\mu=\\bar R+\\hat\\sigma^2/2`；若显式传入 ``annual_drift``，
+    则按 ``annual_drift / trading_days`` 设定日连续漂移率 ``mu_daily``。
+    加密货币等 7×24 市场使用自然日（``freq="D"``）生成未来日期，其余使用工作日。
     """
     days = _positive_integer(days, "days")
     num_simulations = _positive_integer(num_simulations, "num_simulations")
     num_sample_paths = _positive_integer(num_sample_paths, "num_sample_paths")
+    asset_type = str(getattr(df, "attrs", {}).get("asset_type", "") or "").strip().lower()
+    eff_trading_days = (
+        _positive_integer(trading_days, "trading_days")
+        if trading_days is not None
+        else get_asset_trading_days(asset_type or None)
+    )
+    if annual_drift is not None and (
+        isinstance(annual_drift, bool)
+        or not isinstance(annual_drift, Real)
+        or not np.isfinite(float(annual_drift))
+    ):
+        raise ValueError("annual_drift must be finite when provided.")
+
     col = _resolve_price_column(df, price_col)
     prices = pd.to_numeric(df[col], errors="coerce").astype(float)
     if not isinstance(df.index, pd.DatetimeIndex):
@@ -162,7 +150,10 @@ def run_monte_carlo_gbm(
     sigma = float(log_ret.std(ddof=1))
     if not np.isfinite(sigma) or sigma <= 0:
         raise ValueError("Estimated daily volatility sigma must be finite and positive.")
-    mu = float(log_ret.mean() + 0.5 * sigma**2)
+    if annual_drift is None:
+        mu = float(log_ret.mean() + 0.5 * sigma**2)
+    else:
+        mu = float(annual_drift) / float(eff_trading_days)
     s0 = float(prices.iloc[-1])
     if not np.isfinite(s0) or s0 <= 0:
         raise ValueError("Last closing price S0 must be finite and positive.")
@@ -180,7 +171,10 @@ def run_monte_carlo_gbm(
     last_date = prices.index[-1]
     if not isinstance(last_date, pd.Timestamp):
         last_date = pd.Timestamp(last_date)
-    future_dates = pd.bdate_range(start=last_date + pd.offsets.BDay(1), periods=days)
+    if eff_trading_days >= 360:
+        future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=days, freq="D")
+    else:
+        future_dates = pd.bdate_range(start=last_date + pd.offsets.BDay(1), periods=days)
 
     k_show = min(num_sample_paths, num_simulations)
     sample_paths = paths[:k_show, :].copy()
@@ -246,16 +240,194 @@ def returns_correlation_matrix(returns_df: pd.DataFrame, min_history: int = 30) 
     return r.corr(method="pearson")
 
 
+RebalanceFreq = Literal["buy_and_hold", "daily", "monthly", "quarterly"]
+
+
+def _is_rebalance_step(index: pd.Index, step: int, freq: RebalanceFreq) -> bool:
+    if step == 0 or freq == "buy_and_hold":
+        return False
+    if freq == "daily":
+        return True
+    if not isinstance(index, pd.DatetimeIndex):
+        return False
+    prev_dt = index[step - 1]
+    curr_dt = index[step]
+    if freq == "monthly":
+        return (curr_dt.year, curr_dt.month) != (prev_dt.year, prev_dt.month)
+    if freq == "quarterly":
+        return (curr_dt.year, (curr_dt.month - 1) // 3) != (
+            prev_dt.year,
+            (prev_dt.month - 1) // 3,
+        )
+    return False
+
+
+def _simulate_portfolio_nav(
+    returns_df: pd.DataFrame,
+    target_weights: np.ndarray,
+    *,
+    rebalance_freq: RebalanceFreq,
+    transaction_cost_bps: float,
+    tradable_mask: pd.DataFrame | None = None,
+) -> tuple[np.ndarray, float, float]:
+    """Simulate portfolio NAV starting at pre-investment capital 1.0, retaining all return rows."""
+    x = returns_df.to_numpy(dtype=float, copy=False)
+    n_steps, n_assets = x.shape
+    cost_rate = float(transaction_cost_bps) / 10000.0
+
+    # Initial position establishment from cash (base NAV = 1.0).
+    init_turnover = float(np.sum(np.abs(target_weights)))
+    init_cost = cost_rate * init_turnover
+    if init_cost >= 1.0:
+        raise ValueError("Initial transaction cost exceeds 100% of starting capital.")
+    total_cost = init_cost
+    total_turnover = init_turnover
+    sub_values = (1.0 - init_cost) * target_weights.copy()
+
+    nav = np.empty(n_steps, dtype=float)
+    mask_arr = (
+        tradable_mask.reindex(returns_df.index, columns=returns_df.columns)
+        .fillna(True)
+        .to_numpy(dtype=bool)
+        if tradable_mask is not None
+        else None
+    )
+
+    pending_rebalance = False
+    for step in range(n_steps):
+        if _is_rebalance_step(returns_df.index, step, rebalance_freq):
+            pending_rebalance = True
+        if pending_rebalance:
+            prev_equity = float(np.sum(sub_values))
+            if prev_equity <= 0.0:
+                raise ValueError("Portfolio equity fell to zero or below during backtest.")
+            tradable_row = mask_arr[step] if mask_arr is not None else np.ones(n_assets, dtype=bool)
+            if tradable_row.all():
+                desired = prev_equity * target_weights
+                turnover_amt = float(np.sum(np.abs(desired - sub_values)))
+                step_turnover = turnover_amt / prev_equity
+                step_cost = prev_equity * cost_rate * step_turnover
+                after_fee = prev_equity - step_cost
+                if after_fee <= 0.0:
+                    raise ValueError(
+                        "Portfolio equity fell to zero or below after transaction costs."
+                    )
+                sub_values = after_fee * target_weights
+                total_turnover += step_turnover
+                total_cost += step_cost / prev_equity
+                pending_rebalance = False
+
+        sub_values = sub_values * (1.0 + x[step])
+        equity = float(np.sum(sub_values))
+        if not np.isfinite(equity) or equity <= 0.0:
+            raise ValueError("Portfolio equity fell to zero or below during backtest.")
+        nav[step] = equity
+
+    return nav, total_turnover, total_cost
+
+
+def compute_backtest_metrics(
+    nav_series: pd.Series,
+    *,
+    periods_per_year: float = 252.0,
+    risk_free_rate: float = 0.016,
+) -> dict[str, float]:
+    """Compute CAGR, total return, annualized volatility, max drawdown, Sharpe, Sortino, and Calmar."""
+    s = pd.to_numeric(nav_series, errors="coerce").dropna().astype(float)
+    if len(s) < 2 or s.iloc[0] <= 0.0 or s.iloc[-1] <= 0.0:
+        return {
+            "total_return": float("nan"),
+            "cagr": float("nan"),
+            "annualized_volatility": float("nan"),
+            "max_drawdown": float("nan"),
+            "sharpe_ratio": float("nan"),
+            "sortino_ratio": float("nan"),
+            "calmar_ratio": float("nan"),
+        }
+    total_return = float(s.iloc[-1] / s.iloc[0] - 1.0)
+    if isinstance(s.index, pd.DatetimeIndex):
+        days = float((s.index[-1] - s.index[0]).days)
+        cagr = (
+            float((s.iloc[-1] / s.iloc[0]) ** (365.25 / days) - 1.0) if days > 0.0 else float("nan")
+        )
+    else:
+        years = float(len(s) - 1) / float(periods_per_year)
+        cagr = (
+            float((s.iloc[-1] / s.iloc[0]) ** (1.0 / years) - 1.0) if years > 0.0 else float("nan")
+        )
+
+    running_peak = s.cummax()
+    mdd = float((1.0 - s / running_peak).max())
+    simple_r = s.pct_change().dropna().to_numpy(dtype=float)
+    ppy = float(periods_per_year)
+    if simple_r.size >= 2:
+        std_r = float(np.std(simple_r, ddof=1))
+        ann_vol = std_r * float(np.sqrt(ppy))
+        rf_per_period = float(risk_free_rate) / ppy
+        excess = simple_r - rf_per_period
+        sharpe = (float(np.mean(excess)) * ppy / ann_vol) if ann_vol > 0.0 else float("nan")
+        down = np.minimum(excess, 0.0)
+        down_dev = float(np.sqrt(np.mean(down * down))) * float(np.sqrt(ppy))
+        sortino = (float(np.mean(excess)) * ppy / down_dev) if down_dev > 0.0 else float("nan")
+    else:
+        ann_vol = float("nan")
+        sharpe = float("nan")
+        sortino = float("nan")
+
+    calmar = float(cagr / mdd) if (np.isfinite(cagr) and mdd > 0.0) else float("nan")
+    return {
+        "total_return": total_return,
+        "cagr": cagr,
+        "annualized_volatility": ann_vol,
+        "max_drawdown": mdd,
+        "sharpe_ratio": sharpe,
+        "sortino_ratio": sortino,
+        "calmar_ratio": calmar,
+    }
+
+
+def _infer_base_date(index: pd.Index, base_date: pd.Timestamp | None) -> object:
+    if base_date is not None:
+        ts = pd.Timestamp(base_date)
+        if ts.tzinfo is not None:
+            ts = ts.tz_localize(None)
+        if isinstance(index, pd.DatetimeIndex) and ts >= index[0]:
+            raise ValueError("base_date must be strictly earlier than the first return date.")
+        return ts
+    if isinstance(index, pd.DatetimeIndex):
+        return index[0] - pd.Timedelta(days=1)
+    if isinstance(index, pd.RangeIndex) or pd.api.types.is_integer_dtype(index):
+        return int(index[0]) - 1
+    return "Base"
+
+
 def backtest_portfolio(
     returns_df: pd.DataFrame,
     optimal_weights: np.ndarray | Sequence[float],
     *,
     min_history: int = 30,
+    rebalance_freq: RebalanceFreq = "monthly",
+    transaction_cost_bps: float = 0.0,
+    tradable_mask: pd.DataFrame | None = None,
+    base_date: pd.Timestamp | None = None,
+    include_base_point: bool = True,
+    periods_per_year: float = 252.0,
+    risk_free_rate: float = 0.016,
 ) -> pd.DataFrame:
-    """最优权重组合与等权组合的归一化累计净值（样本首日净值为 1）。
+    """最优权重组合与等权组合的累计净值回测（基期 1.0，完整保留首期及全样本收益）。
 
-    权重与 ``clean_joint_returns`` 后的列顺序对齐；传入已清洗的 ``returns_df`` 时行为幂等。
+    支持初始建仓成本、按周期再平衡（``buy_and_hold`` / ``daily`` / ``monthly`` / ``quarterly``）
+    以及双边交易费用（bps）。若提供 ``tradable_mask``，非交易日绝不强行调仓。
     """
+    if rebalance_freq not in ("buy_and_hold", "daily", "monthly", "quarterly"):
+        raise ValueError(f"Unsupported rebalance_freq: {rebalance_freq!r}")
+    if (
+        isinstance(transaction_cost_bps, bool)
+        or not np.isfinite(float(transaction_cost_bps))
+        or float(transaction_cost_bps) < 0.0
+    ):
+        raise ValueError("transaction_cost_bps must be finite and non-negative.")
+
     r = clean_joint_returns(returns_df, min_history=min_history)
     w = np.asarray(optimal_weights, dtype=float).ravel()
     if w.size != r.shape[1]:
@@ -266,23 +438,66 @@ def backtest_portfolio(
         raise ValueError("optimal_weights must be finite with a non-zero sum.")
     # 权重归一化保证所有资产权重加总为 1，即“满仓”组合。
     w = w / w.sum()
-    opt_daily = np.einsum("ij,j->i", r.values, w)
-    eq_daily = r.mean(axis=1).values
-    rp_opt = pd.Series(opt_daily, index=r.index, dtype=float)
-    rp_eq = pd.Series(eq_daily, index=r.index, dtype=float)
-    raw_opt = (1 + rp_opt).cumprod()
-    raw_eq = (1 + rp_eq).cumprod()
-    if raw_opt.iloc[0] == 0 or raw_eq.iloc[0] == 0:
-        raise ValueError("Cannot normalize a portfolio with zero first-day wealth.")
-    v_opt = raw_opt / raw_opt.iloc[0]
-    v_eq = raw_eq / raw_eq.iloc[0]
-    return pd.DataFrame(
-        {
-            "Optimal_Portfolio": v_opt,
-            "Equal_Weight_Portfolio": v_eq,
-        },
-        index=r.index,
+    w_eq = np.full(r.shape[1], 1.0 / float(r.shape[1]), dtype=float)
+
+    nav_opt, opt_turnover, opt_cost = _simulate_portfolio_nav(
+        r,
+        w,
+        rebalance_freq=rebalance_freq,
+        transaction_cost_bps=float(transaction_cost_bps),
+        tradable_mask=tradable_mask,
     )
+    nav_eq, eq_turnover, eq_cost = _simulate_portfolio_nav(
+        r,
+        w_eq,
+        rebalance_freq=rebalance_freq,
+        transaction_cost_bps=float(transaction_cost_bps),
+        tradable_mask=tradable_mask,
+    )
+
+    if include_base_point:
+        anchor = _infer_base_date(r.index, base_date)
+        full_index = pd.Index([anchor]).append(r.index)
+        if isinstance(r.index, pd.DatetimeIndex):
+            full_index = pd.DatetimeIndex(full_index, name=r.index.name or "Date")
+        out = pd.DataFrame(
+            {
+                "Optimal_Portfolio": np.concatenate(([1.0], nav_opt)),
+                "Equal_Weight_Portfolio": np.concatenate(([1.0], nav_eq)),
+            },
+            index=full_index,
+        )
+    else:
+        out = pd.DataFrame(
+            {
+                "Optimal_Portfolio": nav_opt,
+                "Equal_Weight_Portfolio": nav_eq,
+            },
+            index=r.index,
+        )
+
+    opt_perf = compute_backtest_metrics(
+        out["Optimal_Portfolio"],
+        periods_per_year=periods_per_year,
+        risk_free_rate=risk_free_rate,
+    )
+    eq_perf = compute_backtest_metrics(
+        out["Equal_Weight_Portfolio"],
+        periods_per_year=periods_per_year,
+        risk_free_rate=risk_free_rate,
+    )
+    opt_perf["total_turnover"] = opt_turnover
+    opt_perf["total_cost_ratio"] = opt_cost
+    eq_perf["total_turnover"] = eq_turnover
+    eq_perf["total_cost_ratio"] = eq_cost
+    out.attrs["performance"] = {
+        "Optimal_Portfolio": opt_perf,
+        "Equal_Weight_Portfolio": eq_perf,
+        "rebalance_freq": rebalance_freq,
+        "transaction_cost_bps": float(transaction_cost_bps),
+        "periods_per_year": float(periods_per_year),
+    }
+    return out
 
 
 def generate_efficient_frontier(
@@ -378,8 +593,10 @@ def generate_efficient_frontier(
 __all__ = [
     "EfficientFrontierResult",
     "MonteCarloGBMResult",
+    "RebalanceFreq",
     "backtest_portfolio",
     "clean_joint_returns",
+    "compute_backtest_metrics",
     "generate_efficient_frontier",
     "normalize_close_to_base_one",
     "returns_correlation_matrix",

@@ -16,7 +16,7 @@ def _sample_returns(n_rows: int = 40, n_cols: int = 3, seed: int = 42) -> pd.Dat
     rng = np.random.default_rng(seed)
     idx = pd.date_range("2020-01-01", periods=n_rows, freq="B")
     cols = [f"a{i}" for i in range(n_cols)]
-    x = rng.standard_normal((n_rows, n_cols))
+    x = rng.normal(0.0005, 0.012, (n_rows, n_cols))
     return pd.DataFrame(x, index=idx, columns=cols)
 
 
@@ -40,17 +40,18 @@ def test_backtest_portfolio_first_day_one_and_equal_weight_manual():
     r = _sample_returns()
     cleaned = clean_joint_returns(r, min_history=30)
     w = np.array([0.5, 0.25, 0.25])
-    bt = backtest_portfolio(r, w, min_history=30)
+    bt = backtest_portfolio(r, w, min_history=30, rebalance_freq="daily")
+    assert len(bt) == len(cleaned) + 1
+    assert bt.index[0] < cleaned.index[0]
     assert np.isclose(bt["Optimal_Portfolio"].iloc[0], 1.0, rtol=1e-12)
     assert np.isclose(bt["Equal_Weight_Portfolio"].iloc[0], 1.0, rtol=1e-12)
     eq_daily = cleaned.mean(axis=1)
-    raw_eq = (1 + eq_daily).cumprod()
-    expected_eq = raw_eq / raw_eq.iloc[0]
-    assert np.allclose(
-        bt["Equal_Weight_Portfolio"].values,
-        expected_eq.loc[bt.index].values,
-        rtol=1e-12,
-    )
+    expected_eq = np.concatenate(([1.0], (1.0 + eq_daily).cumprod().to_numpy()))
+    assert np.allclose(bt["Equal_Weight_Portfolio"].to_numpy(), expected_eq, rtol=1e-12)
+
+    bt_bh = backtest_portfolio(r, w, min_history=30, rebalance_freq="buy_and_hold")
+    expected_bh = np.concatenate(([1.0], (1.0 + cleaned).cumprod().mean(axis=1).to_numpy()))
+    assert np.allclose(bt_bh["Equal_Weight_Portfolio"].to_numpy(), expected_bh, rtol=1e-12)
 
 
 def test_backtest_portfolio_idempotent_on_cleaned_frame():

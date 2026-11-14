@@ -11,7 +11,22 @@ import requests.utils
 from data_sources import network
 
 
+def _clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 def test_proxy_context_is_thread_local_and_restores_after_error(monkeypatch):
+    _clear_proxy_env(monkeypatch)
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9999")
     resolver = lambda url, no_proxy=None: {"http": os.environ["HTTP_PROXY"]}
     monkeypatch.setattr(requests.sessions, "get_environ_proxies", resolver)
@@ -42,6 +57,7 @@ def test_windows_proxy_policy_never_changes_other_platforms(monkeypatch):
 
 
 def test_windows_policy_preserves_explicit_environment_proxy(monkeypatch):
+    _clear_proxy_env(monkeypatch)
     monkeypatch.setattr(network, "_PROXY_POLICY_RESOLVED", False)
     monkeypatch.setattr(network.sys, "platform", "win32")
     monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "system"})

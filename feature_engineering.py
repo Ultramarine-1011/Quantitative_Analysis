@@ -146,6 +146,71 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
     def compute_max_drawdown(self, df: pd.DataFrame, price_col: str = "Close") -> float:
         return float(self.compute_drawdown(df, price_col).max())
 
+    @staticmethod
+    def _ema(price: pd.Series, span: int) -> pd.Series:
+        return price.ewm(span=span, min_periods=span, adjust=False).mean().rename(f"ema_{span}")
+
+    @staticmethod
+    def _rsi(price: pd.Series, window: int) -> pd.Series:
+        delta = price.diff()
+        gain = delta.clip(lower=0.0)
+        loss = (-delta).clip(lower=0.0)
+        avg_gain = gain.ewm(alpha=1.0 / float(window), min_periods=window, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1.0 / float(window), min_periods=window, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0.0, np.nan)
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        # Flat prices (both avg_gain and avg_loss == 0) correspond to neutral RSI=50; zero loss with gain > 0 is 100.
+        both_zero = (avg_gain == 0.0) & (avg_loss == 0.0)
+        only_gain = (avg_gain > 0.0) & (avg_loss == 0.0)
+        rsi = rsi.where(~only_gain, 100.0)
+        rsi = rsi.where(~both_zero, 50.0)
+        rsi.iloc[:window] = np.nan
+        return rsi.rename(f"rsi_{window}").astype("float64")
+
+    @staticmethod
+    def _macd(price: pd.Series, fast: int, slow: int, signal: int) -> pd.DataFrame:
+        ema_fast = price.ewm(span=fast, min_periods=fast, adjust=False).mean()
+        ema_slow = price.ewm(span=slow, min_periods=slow, adjust=False).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=signal, min_periods=signal, adjust=False).mean()
+        hist = macd_line - signal_line
+        return pd.DataFrame(
+            {
+                "macd": macd_line.astype("float64"),
+                "macd_signal": signal_line.astype("float64"),
+                "macd_hist": hist.astype("float64"),
+            },
+            index=price.index,
+        )
+
+    def compute_ema(self, df: pd.DataFrame, price_col: str = "Close", span: int = 12) -> pd.Series:
+        span = self._validate_positive_int(span, "span")
+        price = self._get_price_series(self.validate_input(df), price_col)
+        return self._ema(price, span)
+
+    def compute_rsi(
+        self, df: pd.DataFrame, price_col: str = "Close", window: int = 14
+    ) -> pd.Series:
+        window = self._validate_positive_int(window, "window")
+        price = self._get_price_series(self.validate_input(df), price_col)
+        return self._rsi(price, window)
+
+    def compute_macd(
+        self,
+        df: pd.DataFrame,
+        price_col: str = "Close",
+        fast: int = 12,
+        slow: int = 26,
+        signal: int = 9,
+    ) -> pd.DataFrame:
+        fast = self._validate_positive_int(fast, "fast")
+        slow = self._validate_positive_int(slow, "slow")
+        signal = self._validate_positive_int(signal, "signal")
+        if fast >= slow:
+            raise ValueError("MACD fast span must be smaller than slow span.")
+        price = self._get_price_series(self.validate_input(df), price_col)
+        return self._macd(price, fast, slow, signal)
+
     def transform(
         self,
         df: pd.DataFrame,
@@ -158,8 +223,13 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
         annualize: bool = True,
         trading_days: int = 252,
         include_drawdown: bool = True,
+        include_momentum_indicators: bool = False,
+        rsi_window: int = 14,
+        macd_fast: int = 12,
+        macd_slow: int = 26,
+        macd_signal: int = 9,
     ) -> pd.DataFrame:
-        """Add SMA, log volatility, Bollinger bands and drawdown; preserve attrs.
+        """Add SMA, log volatility, Bollinger bands, drawdown and optional RSI/MACD; preserve attrs.
 
         Rolling windows and ddof=1 match the standalone methods. Reapplying a
         transform replaces its feature columns instead of failing on a join.
@@ -172,6 +242,13 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
         trading_days = self._validate_positive_int(trading_days, "trading_days")
         if sma_short_window >= sma_long_window:
             raise ValueError("sma_short_window must be smaller than sma_long_window.")
+        if include_momentum_indicators:
+            rsi_window = self._validate_positive_int(rsi_window, "rsi_window")
+            macd_fast = self._validate_positive_int(macd_fast, "macd_fast")
+            macd_slow = self._validate_positive_int(macd_slow, "macd_slow")
+            macd_signal = self._validate_positive_int(macd_signal, "macd_signal")
+            if macd_fast >= macd_slow:
+                raise ValueError("macd_fast must be smaller than macd_slow.")
 
         out = self.validate_input(df)
         price = self._get_price_series(out, price_col)
@@ -190,6 +267,10 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
         drawdown = self._drawdown(price)
         if include_drawdown:
             out["drawdown"] = drawdown
+        if include_momentum_indicators:
+            out[f"rsi_{rsi_window}"] = self._rsi(price, rsi_window)
+            macd_df = self._macd(price, macd_fast, macd_slow, macd_signal)
+            out[macd_df.columns] = macd_df
         out.attrs["max_drawdown"] = float(drawdown.max())
         out.attrs["feature_summary"] = {
             "price_col": price_col,
@@ -201,6 +282,7 @@ class OHLCVFeatureEngineer(BaseFeatureEngineer):
             "annualize": annualize,
             "trading_days": trading_days,
             "include_drawdown": include_drawdown,
+            "include_momentum_indicators": include_momentum_indicators,
         }
         return out
 

@@ -15,14 +15,24 @@ def test_cleaning_preserves_features_metadata_and_float_dtypes(sample_ohlcv):
     frame["custom"] = np.arange(len(frame))
     frame.loc[frame.index[1], ["Open", "High", "Low", "Close", "Volume"]] = None
     before = frame.copy(deep=True)
-    clean = prepare_ohlcv(frame)
-    assert (clean.iloc[1][:5] == clean.iloc[0][:5]).all()
+
+    with pytest.raises(ValueError, match="missing_policy='raise'"):
+        prepare_ohlcv(frame)
+    with pytest.raises(ValueError, match="missing_policy='raise'"):
+        OHLCVFeatureEngineer().validate_input(frame)
+
+    clean = prepare_ohlcv(frame, missing_policy="ffill")
+    assert (clean.iloc[1][:4] == clean.iloc[0][:4]).all()
+    assert clean.iloc[1]["Volume"] == 0.0
     assert (clean.iloc[:, :5].dtypes == "float64").all()
     assert clean["custom"].equals(before["custom"])
-    assert clean.attrs == before.attrs
+    for key, val in before.attrs.items():
+        assert clean.attrs[key] == val
+    assert clean.attrs["data_quality"]["filled_price_rows"] == 1
+    assert clean.attrs["data_quality"]["missing_volume_rows"] == 1
     pd.testing.assert_frame_equal(frame, before)
-    pd.testing.assert_frame_equal(OHLCVFeatureEngineer().validate_input(frame), clean)
-    pd.testing.assert_frame_equal(MplfinanceVisualizer().validate_input(frame), clean)
+    pd.testing.assert_frame_equal(OHLCVFeatureEngineer().validate_input(clean), clean)
+    pd.testing.assert_frame_equal(MplfinanceVisualizer().validate_input(clean), clean)
 
 
 def test_duplicate_dates_keep_last_and_timezone_is_removed(sample_ohlcv):
@@ -37,15 +47,20 @@ def test_duplicate_dates_keep_last_and_timezone_is_removed(sample_ohlcv):
     assert str(clean.index.dtype) == "datetime64[ns]"
 
 
-def test_infinite_and_bad_values_are_forward_filled(sample_ohlcv):
+def test_infinite_and_bad_values_drop_by_default_and_can_ffill(sample_ohlcv):
     raw = sample_ohlcv.iloc[:4].astype(object)
     raw.iloc[1, 3] = "inf"
     raw.iloc[2, 3] = "bad"
     out = normalize_ohlcv(raw, {})
-    assert out["Close"].iloc[1] == out["Close"].iloc[0]
-    assert out["Close"].iloc[2] == out["Close"].iloc[0]
+    assert len(out) == 2
+    assert out.attrs["data_quality"]["dropped_invalid_rows"] == 2
     fetcher = AKShareFetcher(max_retries=1, use_system_proxy=True)
     pd.testing.assert_frame_equal(fetcher._normalize_ohlcv(raw, {}), out)
+
+    filled = normalize_ohlcv(raw, {}, missing_policy="ffill")
+    assert filled["Close"].iloc[1] == filled["Close"].iloc[0]
+    assert filled["Close"].iloc[2] == filled["Close"].iloc[0]
+    assert filled.attrs["data_quality"]["filled_price_rows"] == 2
 
 
 def test_leading_missing_rows_drop_only_at_vendor_boundary(sample_ohlcv):
