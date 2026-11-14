@@ -1,212 +1,277 @@
-# Quantitative Analysis（量化诊断）
+# Quantitative Analysis
 
-基于 Python 3.11+ 的量化分析工具集：提供 **Streamlit Web 应用** 与 **命令行入口** 统一覆盖 13 类跨市场资产的历史行情诊断、多币种折算、精确有效前沿优化与无前视偏差样本外回测。数据经统一 **OHLCV**（开高低收量）契约清洗后，复用同一套特征工程、风险指标与跨端持久化缓存。
+**Python 多资产金融数据分析与可视化工具**（Python 3.11+）。
 
-## 产品方向与开发路线图
+项目围绕统一的 **OHLCV（开高低收量）** 数据契约，整合跨市场行情检索、数据清洗与质量诊断、技术特征工程、风险收益统计指标、精确有效前沿优化及无前视偏差样本外回测。当前通过 **Streamlit Web 应用** 与 **Python 命令行（CLI）** 提供交互式分析与批处理能力，并正按阶段向 **AI Agent 可调用的结构化金融分析模块** 演进。
 
-项目长期围绕两个目标建设：**面向人类的多资产可视化分析平台**，以及**面向 AI Agent 的金融数据处理与指标工具模块**。后者以 CLI 为主要调用入口，自动完成数据检索、清洗、质量检查和指标计算，输出机器可读的结构化结果，并按需生成报告与图表。
-
-当前仓库已具备部分数据、指标、可视化和 CLI 能力；统一分析服务、完整的 Agent CLI 和自动报告等仍属于后续开发计划。具体设计原则、M0–M5 阶段目标、验收标准与 V0.1–V1.0 版本规划，请参阅 **[产品定位与开发路线图](docs/ROADMAP.md)**。
+> 项目当前处于持续重构期，本文严格区分**已实现能力**与**规划中能力**；工程技术债与阶段路线请参阅 [工程架构](docs/ARCHITECTURE.md) 与 [产品定位与开发路线图](docs/ROADMAP.md)。
 
 ---
 
-## 功能概览
+## 核心能力概览（已实现）
 
-### Web 应用（`app.py`）
-
-- **多资产类型**：A 股 ETF/个股、公募基金、贵金属与**外盘商品期货**、加密货币（Binance + CCXT）、**美股/港股日线**、**全球指数**（美股指数 `.INX` 等经新浪；`HSI`/`SPX` 等简码经东财 `index_global_hist_em`）、**中国国债 K 线**、**美债收益率水平序列**（`bond_zh_us_rate`，默认 10Y 列；非持有期回报，看板有专门说明）、**C-REITs**（`reits_hist_em`）、**外汇**（`forex_hist_em`，如 `USDCNH`）。
-- **量化诊断看板**：在选定区间内计算并展示 **CAGR**、**最大回撤**、**年化夏普 / Sortino / Calmar**（支持自定义无风险利率，默认 1.6%）、**95% 日 VaR / CVaR**、**累计收益率**，以及可配置的 SMA / 布林带 / RSI(14) / MACD，并展示数据源、复权口径、缓存命中状态与数据质量诊断。
-- **交互式图表**：自适应亮暗主题的 Plotly 多面板图表（K 线 / 折线、成交量、滚动波动率、水下回撤与均线/布林带）。
-- **多资产精确组合与样本外回测（「进阶金融算法」）**：支持跨市场日历对齐（`common_trading_dates` / `weekly_friday` / `mtm_outer`）、`CNY`/`USD`/`LOCAL` 基准货币换算与显式 USDT 锚定开关、Ledoit-Wolf 协方差收缩、SciPy SLSQP 精确有效前沿（GMV 与切点最大夏普 + 权重上下界），以及 Train/Test 静态划分或滚动/扩展 Walk-Forward 无泄露样本外回测（含再平衡频次与双边交易费率 bps）。
-- **数据导出**：可下载与看板一致的 **清洗后 OHLCV CSV**（UTF-8 BOM，列：`Date`, `Open`, `High`, `Low`, `Close`, `Volume`）。
-- **说明页**：第二个标签页提供指标相关的数学定义说明（Markdown + LaTeX）。
-- **共享持久化缓存**：`data_sources/cache.py` 提供 Web 与 CLI 共享的 Parquet + JSON 元信息磁盘缓存（默认 TTL 3600 秒，支持区间子集复用与一键强制刷新/`--refresh`），Web 端叠加 Streamlit `cache_data`。
-- **结果保留**：诊断、归一化、GBM 和组合优化分别保存本次会话的最新结果；侧边栏代理配置跨资产切换持久化，下载 CSV 或运行其他分析后仍可查看。
-
-### 命令行（`main.py`）
-
-- 面向 **全 13 类资产** 的端到端流程：共享持久化缓存拉数 → 可选基准货币折算（`--base-currency`）→ `OHLCVFeatureEngineer` 特征工程 → `MplfinanceVisualizer` 多面板图 → 控制台输出新版诊断报告（含 Sortino/Calmar/VaR/CVaR），并支持 `--save-chart` 与 `--export-csv` 无头批处理。
-
-### 核心库模块
-
-| 模块 | 作用 |
-|------|------|
-| `data_fetcher.py` | 保留现有数据 API；全球市场路由与多 ETF 宽表 |
-| `data_sources/` | 境内权益回退、基金净值、东财/外汇 HTTP 适配、超时预算、线程代理隔离与 Parquet 共享缓存 |
-| `ohlcv.py` | 日期校验、OHLCV 清洗、缺失值策略与质量诊断契约 |
-| `asset_resolver.py` | 日期校验、境内 `load_china_equity_ohlcv`、`format_diagnosis_user_message` |
-| `china_equity_entry.py` | 自 `asset_resolver` 的兼容 re-export |
-| `asset_loader.py` / `asset_catalog.py` | 跨资产并发加载、多市场日历对齐、组合输入与预设模板 |
-| `currency.py` | 跨市场计价推断、FX/USDT 汇率对齐与基准货币折算 |
-| `feature_engineering.py` | SMA、布林带、EMA、RSI、MACD、对数收益波动率与最大回撤 |
-| `analysis_metrics.py` / `quant_models.py` | Sortino/Calmar/VaR/CVaR；SLSQP 精确有效前沿、Ledoit-Wolf 收缩与 Walk-Forward OOS 回测 |
-| `visualizer.py` | 基于 mplfinance 的 CLI 用高级图表（含纯折线模式） |
-| `charts.py` / `app.py` | 主题自适应 Plotly 图表；Streamlit 页面与持久化状态 |
+- **多资产数据获取与统一处理**：支持 13 类跨市场资产元数据与行情路由、跨市场交易日历对齐（`common_trading_dates` / `weekly_friday` / `mtm_outer`）、基准货币折算（`CNY` / `USD` / `LOCAL`）与 Web/CLI 共享 Parquet 磁盘缓存。
+- **OHLCV 清洗、校验与特征工程**：标准化六列 OHLCV 契约（无时区升序唯一日期索引），输出 9 项质量诊断计数，并计算 SMA、EMA、布林带、RSI(14)、MACD、对数收益滚动波动率及回撤序列。
+- **风险收益统计与组合模型**：计算累计收益、CAGR、年化波动率、最大回撤、Sharpe / Sortino / Calmar 与 95% 日 VaR / CVaR；支持相关性热图、Ledoit-Wolf 协方差收缩、SciPy SLSQP 精确有效前沿（GMV 与切点最大夏普）、GBM 蒙特卡洛模拟及 Train/Test 与 Walk-Forward 样本外回测。
+- **交互式图表与数据导出**：Streamlit 三标签页界面集成自适应亮暗主题的 Plotly 多面板图表及清洗后 OHLCV CSV（UTF-8 BOM）导出；命令行支持控制台诊断报告、`mplfinance` 多面板静态图与 CSV 导出。
+- **命令行分析流程**：提供 `python main.py`（及安装包命令 `quantitative-analysis`）覆盖全 13 类资产的单资产终端诊断与无头批处理导出。
 
 ---
 
-## 环境要求
+## 分析看板实景展示
 
-- **Python**：最低 **3.11**（推荐 **3.12 / 3.14**，本地主开发与验收基准为 Python **3.14**，CI 覆盖 **3.11 / 3.12 / 3.14**）。
-- **网络**：A 股、基金、贵金属等依赖 **AKShare** 等数据源；加密货币依赖交易所 API（默认 Binance），部分地区可能需要代理。
-- **共享磁盘缓存**：默认写入 `~/.cache/quantitative_analysis/ohlcv`，可通过环境变量 `QUANT_CACHE_DIR`、`QUANT_CACHE_TTL`（秒，默认 `3600`）与 `QUANT_DISABLE_CACHE=1` 控制。
+以下截图均在本地实际运行 `streamlit run app.py` 并拉取真实公开行情数据截取（仅作工具计算与界面展示，不构成投资建议）：
+
+![量化诊断看板实景截图：A股 ETF 510300 真实公开行情分析](docs/images/dashboard-etf-510300.png)
+
+*图 1：单资产「量化诊断看板」实景（标的：A股 ETF `510300`，区间 `2023-11-14` 至 `2026-11-13`，727 条后复权日线记录，数据源 `eastmoney_direct`），展示核心风险收益指标、布林带信号摘要、K 线/均线/成交量/滚动波动率/水下回撤四联图与 CSV 导出入口。*
 
 ---
 
-## 安装
+## 主要技术栈
+
+| 类别 | 主要技术与库 |
+| --- | --- |
+| 运行环境 | Python `>=3.11`（CI 矩阵覆盖 `3.11` / `3.12` / `3.14`） |
+| 数据处理与契约 | `pandas`、`NumPy`、`PyArrow`（`<26`） |
+| 统计与优化算法 | `SciPy`（SLSQP 精确有效前沿）、内置解析 Ledoit-Wolf 收缩与风险指标计算 |
+| 可视化与界面 | `Streamlit`（`>=1.50`）、`Plotly`、`Matplotlib`、`mplfinance` |
+| 外部行情与网络 | `AKShare`、`CCXT`、`requests`、`httpx` |
+| 测试与代码规范 | `pytest`、`Ruff` |
+
+---
+
+## 快速运行
+
+### 1. 环境准备
 
 ```bash
+git clone https://github.com/Ultramarine-1011/Quantitative_Analysis.git
 cd Quantitative_Analysis
 python -m venv .venv
-```
-
-**Windows（PowerShell）** 激活虚拟环境示例：
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-安装依赖：
-
-```bash
+source .venv/bin/activate        # Windows PowerShell: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-主要依赖包括：`pandas`、`numpy`、`scipy`、`streamlit`、`plotly`、`akshare`、`ccxt`、`pyarrow`、`matplotlib`、`mplfinance` 等（详见 `requirements.txt`）。
-
-Web 入口要求 Streamlit **1.50+**，避免旧版前端与新版 Plotly 数组格式不兼容造成错误图表。PyArrow 保留 `<26` 约束。
-
-开发环境（同时安装项目、测试与静态检查工具）：
-
-```bash
-python -m pip install -e ".[dev]"
-```
-
-`pyproject.toml` 从 `requirements.txt` 读取运行依赖，避免维护两份依赖列表。
-
----
-
-## 使用方法
-
-### 1. 启动 Web 应用（推荐）
+### 2. 启动 Streamlit Web 应用
 
 ```bash
 streamlit run app.py
+# Windows 亦可使用仓库脚本：streamlit.bat run app.py
 ```
 
-或在 Windows 下使用仓库中的包装脚本（等价于 `python -m streamlit run app.py`）：
+在左侧 **「参数设置」** 选择资产类别、代码与日期区间后点击 **「开始诊断」**，即可在三个标签页间使用单资产诊断、数学定义参考与进阶组合/回测分析。
 
-```bat
-streamlit.bat run app.py
-```
-
-浏览器打开终端提示的本地地址后：
-
-1. 在左侧 **「参数设置」** 中选择 **资产类型**、输入 **代码**、**开始/结束日期**。
-2. 点击 **「开始诊断」**。
-3. 在 **「量化诊断看板」** 查看指标与图表；需要时可 **下载 CSV**。
-4. **「数学原理」** 标签可阅读指标定义说明。
-5. **「进阶金融算法」** 可独立运行归一化、GBM 和多资产组合分析。组合输入与代码参考分开展示，权重以百分比显示；代码参考与相关系数明细可按需展开。
-
-手机上可通过左上角箭头展开参数栏。开始日期晚于结束日期或单标的代码为空时，页面会提示并禁用相应计算按钮；美债收益率列留空仍使用默认 10Y。
-
-**各类型代码示例（默认值可参考应用内侧边栏）**：
-
-| 资产类型 | 代码示例 | 说明 |
-|----------|----------|------|
-| A 股 ETF | `510300` | 与「ETF」类别对应，勿与个股混用 |
-| A 股个股 | `600519` | 股票代码 |
-| 公募基金 | `009691` | 基金代码（净值序列，Close 为累计净值） |
-| 贵金属 | `GC`、`AU9999`（映射到 GC）等 | 来自 AKShare 外盘期货历史接口 |
-| 加密货币 | `BTC/USDT` | CCXT + Binance；**可在侧边栏填写代理**（仅加密模式生效），格式如 `http://127.0.0.1:33210` |
-| 美股 | `AAPL` | `stock_us_daily` |
-| 港股 | `00700` | `stock_hk_daily`（纯数字会自动补零到 5 位） |
-| 全球指数 | `.INX`（新浪美股指数）；或 `HSI`、`SPX`、`DXY` 等简码（东财 `index_global_hist_em`） | 简码见 `data_fetcher.GLOBAL_INDEX_EM_ALIASES` |
-| 中国国债 K 线 | `sh010107` | `bond_zh_hs_daily` |
-| 美债收益率 | `10Y` 或留空=默认 10 年期列；亦可填 `bond_zh_us_rate` 表中的**完整列名** | 水平序列，非债基持有回报 |
-| 外盘商品期货 | `CL`、`HG` 等 | `futures_foreign_hist`，与贵金属同源 |
-| C-REITs | `508097` | `reits_hist_em` |
-| 外汇 | `USDCNH`；亦支持 `USD/CNY` 等别名 | `forex_hist_em` |
-
-若拉取失败，界面会给出可读错误信息；**数据源异常**时会提示代码或接口暂不可用。空数据时会提示检查代码与资产类型是否匹配。
-
-### 2. 命令行：全资产分析（`main.py`）
+### 3. 运行命令行单资产诊断（CLI）
 
 ```bash
+# 查看完整参数帮助
 python main.py --help
+
+# 示例 1：默认 A 股 ETF 510300（最近 3 年），输出终端诊断报告并跳过弹窗
+python main.py --asset-type etf --symbol 510300 --no-show
+
+# 示例 2：A 股个股 600519 指定区间诊断，并无头导出图表与标准化 CSV
+python main.py --asset-type ashare --symbol 600519 --start 2023-11-14 --end 2026-11-13 --save-chart outputs/600519.png --export-csv outputs/600519.csv --no-show
 ```
 
-安装项目后也可使用 `quantitative-analysis --help`，参数与 `python main.py` 一致。
+安装开发/可编辑包（`pip install -e .`）后，也可直接使用注册命令 `quantitative-analysis` 替代 `python main.py`。
 
-示例：
+---
 
-```bash
-# 默认：ETF 510300，约最近 3 年到今天
-python main.py
+## 核心功能详解
 
-# 美股按前复权抓取并折算为 CNY，无头保存图表与 CSV
-python main.py --asset-type us_stock --symbol AAPL --adjust qfq --base-currency CNY --save-chart outputs/aapl.png --export-csv outputs/aapl.csv --no-show
+### 1. 多资产数据获取与统一处理
 
-# 强制刷新（跳过共享持久缓存）
-python main.py --asset-type etf --symbol 510300 --refresh --no-show
+- **13 类资产统一入口**：覆盖 A 股 ETF、A 股个股、公募基金、贵金属、加密货币（Binance via CCXT）、美股、港股、全球指数、中国国债 K 线、美债收益率水平序列、外盘商品期货、C-REITs 与外汇即期；支持多源回退、代码别名规范化与请求预算控制。
+- **金融语义区分**：通过 `ASSET_RETURN_BASIS` 与 `ASSET_TRADING_DAYS`（加密 `365`、外汇 `260`、其余 `252`）区分复权价格、累计净值、期货连续合约、纯价格指数与收益率水平（如美债收益率水平序列禁止纳入净值组合优化）。
+- **跨市场对齐与基准货币折算**：组合模块支持按共同交易日交集、周五周频或逐日盯市（附 `tradable_mask` 停牌隔离）对齐跨市场序列，并使用向后防前视偏差的 `merge_asof` 对齐汇率将数据折算为 `CNY`、`USD` 或保留 `LOCAL`（加密货币支持显式 USDT/USD 锚定开关）。
+- **共享持久化缓存**：Web 与 CLI 共用基于 Parquet + JSON 元信息的磁盘缓存（默认 TTL 3600 秒，支持区间子集复用与一键强制刷新/`--refresh`），Web 端叠加 `@st.cache_data` 会话内加速。
+
+<details>
+<summary>展开查看：13 类资产参数示例与数据源说明</summary>
+
+| 资产类型 key | 代码示例 | 口径与路由说明 |
+| --- | --- | --- |
+| `etf` | `510300` | A 股 ETF 日线（支持 `hfq` / `qfq` / 不复权，与个股区分） |
+| `ashare` | `600519` | A 股个股日线（多源回退，支持 `hfq` / `qfq` / 不复权） |
+| `mutual_fund` | `009691` | 公募基金累计净值序列（`Close` 为累计净值，无成交量） |
+| `gold` | `GC`、`AU9999` | 外盘贵金属期货主力连续（`AU9999` 映射至 `GC`） |
+| `crypto` | `BTC/USDT` | 现货日线（CCXT + Binance，支持侧边栏或 `--proxy` 指定代理） |
+| `us_stock` | `AAPL` | 美股日线（支持 `qfq` / 不复权） |
+| `hk_stock` | `00700` | 港股日线（纯数字自动补零至 5 位，支持 `hfq` / `qfq` / 不复权） |
+| `global_index` | `.INX`、`HSI`、`SPX` | `.` 开头走新浪美股指数；简码映射东财国际指数 |
+| `bond_cn` | `sh010107` | 沪深交易所债券日 K |
+| `bond_us_yield` | `10Y` | 美债收益率水平序列（留空默认 `10Y`；非债券持有期回报） |
+| `commodity` | `CL`、`HG` | 外盘大宗商品期货主力连续 |
+| `creit` | `508097` | 基础设施公募 REITs 日线 |
+| `fx` | `USDCNH` | 即期汇率日 K（亦支持 `USD/CNY` 等常见别名） |
+
+> 注：所有外部行情依赖第三方公开接口（AKShare / 东方财富 / 新浪 / 腾讯 / CCXT），部分资产类型是否可用受上游接口变更、所安装 `akshare` 版本及网络访问条件影响。
+
+</details>
+
+### 2. OHLCV 清洗、校验与特征工程
+
+- **统一契约**：强制校验并输出 `Open`、`High`、`Low`、`Close`、`Volume`（`float64`）与无时区、`ns` 精度、升序唯一的 `Date` 索引；`missing_policy="drop"` 剔除无效价格行且不对成交量前向填充。
+- **质量诊断**：输出 9 项结构化计数（`dropped_invalid_rows`、`filled_price_rows`、`missing_volume_rows`、`zero_volume_rows`、`non_positive_price_rows`、`negative_volume_rows`、`ohlc_anomaly_rows`、`true_zero_return_rows`、`max_calendar_gap_days`），并在 Web 看板中给出明确提示。
+- **特征计算**：单次校验后向量化计算短期/长期 SMA、对数收益滚动年化波动率、布林带上下轨、回撤序列以及可选 EMA、RSI(14) 与 MACD 柱状图，并透传 `DataFrame.attrs` 元信息。
+
+### 3. 统计指标与多资产组合分析
+
+- **单资产诊断指标**：区间累计收益率、自然日年化复合收益率（CAGR）、年化波动率、最大回撤、年化 Sharpe / Sortino / Calmar（默认无风险利率 1.6%，Web 端支持自定义）、95% 日 VaR / CVaR 以及最新布林带位置状态。
+- **组合优化与样本外验证（「进阶金融算法」）**：提供归一化净值对比、GBM 蒙特卡洛路径模拟、多资产相关性热图、Ledoit-Wolf 协方差收缩估计、带权重上下界约束的 SciPy SLSQP 精确有效前沿（GMV 与 Tangency 最大夏普组合），以及 **Train/Test 静态划分** 与 **滚动/扩展 Walk-Forward 无前视偏差样本外回测**（支持再平衡频次与双边交易费率 bps）。
+
+![多资产组合精确有效前沿与样本外回测实景截图](docs/images/portfolio-oos-backtest.png)
+
+*图 2：「进阶金融算法」多资产组合分析实景（预设「境内大类股债均衡」：`etf,510300` / `etf,510500` / `etf,511010` / `etf,518880`，`2023-11-14` 至 `2026-11-13`，726 个共同交易日，`CNY` 计价，Ledoit-Wolf `δ=0.048` + `Train/Test` 样本外独立回测），对比样本内前沿拟合权重与样本外真实净值走势。*
+
+### 4. 交互式图表与数据导出
+
+- **Web 端三标签页布局**：
+  1. **量化诊断看板**：核心 KPI、摘要栏、自适应主题 Plotly 四联图（K 线/折线 + 均线/布林带、成交量、滚动波动率、水下回撤）及清洗后数据与质量报告折叠查看。
+  2. **数学原理**：汇总收益率、波动率、风险调整比率与技术指标的 Markdown + LaTeX 定义说明。
+  3. **进阶金融算法**：归一化对比、GBM 模拟与多资产组合优化/回测，各分析结果在会话内独立保留，参数联动校验防止日期倒置或非法窗口。
+- **标准化数据导出**：Web 端支持一键下载与看板完全一致的清洗后 OHLCV CSV（UTF-8 BOM 六列：`Date,Open,High,Low,Close,Volume`）；CLI 支持 `--export-csv` 与 `--save-chart` 无头导出。
+
+### 5. 当前 CLI 参数与分析流程
+
+`python main.py`（或 `quantitative-analysis`）当前用于单资产端到端终端分析，主要参数如下：
+
+- `--asset-type`：资产类型，支持全部 13 类 key（默认 `etf`）。
+- `--symbol`：标的代码，缺省使用对应类别默认标的。
+- `--start` / `--end`：`YYYY-MM-DD`，默认结束为今天、开始为结束日前推 3 年。
+- `--adjust`：历史复权口径（`hfq` / `qfq` / `""`），按资产实际支持能力校验。
+- `--base-currency`：可选单标的折算目标货币（`CNY` 或 `USD`）。
+- `--proxy`：显式代理地址（如 `http://127.0.0.1:7890`）。
+- `--save-chart` / `--export-csv` / `--no-show` / `--refresh`：静态图保存路径、CSV 导出路径、无头模式、忽略缓存强制刷新。
+
+> 说明：当前 CLI 已覆盖单资产数据拉取、换汇、特征与诊断报告输出及导出；多资产对比与组合优化目前通过 Web 端和 `asset_loader` / `quant_models` Python API 提供，尚未迁移为 `quant` 独立子命令。
+
+---
+
+## 系统架构
+
+项目采用分层职责组织，数据经适配器与共享缓存加载后进入统一的 OHLCV 清洗与汇率/日历契约，再流向特征工程与统计/组合计算层，最终分别由 Streamlit Web 看板和 CLI 消费：
+
+```mermaid
+flowchart TB
+    Sources["数据源适配与共享缓存 (data_sources/ · data_fetcher.py · asset_loader.py)"]
+    Contract["统一 OHLCV 契约与语义/汇率对齐 (ohlcv.py · asset_catalog.py · asset_resolver.py · currency.py)"]
+    Features["特征工程 (feature_engineering.py)"]
+    Analytics["单资产风险指标与组合/回测模型 (analysis_metrics.py · quant_models.py)"]
+    WebUI["Streamlit Web 交互看板 (charts.py · app.py)"]
+    CLI["Python 命令行与静态导出 (visualizer.py · main.py)"]
+
+    Sources --> Contract
+    Contract --> Features
+    Features --> Analytics
+    Analytics --> WebUI
+    Analytics --> CLI
 ```
 
-参数说明：
+<details>
+<summary>展开查看：核心模块清单与仓库目录结构</summary>
 
-- `--asset-type`：支持全 13 类资产（`etf`, `ashare`, `mutual_fund`, `gold`, `crypto`, `us_stock`, `hk_stock`, `global_index`, `bond_cn`, `bond_us_yield`, `commodity`, `creit`, `fx`）。
-- `--symbol`：可选；缺省使用对应资产类别默认示例。
-- `--start` / `--end`：可选，`YYYY-MM-DD`；默认结束为今天，开始约为结束日前推 3 年。
-- `--adjust` / `--proxy` / `--base-currency` / `--save-chart` / `--export-csv` / `--no-show` / `--refresh`：复权口径、网络代理、基准货币折算（`CNY`/`USD`）、无头图表与 CSV 导出、跳过缓存强制刷新。
+### 核心模块职责
 
-### 3. 运行测试
+| 模块 | 职责 |
+| --- | --- |
+| `app.py` / `charts.py` | Streamlit 三标签页 Web 入口与会话状态管理；主题自适应 Plotly 图表构建器 |
+| `main.py` / `visualizer.py` | 全 13 类资产命令行入口；基于 `mplfinance` 的静态多面板/纯折线图表渲染 |
+| `asset_catalog.py` | 13 类资产 key、中文标签、默认标的、交易日年化因子、收益语义与复权支持矩阵 |
+| `asset_loader.py` | 13 类资产统一入口 `load_asset_data`、并发加载与多市场交易日历对齐引擎 |
+| `asset_resolver.py` | 日期窗口校验、境内权益加载与统一用户可读错误格式化（`china_equity_entry.py` 保留兼容重导出） |
+| `currency.py` | 计价币种推断、向后防泄露 `merge_asof` FX 对齐与 `CNY`/`USD`/`LOCAL` 基准货币折算 |
+| `data_fetcher.py` / `data_sources/` | 公共行情路由与底层适配器（境内回退、基金、东财、外汇）、请求预算、代理隔离与 Parquet 共享缓存 |
+| `ohlcv.py` | 六列 OHLCV 契约校验、缺失值策略（`raise`/`drop`/`ffill`）与 9 项质量诊断计数 |
+| `feature_engineering.py` | `OHLCVFeatureEngineer`：SMA、布林带、EMA、RSI、MACD、对数收益波动率与最大回撤 |
+| `analysis_metrics.py` | 单资产累计收益、自然日 CAGR、年化波动率、Sharpe / Sortino / Calmar 与 95% 日 VaR / CVaR |
+| `quant_models.py` | GBM 模拟、相关性矩阵、Ledoit-Wolf 收缩、SLSQP 精确有效前沿与 Walk-Forward / Train-Test 样本外回测 |
+
+### 目录结构
+
+```text
+Quantitative_Analysis/
+├── app.py                  # Streamlit Web 入口
+├── main.py                 # CLI 入口（quantitative-analysis）
+├── asset_catalog.py        # 资产元数据、收益语义与预设组合
+├── asset_loader.py         # 跨资产统一加载与多市场日历对齐
+├── asset_resolver.py       # 窗口校验与境内权益路由封装
+├── china_equity_entry.py   # 兼容重导出路径
+├── currency.py             # FX 对齐与基准货币折算
+├── data_fetcher.py         # 行情公共 API 与全球市场路由
+├── data_sources/           # 数据源适配器、超时预算、代理策略与 Parquet 缓存
+├── ohlcv.py                # 共用 OHLCV 清洗与质量诊断契约
+├── feature_engineering.py  # 向量化技术特征与滚动统计
+├── analysis_metrics.py     # 单资产诊断指标
+├── quant_models.py         # 组合优化、GBM 与样本外回测
+├── charts.py               # Plotly 交互图表
+├── visualizer.py           # mplfinance 静态图表
+├── pyproject.toml          # 安装配置、CLI 注册与 Ruff / Mypy 配置
+├── requirements.txt        # 运行依赖
+├── streamlit.bat           # Windows Streamlit 启动包装脚本
+├── .streamlit/config.toml  # Streamlit 默认服务配置
+├── tests/                  # 离线自动化测试套件
+└── docs/                   # 架构、审计、路线图与展示截图
+```
+
+更多关于当前计算口径边界（如单资产对数收益口径与组合简单收益口径差异）、历史兼容层与 M0 审计详情，请参阅 [工程架构文档](docs/ARCHITECTURE.md) 与 [M0 审计与契约文档](docs/M0_AUDIT_AND_CONTRACTS.md)。
+
+</details>
+
+---
+
+## 产品方向与开发路线图
+
+项目围绕两个互补的长期方向演进：
+
+1. **面向用户的可视化分析平台**：提供统一且可解释的 Web 界面，支持单资产探索、多资产比较与投资组合研究，降低跨市场数据对齐、复权口径与样本外回测的使用门槛。
+2. **面向 AI Agent 的金融数据处理与指标工具模块**：围绕 CLI-first 原则建设确定性、机器可读的数据获取与分析接口，使 Agent 无需手写脆弱爬虫或计算脚本即可取得标准化数据、质量检查与指标输出，进而结合外部文本信息进行推理。
+
+### 实施状态与规划边界
+
+| 能力状态 | 具体内容 |
+| --- | --- |
+| **当前已实现** | 13 类资产适配与共享 Parquet 缓存；OHLCV 清洗与 9 项质量诊断；特征工程与单资产风险指标；Ledoit-Wolf + SLSQP 精确有效前沿与 Walk-Forward 样本外回测；Streamlit 三标签页看板；`main.py` / `quantitative-analysis` 单资产 CLI |
+| **规划中（尚未实现）** | 与 UI 解耦的 `AnalysisService` 统一分析服务层；强类型 `SeriesMetadata` / `QualityReport` / `AnalysisResult` 契约；面向 Agent 的 `quant` CLI 子命令（`quant fetch`、`quant analyze`、`quant compare`、`quant portfolio`）；标准化 `result.json` + `data.parquet` 产物协议；独立的 Markdown / HTML 自动报告与按需图表渲染器（对应 M1–M5 阶段） |
+
+详细设计原则、M0–M5 阶段验收标准与 V0.1–V1.0 迭代计划，请参阅 **[产品定位与开发路线图 (docs/ROADMAP.md)](docs/ROADMAP.md)**。
+
+---
+
+## 环境兼容性、网络与测试说明
+
+### 环境与缓存配置
+
+- **Python 与核心依赖**：最低要求 Python **3.11**（推荐 **3.12 / 3.14**，本地主验证环境为 Python **3.14.5**，CI 覆盖 **3.11 / 3.12 / 3.14**）。`pyproject.toml` 动态读取 `requirements.txt`；Web 端要求 `streamlit>=1.50.0`（避免旧版前端与新版 Plotly 数组格式不兼容），`pyarrow` 保留 `<26.0.0` 约束。
+- **共享磁盘缓存**：默认写入 `~/.cache/quantitative_analysis/ohlcv`，可通过环境变量控制：
+  - `QUANT_CACHE_DIR`：自定义缓存目录。
+  - `QUANT_CACHE_TTL`：缓存有效期（秒，默认 `3600`）。
+  - `QUANT_DISABLE_CACHE=1`：禁用本地磁盘缓存。
+
+### 网络与代理配置
+
+- **加密货币接口**：在 Web 侧边栏 **「代理地址（可选）」** 或 CLI `--proxy` 传入（格式如 `http://127.0.0.1:7890`），仅由 CCXT 使用。
+- **Windows 与系统代理策略**：导入库本身不会修改全局环境变量；入口启动或构造客户端时才应用策略。AKShare 等境内接口默认尝试直连；若需强制走系统/环境代理，请在启动前设置 `QUANT_USE_SYSTEM_PROXY=1` 并配置 `HTTP_PROXY` / `HTTPS_PROXY`。线程局部直连上下文不会删除进程环境变量，也不会干扰 CCXT 的显式代理。
+
+### 自动化测试与静态检查
+
+安装开发依赖后运行完整离线回归与规范检查：
 
 ```bash
 python -m pip install -e ".[dev]"
-python -m pytest -q
+MPLBACKEND=Agg QUANT_DISABLE_CACHE=1 python -m pytest -q
 ruff check .
 ruff format --check .
 python -m pip check
 ```
 
-测试目录为 `tests/`（配置见 `pytest.ini`），使用固定样本和模拟数据源，不访问行情网络。覆盖清洗、缺失值与交易日历、外汇折算、并发与超时预算、SLSQP 精确前沿、Ledoit-Wolf 收缩、Walk-Forward OOS 回测、共享磁盘缓存隔离、CSV、CLI 和 Streamlit。GitHub Actions 对 Python **3.11 / 3.12 / 3.14** 执行检查。验证说明见 `docs/CHINA_EQUITY_VERIFICATION.md`；架构说明与兼容边界见 `docs/ARCHITECTURE.md`；M0 技术债审计与 V0.1/V0.2 契约设计见 `docs/M0_AUDIT_AND_CONTRACTS.md`；历史浏览器验收记录见 `docs/FRONTEND_VERIFICATION.md`。
-
----
-
-## 网络与代理说明
-
-- **加密货币**：在 Web 侧通过侧边栏 **「代理地址」** 传入，由 CCXT 使用。
-- **Windows 与系统代理**：导入库不会修改代理。入口启动或首次构造数据客户端时才应用 Windows 系统代理策略。AKShare 默认尝试直连；若需保留系统/环境代理，请在启动前设置 **`QUANT_USE_SYSTEM_PROXY=1`**，并按需设置 **`HTTP_PROXY` / `HTTPS_PROXY`**。直连上下文仅影响当前线程的 requests 代理解析，不删除进程环境变量，也不影响其他会话和 CCXT 的显式代理。
-
----
-
-## 项目结构（简要）
-
-```
-Quantitative_Analysis/
-├── app.py                 # Streamlit 入口
-├── main.py                # CLI 入口（支持全 13 类资产）
-├── asset_catalog.py       # 资产键、默认值与预设模板
-├── asset_loader.py        # 跨资产并发加载与日历对齐
-├── asset_resolver.py      # 境内权益入口与错误文案
-├── china_equity_entry.py  # 旧导入路径兼容
-├── currency.py            # 汇率加载与多资产基准货币折算
-├── data_fetcher.py        # 数据公共 API 与全球市场路由
-├── data_sources/          # 数据源适配、预算控制、代理与 Parquet 缓存
-├── ohlcv.py               # 共用清洗、缺失值策略与质量诊断
-├── feature_engineering.py # 批量与单指标计算（SMA/BB/EMA/RSI/MACD）
-├── analysis_metrics.py    # Sortino / Calmar / VaR / CVaR 与诊断指标
-├── quant_models.py        # GBM、SLSQP 精确有效前沿、Ledoit-Wolf 与 OOS 回测
-├── charts.py              # 主题自适应 Plotly 图表
-├── visualizer.py          # mplfinance 图表
-├── pyproject.toml         # 安装、CLI 命令与开发工具配置
-├── requirements.txt
-├── .streamlit/config.toml # Streamlit 本地默认配置
-├── tests/
-└── docs/
-```
+- **离线测试范围**：`tests/`（配置见 `pytest.ini`）采用固定合成样本与模拟数据源，不访问外网行情，覆盖 OHLCV 清洗与日期契约、数学指标、FX 防泄露折算、网络预算与代理策略、SLSQP 优化与 Walk-Forward OOS 回测、共享 Parquet 缓存、CLI 与 Streamlit `AppTest`。GitHub Actions 在 Python `3.11` / `3.12` / `3.14` 矩阵上执行检查（见 [.github/workflows/tests.yml](.github/workflows/tests.yml)）。
+- **外部接口边界**：真实行情节点可用性、限流策略与上游接口字段变更无法由离线测试保证；相关手工验收与文档索引请见 [境内权益最小验证方案](docs/CHINA_EQUITY_VERIFICATION.md) 与 [历史前端验收记录](docs/FRONTEND_VERIFICATION.md)。
 
 ---
 
 ## 免责声明
 
-本工具仅用于数据展示与技术学习，不构成任何投资建议。行情与净值数据来自第三方接口，其准确性、完整性与时效性以数据源为准；指标与「信号」为规则化输出，请勿作为实盘决策的唯一依据。
+本工具仅用于金融数据分析、工程实践与技术学习，不构成任何投资建议或收益承诺。行情与净值数据来自第三方公开接口，其准确性、完整性与时效性以数据源为准；各项统计指标、蒙特卡洛模拟及历史/样本外回测均为规则化历史计算结果，不代表未来市场表现，请勿作为实盘交易决策的唯一依据。
