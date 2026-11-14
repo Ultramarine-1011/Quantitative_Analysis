@@ -20,7 +20,7 @@ quantitative-analysis = "main:main"
 py-modules = [
     "app", "main", "asset_resolver", "china_equity_entry", "data_fetcher",
     "feature_engineering", "visualizer", "quant_models", "ohlcv",
-    "analysis_metrics", "asset_catalog", "asset_loader", "charts",
+    "analysis_metrics", "asset_catalog", "asset_loader", "charts", "currency",
 ]
 
 [tool.setuptools.packages.find]

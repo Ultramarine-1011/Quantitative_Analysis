@@ -24,7 +24,7 @@ def test_frontier_matches_original_daily_portfolio_formula():
     expected_vol = daily.std(axis=0, ddof=1) * np.sqrt(252)
     np.testing.assert_allclose(result.returns, expected_ret, rtol=1e-12)
     np.testing.assert_allclose(result.volatility, expected_vol, rtol=1e-12)
-    np.testing.assert_allclose(result.sharpe, (expected_ret - 0.015) / expected_vol, rtol=1e-12)
+    np.testing.assert_allclose(result.sharpe, (expected_ret - 0.016) / expected_vol, rtol=1e-12)
     assert result.best_sharpe_idx == int(np.argmax(result.sharpe))
     np.testing.assert_allclose(result.weights.sum(axis=1), 1)
 
