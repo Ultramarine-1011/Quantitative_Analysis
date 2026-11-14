@@ -193,6 +193,7 @@ def load_cached_ohlcv(
             return None
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
+    df.index = df.index.as_unit("ns")
     df = df.sort_index()
     df.index.name = "Date"
 
@@ -231,6 +232,7 @@ def save_cached_ohlcv(
         to_store.index = pd.to_datetime(to_store.index, errors="raise")
     if to_store.index.tz is not None:
         to_store.index = to_store.index.tz_localize(None)
+    to_store.index = to_store.index.as_unit("ns")
     to_store = to_store.sort_index()
     to_store.index.name = "Date"
 

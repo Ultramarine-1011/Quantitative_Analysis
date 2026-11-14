@@ -54,7 +54,7 @@ def _make_ohlcv(
             "Close": c,
             "Volume": v,
         },
-        index=dates,
+        index=dates.as_unit("ns"),
     )
     df.index.name = "Date"
     for k, val in attrs.items():
