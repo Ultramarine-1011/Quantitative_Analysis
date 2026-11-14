@@ -7,7 +7,7 @@ name = "quantitative-analysis"
 version = "0.1.0"
 description = "Multi-asset OHLCV diagnostics with Streamlit and a Python CLI"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dynamic = ["dependencies"]
 
 [project.optional-dependencies]
@@ -20,7 +20,7 @@ quantitative-analysis = "main:main"
 py-modules = [
     "app", "main", "asset_resolver", "china_equity_entry", "data_fetcher",
     "feature_engineering", "visualizer", "quant_models", "ohlcv",
-    "analysis_metrics", "asset_catalog", "asset_loader", "charts",
+    "analysis_metrics", "asset_catalog", "asset_loader", "charts", "currency",
 ]
 
 [tool.setuptools.packages.find]
@@ -30,13 +30,27 @@ include = ["data_sources*"]
 dependencies = {file = ["requirements.txt"]}
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E9", "F"]
+select = ["E9", "F", "I", "B", "UP"]
+ignore = [
+    "B905",  # Avoid strict= churn across existing zip(...) loops during incremental refactors
+    "UP017", # Keep timezone.utc alongside datetime.UTC in existing modules until M1 cleanup
+    "UP031", # Retain readable %-style diagnostic formatting
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
 
 [tool.ruff.lint.per-file-ignores]
 # These modules also preserve import paths used by existing callers.
 "app.py" = ["F401"]
 "data_fetcher.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true

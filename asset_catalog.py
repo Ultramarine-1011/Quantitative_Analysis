@@ -30,6 +30,123 @@ SUPPORTED_ASSET_TYPES: tuple[str, ...] = (
     "creit",
     "fx",
 )
+
+# 资产默认交易日年化因子：加密货币 7x24 为 365，外汇连续交易周 5 日为 260，其余默认 252。
+ASSET_TRADING_DAYS: dict[str, int] = {
+    "etf": 252,
+    "ashare": 252,
+    "mutual_fund": 252,
+    "gold": 252,
+    "crypto": 365,
+    "us_stock": 252,
+    "hk_stock": 252,
+    "global_index": 252,
+    "bond_cn": 252,
+    "bond_us_yield": 252,
+    "commodity": 252,
+    "creit": 252,
+    "fx": 260,
+}
+
+# 资产默认计价币种；crypto 由交易对后缀动态解析，global_index/fx 按具体代码解析。
+ASSET_DEFAULT_CURRENCY: dict[str, str] = {
+    "etf": "CNY",
+    "ashare": "CNY",
+    "mutual_fund": "CNY",
+    "gold": "USD",
+    "crypto": "QUOTE",
+    "us_stock": "USD",
+    "hk_stock": "HKD",
+    "global_index": "INDEX",
+    "bond_cn": "CNY",
+    "bond_us_yield": "USD",
+    "commodity": "USD",
+    "creit": "CNY",
+    "fx": "FX",
+}
+
+# 收益性质标签：明确区分复权股价、累计净值、期货连续价格、纯价格指数与收益率水平。
+ASSET_RETURN_BASIS: dict[str, str] = {
+    "etf": "adjusted_price",
+    "ashare": "adjusted_price",
+    "mutual_fund": "cumulative_nav",
+    "gold": "futures_continuous",
+    "crypto": "spot_price",
+    "us_stock": "adjusted_or_price",
+    "hk_stock": "adjusted_or_price",
+    "global_index": "price_index",
+    "bond_cn": "exchange_bond_price",
+    "bond_us_yield": "yield_level",
+    "commodity": "futures_continuous",
+    "creit": "adjusted_or_price",
+    "fx": "fx_rate",
+}
+
+ASSET_RETURN_BASIS_NOTES: dict[str, str] = {
+    "adjusted_price": "复权价格序列（除权除息按上游复权因子调整，税费与股息再投口径与全收益指数略有差异）。",
+    "cumulative_nav": "基金累计净值序列（含分红口径，但无日内高低价与成交量）。",
+    "futures_continuous": "期货主力连续价格（不含展期收益 Roll Yield 与保证金利息，不能直接等价于可投资总回报）。",
+    "spot_price": "现货价格序列（不含质押/借贷收益；若以 USDT 计价，需单独处理 USDT/USD 汇率）。",
+    "adjusted_or_price": "股票历史行情（是否复权取决于 adjust 参数；不复权序列遇拆股/派息将出现价格跳空，且复权价与含息净总回报存在税费差异）。",
+    "price_index": "市场价格指数（多数不含股息再投资，低估含息总回报）。",
+    "exchange_bond_price": "交易所债券价格 K 线（未拆算票息再投、久期与凸性）。",
+    "yield_level": "收益率水平序列（%），并非债券持有期回报，禁止直接纳入资产净值组合优化。",
+    "fx_rate": "即期汇率比价序列（非生息投资净值，仅反映货币相对波动）。",
+}
+
+SUPPORTED_ADJUSTMENTS: dict[str, tuple[str, ...]] = {
+    "etf": ("hfq", "qfq", ""),
+    "ashare": ("hfq", "qfq", ""),
+    "hk_stock": ("hfq", "qfq", ""),
+    # 新浪美股日线 stock_us_daily 仅实现前复权 ('qfq') 与不复权 ('')，不支持后复权 ('hfq')。
+    "us_stock": ("qfq", ""),
+}
+
+DEFAULT_ADJUSTMENT: dict[str, str] = {
+    "etf": "hfq",
+    "ashare": "hfq",
+    "hk_stock": "hfq",
+    "us_stock": "qfq",
+}
+
+ADJUSTMENT_LABELS: dict[str, str] = {
+    "hfq": "后复权 (hfq)",
+    "qfq": "前复权 (qfq)",
+    "": "不复权 (raw)",
+}
+
+
+def get_supported_adjustments(asset_type: str | None) -> tuple[str, ...]:
+    """返回指定资产类别实际支持的历史行情复权方式元组。"""
+    if asset_type is None:
+        return ()
+    return SUPPORTED_ADJUSTMENTS.get(str(asset_type).strip().lower(), ())
+
+
+def resolve_adjustment(asset_type: str, adjust: str | None) -> str:
+    """校验并解析资产支持的复权方式（严格按底层接口能力报错）。"""
+    key = str(asset_type).strip().lower()
+    supported = get_supported_adjustments(key)
+    if not supported:
+        if adjust in (None, ""):
+            return ""
+        raise ValueError(f"资产类别 {key!r} 不支持复权参数 adjust={adjust!r}。")
+    selected = DEFAULT_ADJUSTMENT[key] if adjust is None else str(adjust).strip()
+    if selected not in supported:
+        labels = ", ".join(repr(x) for x in supported)
+        raise ValueError(
+            f"资产类别 {key!r} 当前数据源不支持复权方式 {selected!r}；仅支持: {labels}。"
+        )
+    return selected
+
+
+def get_asset_trading_days(asset_type: str | None) -> int:
+    """返回资产类别对应的默认年化交易日数（未知类别默认 252）。"""
+    if asset_type is None:
+        return 252
+    return ASSET_TRADING_DAYS.get(str(asset_type).strip().lower(), 252)
+
+
 # UI 显示中文标签，内部仍使用稳定的英文 key 进行路由和缓存。
 ASSET_LABELS: dict[str, str] = {
     **CHINA_EQUITY_LABELS,
@@ -179,6 +296,15 @@ def build_ef_multi_asset_codes_reference_df() -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+PRESET_PORTFOLIOS: dict[str, tuple[str, ...]] = {
+    "自定义（默认跨市示例）": ("etf,510300", "etf,510500", "us_stock,AAPL"),
+    "境内大类股债均衡": ("etf,510300", "etf,510500", "etf,511010", "etf,518880"),
+    "中美权益核心资产": ("etf,510300", "us_stock,AAPL", "us_stock,MSFT", "hk_stock,00700"),
+    "全天候跨市场多资产": ("etf,510300", "us_stock,SPY", "gold,GC", "bond_cn,sh010107"),
+    "高波动数字与科技": ("us_stock,NVDA", "us_stock,AAPL", "gold,GC", "crypto,BTC/USDT"),
+}
 
 
 _TAB2_SYSTEM_MATH_MARKDOWN = r"""

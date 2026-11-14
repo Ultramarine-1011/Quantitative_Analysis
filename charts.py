@@ -8,7 +8,27 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from quant_models import EfficientFrontierResult, MonteCarloGBMResult
+
+from quant_models import (
+    EfficientFrontierResult,
+    ExactEfficientFrontierResult,
+    MonteCarloGBMResult,
+    WalkForwardResult,
+    normalize_close_to_base_one,
+)
+
+_GRID_COLOR = "rgba(148, 163, 184, 0.22)"
+_ZEROLINE_COLOR = "rgba(148, 163, 184, 0.35)"
+_SERIES_PALETTE = (
+    "#2563eb",
+    "#dc2626",
+    "#059669",
+    "#d97706",
+    "#7c3aed",
+    "#0891b2",
+    "#db2777",
+    "#4f46e5",
+)
 
 
 def _load_optional_dependency(module_name: str, install_name: str | None = None) -> Any:
@@ -29,8 +49,48 @@ def _load_plotly_modules() -> tuple[Any, Any]:
     return go, subplots
 
 
-def build_price_volume_figure(df: pd.DataFrame) -> Any:
-    """绘制 K 线 + 成交量；净值/收益率水平/零成交量序列用单面板折线。"""
+def apply_theme_layout(
+    figure: Any,
+    *,
+    height: int = 500,
+    margin: dict[str, int] | None = None,
+    hovermode: str = "x unified",
+    title: dict[str, Any] | str | None = None,
+    extra_layout: dict[str, Any] | None = None,
+) -> Any:
+    """应用自适应明暗主题的透明背景与柔和网格线布局。"""
+    layout_kwargs: dict[str, Any] = {
+        "height": height,
+        "margin": margin or {"l": 40, "r": 24, "t": 52, "b": 36},
+        "paper_bgcolor": "rgba(0,0,0,0)",
+        "plot_bgcolor": "rgba(0,0,0,0)",
+        "hovermode": hovermode,
+        "legend": {
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "x": 0.0,
+            "bgcolor": "rgba(0,0,0,0)",
+        },
+    }
+    if title is not None:
+        layout_kwargs["title"] = (
+            {"text": title, "font": {"size": 15}} if isinstance(title, str) else title
+        )
+    if extra_layout:
+        layout_kwargs.update(extra_layout)
+    figure.update_layout(**layout_kwargs)
+    figure.update_xaxes(gridcolor=_GRID_COLOR, zerolinecolor=_ZEROLINE_COLOR)
+    figure.update_yaxes(gridcolor=_GRID_COLOR, zerolinecolor=_ZEROLINE_COLOR)
+    return figure
+
+
+def build_price_volume_figure(
+    df: pd.DataFrame,
+    *,
+    include_risk_panels: bool = True,
+) -> Any:
+    """绘制 K 线 + 成交量 + 可选滚动波动率与水下回撤副图；净值/收益率水平用折线。"""
     go, subplots = _load_plotly_modules()
     make_subplots = subplots.make_subplots
     asset_key = str(df.attrs.get("asset_type", "")).strip().lower()
@@ -39,46 +99,62 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
     use_line = asset_key == "mutual_fund" or series_kind == "yield_level"
     show_volume_panel = not use_line and vol_max > 0.0
 
+    feature_summary = df.attrs.get("feature_summary", {})
+    short_window = int(feature_summary.get("sma_short_window", 20))
+    long_window = int(feature_summary.get("sma_long_window", 60))
+    volatility_window = int(feature_summary.get("volatility_window", 20))
+    bollinger_window = int(feature_summary.get("bollinger_window", 20))
+
+    vol_col = f"volatility_{volatility_window}"
+    has_vol_panel = (
+        include_risk_panels
+        and vol_col in df.columns
+        and bool(pd.to_numeric(df[vol_col], errors="coerce").notna().any())
+    )
+    has_dd_panel = (
+        include_risk_panels
+        and "drawdown" in df.columns
+        and bool(pd.to_numeric(df["drawdown"], errors="coerce").notna().any())
+    )
+
+    panel_ratios = [0.54 if (has_vol_panel or has_dd_panel) else 0.72]
+    if show_volume_panel:
+        panel_ratios.append(0.16 if (has_vol_panel or has_dd_panel) else 0.28)
+    if has_vol_panel:
+        panel_ratios.append(0.15)
+    if has_dd_panel:
+        panel_ratios.append(0.15)
+
+    n_rows = len(panel_ratios)
+    if n_rows > 1:
+        total_w = sum(panel_ratios)
+        norm_heights = [r / total_w for r in panel_ratios]
+        figure = make_subplots(
+            rows=n_rows,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.035,
+            row_heights=norm_heights,
+        )
+    else:
+        figure = make_subplots(rows=1, cols=1)
+
     if use_line:
-        # 基金净值和收益率水平没有真实 K 线含义，用折线图更直观。
         line_name = "累计净值" if asset_key == "mutual_fund" else "收盘序列"
         if series_kind == "yield_level":
             line_name = "收益率水平"
-        figure = make_subplots(rows=1, cols=1)
         figure.add_trace(
             go.Scatter(
                 x=df.index,
                 y=df["Close"],
                 mode="lines",
                 name=line_name,
-                line={"width": 2.0, "color": "#1f77b4"},
-            ),
-            row=1,
-            col=1,
-        )
-    elif show_volume_panel:
-        # 有成交量的价格资产使用上下双面板：上方 K 线，下方成交量。
-        figure = make_subplots(
-            rows=2,
-            cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.04,
-            row_heights=[0.72, 0.28],
-        )
-        figure.add_trace(
-            go.Candlestick(
-                x=df.index,
-                open=df["Open"],
-                high=df["High"],
-                low=df["Low"],
-                close=df["Close"],
-                name="K线",
+                line={"width": 2.0, "color": "#2563eb"},
             ),
             row=1,
             col=1,
         )
     else:
-        figure = make_subplots(rows=1, cols=1)
         figure.add_trace(
             go.Candlestick(
                 x=df.index,
@@ -92,36 +168,61 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
             col=1,
         )
 
-    feature_summary = df.attrs.get("feature_summary", {})
-    short_window = int(feature_summary.get("sma_short_window", 20))
-    long_window = int(feature_summary.get("sma_long_window", 60))
-    bollinger_window = int(feature_summary.get("bollinger_window", 20))
-
-    overlay_columns = [
-        ("sma_%d" % short_window, "SMA %d" % short_window, "#1f77b4"),
-        ("sma_%d" % long_window, "SMA %d" % long_window, "#ff7f0e"),
-        ("bollinger_upper_%d" % bollinger_window, "布林上轨", "#9467bd"),
-        ("bollinger_lower_%d" % bollinger_window, "布林下轨", "#9467bd"),
-    ]
-    for column, trace_name, color in overlay_columns:
-        if column not in df.columns:
-            continue
-        # 均线和布林带都叠加在主图上，帮助观察趋势和价格偏离程度。
+    bb_upper = f"bollinger_upper_{bollinger_window}"
+    bb_lower = f"bollinger_lower_{bollinger_window}"
+    if bb_upper in df.columns and bb_lower in df.columns:
         figure.add_trace(
             go.Scatter(
                 x=df.index,
-                y=df[column],
+                y=df[bb_upper],
                 mode="lines",
-                name=trace_name,
-                line={"width": 1.6, "color": color},
-                opacity=0.9 if "bollinger" not in column else 0.65,
+                name="布林上轨",
+                line={"width": 1.3, "color": "#9467bd"},
+                opacity=0.65,
+            ),
+            row=1,
+            col=1,
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df[bb_lower],
+                mode="lines",
+                name="布林下轨",
+                line={"width": 1.3, "color": "#9467bd"},
+                fill="tonexty",
+                fillcolor="rgba(148, 103, 189, 0.10)",
+                opacity=0.65,
             ),
             row=1,
             col=1,
         )
 
+    for column, trace_name, color in (
+        (f"sma_{short_window}", f"SMA {short_window}", "#1f77b4"),
+        (f"sma_{long_window}", f"SMA {long_window}", "#ff7f0e"),
+    ):
+        if column in df.columns:
+            figure.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df[column],
+                    mode="lines",
+                    name=trace_name,
+                    line={"width": 1.6, "color": color},
+                    opacity=0.9,
+                ),
+                row=1,
+                col=1,
+            )
+
+    current_row = 2
+    y1 = "净值" if asset_key == "mutual_fund" else "价格"
+    if series_kind == "yield_level":
+        y1 = "收益率水平 (%)"
+    figure.update_yaxes(title_text=y1, row=1, col=1)
+
     if show_volume_panel:
-        # 收盘不低于开盘用绿色，反之用红色，符合常见行情图习惯。
         volume_colors = np.where(df["Close"] >= df["Open"], "#26a69a", "#ef5350")
         figure.add_trace(
             go.Bar(
@@ -130,31 +231,126 @@ def build_price_volume_figure(df: pd.DataFrame) -> Any:
                 name="成交量",
                 marker={"color": volume_colors},
             ),
-            row=2,
+            row=current_row,
             col=1,
         )
+        figure.update_yaxes(title_text="成交量", row=current_row, col=1)
+        current_row += 1
 
-    figure.update_layout(
-        height=760,
-        margin={"l": 20, "r": 20, "t": 50, "b": 20},
-        template="plotly_white",
+    if has_vol_panel:
+        figure.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df[vol_col],
+                mode="lines",
+                name=f"年化波动 ({volatility_window}D)",
+                line={"width": 1.5, "color": "#0284c7"},
+            ),
+            row=current_row,
+            col=1,
+        )
+        figure.update_yaxes(title_text="年化波动", tickformat=".0%", row=current_row, col=1)
+        current_row += 1
+
+    if has_dd_panel:
+        underwater = -pd.to_numeric(df["drawdown"], errors="coerce").abs()
+        figure.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=underwater,
+                mode="lines",
+                name="水下回撤",
+                line={"width": 1.5, "color": "#dc2626"},
+                fill="tozeroy",
+                fillcolor="rgba(220, 38, 38, 0.20)",
+            ),
+            row=current_row,
+            col=1,
+        )
+        figure.update_yaxes(title_text="回撤", tickformat=".0%", row=current_row, col=1)
+
+    chart_height = 740 if n_rows >= 3 else 620
+    apply_theme_layout(
+        figure,
+        height=chart_height,
+        margin={"l": 44, "r": 20, "t": 54, "b": 24},
         hovermode="x unified",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
     )
     figure.update_xaxes(rangeslider_visible=False, row=1, col=1)
-    y1 = "净值" if asset_key == "mutual_fund" else "价格"
-    if series_kind == "yield_level":
-        y1 = "收益率水平"
-    if use_line or not show_volume_panel:
-        figure.update_yaxes(title_text=y1, row=1, col=1)
-    if show_volume_panel:
-        figure.update_yaxes(title_text=y1, row=1, col=1)
-        figure.update_yaxes(title_text="成交量", row=2, col=1)
     return figure
 
 
+def build_tab1_risk_figure(df: pd.DataFrame) -> Any:
+    """绘制独立的多面板风险与动量图（年化波动率、水下回撤与可选 RSI-14）。"""
+    go, subplots = _load_plotly_modules()
+    feature_summary = df.attrs.get("feature_summary", {})
+    volatility_window = int(feature_summary.get("volatility_window", 20))
+    vol_col = f"volatility_{volatility_window}"
+    has_rsi = "rsi_14" in df.columns and bool(
+        pd.to_numeric(df["rsi_14"], errors="coerce").notna().any()
+    )
+    n_rows = 3 if has_rsi else 2
+    figure = subplots.make_subplots(
+        rows=n_rows,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        subplot_titles=["滚动年化波动率", "历史水下回撤"] + (["RSI(14) 动量"] if has_rsi else []),
+    )
+    if vol_col in df.columns:
+        figure.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df[vol_col],
+                mode="lines",
+                name=f"年化波动 ({volatility_window}D)",
+                line={"width": 1.8, "color": "#0284c7"},
+            ),
+            row=1,
+            col=1,
+        )
+    if "drawdown" in df.columns:
+        underwater = -pd.to_numeric(df["drawdown"], errors="coerce").abs()
+        figure.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=underwater,
+                mode="lines",
+                name="水下回撤",
+                line={"width": 1.8, "color": "#dc2626"},
+                fill="tozeroy",
+                fillcolor="rgba(220, 38, 38, 0.22)",
+            ),
+            row=2,
+            col=1,
+        )
+    if has_rsi:
+        figure.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["rsi_14"],
+                mode="lines",
+                name="RSI(14)",
+                line={"width": 1.6, "color": "#7c3aed"},
+            ),
+            row=3,
+            col=1,
+        )
+        figure.add_hline(y=70, line_dash="dot", line_color="rgba(220, 38, 38, 0.5)", row=3, col=1)
+        figure.add_hline(y=30, line_dash="dot", line_color="rgba(5, 150, 105, 0.5)", row=3, col=1)
+        figure.update_yaxes(title_text="RSI", range=[0, 100], row=3, col=1)
+
+    figure.update_yaxes(title_text="波动率", tickformat=".0%", row=1, col=1)
+    figure.update_yaxes(title_text="回撤", tickformat=".0%", row=2, col=1)
+    return apply_theme_layout(
+        figure,
+        height=520 if has_rsi else 400,
+        margin={"l": 44, "r": 24, "t": 54, "b": 28},
+    )
+
+
 def build_tab3_normalize_figure(dates: pd.Index, normalized: pd.Series) -> Any:
-    """侧栏单一标的：收盘价归一化为期初=1 的净值曲线（暗色主题）。"""
+    """侧栏单一标的：收盘价归一化为期初=1 的净值曲线。"""
     go, _ = _load_plotly_modules()
     figure = go.Figure()
     figure.add_trace(
@@ -163,19 +359,47 @@ def build_tab3_normalize_figure(dates: pd.Index, normalized: pd.Series) -> Any:
             y=normalized,
             mode="lines",
             name="Nₜ = Pₜ / P₀",
-            line={"width": 2.2, "color": "#7fdbff"},
+            line={"width": 2.2, "color": "#2563eb"},
         )
     )
-    figure.update_layout(
+    return apply_theme_layout(
+        figure,
         height=420,
-        margin={"l": 20, "r": 20, "t": 40, "b": 20},
-        template="plotly_dark",
-        hovermode="x unified",
-        yaxis_title="归一化净值",
-        xaxis_title="日期",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
+        margin={"l": 40, "r": 24, "t": 44, "b": 32},
+        extra_layout={"yaxis_title": "归一化净值", "xaxis_title": "日期"},
     )
-    return figure
+
+
+def build_tab3_multi_normalize_figure(
+    base_prices_df: pd.DataFrame,
+    *,
+    base_currency: str = "CNY",
+) -> Any:
+    """多标的统一基准货币与估值时点下的期初=1.0 归一化对比曲线。"""
+    go, _ = _load_plotly_modules()
+    figure = go.Figure()
+    for idx, col in enumerate(base_prices_df.columns):
+        sub = base_prices_df[[col]].dropna()
+        if sub.empty:
+            continue
+        norm = normalize_close_to_base_one(sub, price_col=col)
+        color = _SERIES_PALETTE[idx % len(_SERIES_PALETTE)]
+        figure.add_trace(
+            go.Scatter(
+                x=norm.index,
+                y=norm,
+                mode="lines",
+                name=str(col),
+                line={"width": 2.0, "color": color},
+            )
+        )
+    return apply_theme_layout(
+        figure,
+        height=440,
+        margin={"l": 44, "r": 24, "t": 56, "b": 32},
+        title=f"多资产归一化走势对比（统一口径：{base_currency}，期初 = 1.0）",
+        extra_layout={"yaxis_title": "归一化净值", "xaxis_title": "估值日期"},
+    )
 
 
 def build_tab3_gbm_figure(result: MonteCarloGBMResult) -> Any:
@@ -188,7 +412,7 @@ def build_tab3_gbm_figure(result: MonteCarloGBMResult) -> Any:
             y=result.historical_close,
             mode="lines",
             name="历史收盘价",
-            line={"width": 2.0, "color": "#00d4ff"},
+            line={"width": 2.0, "color": "#2563eb"},
         )
     )
     fut_x = result.future_dates
@@ -209,7 +433,7 @@ def build_tab3_gbm_figure(result: MonteCarloGBMResult) -> Any:
             mode="lines",
             name="5%–95% 分位带",
             fill="tonexty",
-            fillcolor="rgba(0, 191, 255, 0.22)",
+            fillcolor="rgba(37, 99, 235, 0.18)",
             line={"width": 0},
         )
     )
@@ -223,7 +447,7 @@ def build_tab3_gbm_figure(result: MonteCarloGBMResult) -> Any:
                 name="示例路径" if i == 0 else None,
                 legendgroup="samples",
                 showlegend=(i == 0),
-                line={"width": 0.9, "color": "rgba(180, 180, 200, 0.45)"},
+                line={"width": 0.9, "color": "rgba(100, 116, 139, 0.65)"},
             )
         )
     figure.add_trace(
@@ -232,69 +456,143 @@ def build_tab3_gbm_figure(result: MonteCarloGBMResult) -> Any:
             y=result.quantiles_p50,
             mode="lines",
             name="中位数路径",
-            line={"width": 2.2, "color": "#ffcc00"},
+            line={"width": 2.2, "color": "#d97706", "dash": "dash"},
         )
     )
-    figure.update_layout(
+    return apply_theme_layout(
+        figure,
         height=520,
-        margin={"l": 20, "r": 20, "t": 50, "b": 20},
-        template="plotly_dark",
-        hovermode="x unified",
-        yaxis_title="价格",
-        xaxis_title="日期",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.05, "x": 0.0},
+        margin={"l": 44, "r": 24, "t": 54, "b": 32},
+        extra_layout={
+            "yaxis_title": "价格",
+            "xaxis_title": "日期",
+            "legend": {
+                "orientation": "h",
+                "yanchor": "bottom",
+                "y": 1.05,
+                "x": 0.0,
+                "bgcolor": "rgba(0,0,0,0)",
+            },
+        },
     )
-    return figure
 
 
-def build_tab3_efficient_frontier_figure(ef: EfficientFrontierResult) -> Any:
-    """随机权重组合散点（颜色=夏普），最优组合红星。"""
+def build_tab3_efficient_frontier_figure(
+    ef: ExactEfficientFrontierResult | EfficientFrontierResult,
+) -> Any:
+    """绘制精确 SLSQP 有效前沿包络线、GMV、最大夏普组合，并可叠加随机组合可行域散点。"""
     go, _ = _load_plotly_modules()
-    vol = ef.volatility
-    ret = ef.returns
-    sharpe = ef.sharpe
-    idx = int(ef.best_sharpe_idx)
     figure = go.Figure()
-    figure.add_trace(
-        go.Scatter(
-            x=vol,
-            y=ret,
-            mode="markers",
-            name="随机权重组合",
-            marker={
-                "size": 6,
-                "color": sharpe,
-                "colorscale": "Viridis",
-                "showscale": True,
-                "colorbar": {"title": "夏普"},
-                "opacity": 0.85,
-            },
+
+    if isinstance(ef, ExactEfficientFrontierResult):
+        if ef.random_volatility is not None and ef.random_returns is not None:
+            figure.add_trace(
+                go.Scatter(
+                    x=ef.random_volatility,
+                    y=ef.random_returns,
+                    mode="markers",
+                    name="随机可行组合（参考）",
+                    marker={
+                        "size": 5,
+                        "color": ef.random_sharpe,
+                        "colorscale": "Viridis",
+                        "showscale": True,
+                        "colorbar": {"title": "夏普"},
+                        "opacity": 0.55,
+                    },
+                )
+            )
+        figure.add_trace(
+            go.Scatter(
+                x=ef.frontier_volatility,
+                y=ef.frontier_returns,
+                mode="lines+markers",
+                name="精确有效前沿 (SLSQP)",
+                line={"width": 3.0, "color": "#2563eb"},
+                marker={"size": 5, "color": "#2563eb"},
+            )
         )
-    )
-    figure.add_trace(
-        go.Scatter(
-            x=[float(vol[idx])],
-            y=[float(ret[idx])],
-            mode="markers",
-            name="最大夏普组合",
-            marker={
-                "size": 20,
-                "symbol": "star",
-                "color": "#ff2a2a",
-                "line": {"width": 1.2, "color": "#ffffff"},
-            },
+        figure.add_trace(
+            go.Scatter(
+                x=[ef.min_variance.volatility],
+                y=[ef.min_variance.expected_return],
+                mode="markers",
+                name="最小方差组合 (GMV)",
+                marker={
+                    "size": 15,
+                    "symbol": "diamond",
+                    "color": "#10b981",
+                    "line": {"width": 1.5, "color": "#ffffff"},
+                },
+            )
         )
-    )
-    figure.update_layout(
+        figure.add_trace(
+            go.Scatter(
+                x=[ef.max_sharpe.volatility],
+                y=[ef.max_sharpe.expected_return],
+                mode="markers",
+                name="最大夏普组合 (Tangency)",
+                marker={
+                    "size": 20,
+                    "symbol": "star",
+                    "color": "#ff2a2a",
+                    "line": {"width": 1.4, "color": "#ffffff"},
+                },
+            )
+        )
+        title_text = f"均值-方差有效前沿 ({ef.cov_method})"
+    else:
+        vol = ef.volatility
+        ret = ef.returns
+        sharpe = ef.sharpe
+        idx = int(ef.best_sharpe_idx)
+        figure.add_trace(
+            go.Scatter(
+                x=vol,
+                y=ret,
+                mode="markers",
+                name="随机权重组合",
+                marker={
+                    "size": 6,
+                    "color": sharpe,
+                    "colorscale": "Viridis",
+                    "showscale": True,
+                    "colorbar": {"title": "夏普"},
+                    "opacity": 0.85,
+                },
+            )
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=[float(vol[idx])],
+                y=[float(ret[idx])],
+                mode="markers",
+                name="最大夏普组合",
+                marker={
+                    "size": 20,
+                    "symbol": "star",
+                    "color": "#ff2a2a",
+                    "line": {"width": 1.2, "color": "#ffffff"},
+                },
+            )
+        )
+        title_text = "组合有效前沿模拟"
+
+    return apply_theme_layout(
+        figure,
         height=520,
-        margin={"l": 20, "r": 20, "t": 40, "b": 20},
-        template="plotly_dark",
+        margin={"l": 50, "r": 24, "t": 56, "b": 36},
         hovermode="closest",
-        xaxis_title="年化波动率",
-        yaxis_title="年化收益",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
+        title=title_text,
+        extra_layout={
+            "xaxis_title": "年化波动率",
+            "yaxis_title": "年化预期收益",
+            "xaxis_tickformat": ".0%",
+            "yaxis_tickformat": ".0%",
+            "xaxis_hoverformat": ".2%",
+            "yaxis_hoverformat": ".2%",
+        },
     )
-    return figure
 
 
 def _relative_luminance_srgb_255(r: float, g: float, b: float) -> float:
@@ -349,11 +647,7 @@ def _correlation_heatmap_text_colors(
             if not math.isfinite(val) or span == 0.0:
                 row_colors.append("#fafafa")
                 continue
-            t = (val - zmin) / span
-            if t < 0.0:
-                t = 0.0
-            elif t > 1.0:
-                t = 1.0
+            t = max(0.0, min(1.0, (val - zmin) / span))
             if reversescale:
                 t = 1.0 - t
             sampled = pc.sample_colorscale(colorscale, [t])
@@ -376,7 +670,6 @@ def build_tab3_correlation_heatmap(corr_df: pd.DataFrame) -> Any:
         colorscale="RdBu",
         reversescale=True,
     )
-    # Plotly Heatmap 的 textfont.color 不支持按单元格二维数组，改用 layout.annotations 逐格写字与配色。
     nrows, ncols = z.shape
     cell_annotations: list[dict[str, Any]] = []
     for i in range(nrows):
@@ -408,26 +701,35 @@ def build_tab3_correlation_heatmap(corr_df: pd.DataFrame) -> Any:
             )
         ]
     )
-    figure.update_layout(
-        title="大类资产收益率相关性矩阵 (Correlation Matrix)",
+    return apply_theme_layout(
+        figure,
         height=560,
-        margin={"l": 28, "r": 28, "t": 56, "b": 110},
-        template="plotly_dark",
-        annotations=cell_annotations,
-        xaxis={
-            "side": "bottom",
-            "tickangle": -32,
-            "tickfont": {"size": 13},
-        },
-        yaxis={
-            "autorange": "reversed",
-            "tickfont": {"size": 13},
+        margin={"l": 36, "r": 28, "t": 56, "b": 110},
+        hovermode="closest",
+        title={"text": "资产收益率相关性", "font": {"size": 16}},
+        extra_layout={
+            "annotations": cell_annotations,
+            "xaxis": {
+                "side": "bottom",
+                "tickangle": -32,
+                "tickfont": {"size": 13},
+                "gridcolor": _GRID_COLOR,
+            },
+            "yaxis": {
+                "autorange": "reversed",
+                "tickfont": {"size": 13},
+                "gridcolor": _GRID_COLOR,
+            },
         },
     )
-    return figure
 
 
-def build_tab3_portfolio_backtest_figure(bt_df: pd.DataFrame) -> Any:
+def build_tab3_portfolio_backtest_figure(
+    bt_df: pd.DataFrame,
+    *,
+    title: str = "历史净值回测（期初 = 1.0）",
+    optimal_label: str = "最优组合",
+) -> Any:
     """最优组合与等权组合的归一化净值曲线。"""
     go, _ = _load_plotly_modules()
     idx = bt_df.index
@@ -437,8 +739,8 @@ def build_tab3_portfolio_backtest_figure(bt_df: pd.DataFrame) -> Any:
             x=idx,
             y=bt_df["Optimal_Portfolio"],
             mode="lines",
-            name="最优组合（最大夏普）",
-            line={"width": 2.4, "color": "#ff1744"},
+            name=optimal_label,
+            line={"width": 2.4, "color": "#ef4444"},
         )
     )
     figure.add_trace(
@@ -447,30 +749,174 @@ def build_tab3_portfolio_backtest_figure(bt_df: pd.DataFrame) -> Any:
             y=bt_df["Equal_Weight_Portfolio"],
             mode="lines",
             name="等权重组合",
-            line={"width": 2.0, "color": "#888888"},
+            line={"width": 2.0, "color": "#64748b"},
         )
     )
-    figure.update_layout(
+    return apply_theme_layout(
+        figure,
+        height=500,
+        margin={"l": 56, "r": 28, "t": 64, "b": 84},
         title={
-            "text": "历史净值回测（样本首日归一为 1）",
+            "text": title,
+            "font": {"size": 16},
             "y": 0.97,
             "x": 0.5,
             "xanchor": "center",
             "yanchor": "top",
         },
-        height=500,
-        margin={"l": 56, "r": 28, "t": 64, "b": 96},
-        template="plotly_dark",
-        hovermode="x unified",
-        xaxis_title="日期",
-        yaxis_title="净值",
-        legend={
-            "orientation": "h",
-            "yanchor": "top",
-            "y": -0.22,
-            "xanchor": "center",
-            "x": 0.5,
-            "bgcolor": "rgba(0,0,0,0.35)",
+        extra_layout={
+            "xaxis_title": "日期",
+            "yaxis_title": "组合净值",
+            "legend": {
+                "orientation": "h",
+                "yanchor": "top",
+                "y": -0.20,
+                "xanchor": "center",
+                "x": 0.5,
+                "bgcolor": "rgba(0,0,0,0)",
+            },
         },
     )
-    return figure
+
+
+def _nav_to_underwater(nav: pd.Series) -> pd.Series:
+    s = pd.to_numeric(nav, errors="coerce").astype(float)
+    peak = s.cummax()
+    return (s / peak) - 1.0
+
+
+def build_tab3_walk_forward_figure(
+    wf_result: WalkForwardResult,
+    *,
+    base_currency: str = "CNY",
+) -> Any:
+    """滚动/扩展样本外回测净值与水下回撤双面板对照图。"""
+    go, subplots = _load_plotly_modules()
+    nav_df = wf_result.nav_df
+    figure = subplots.make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        row_heights=[0.66, 0.34],
+        subplot_titles=[
+            f"无前视泄露样本外净值对比（{wf_result.window_mode} · {base_currency}，期初 = 1.0）",
+            "样本外水下回撤对比",
+        ],
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=nav_df.index,
+            y=nav_df["OOS_Portfolio"],
+            mode="lines",
+            name="样本外 Walk-Forward 组合",
+            line={"width": 2.6, "color": "#ef4444"},
+        ),
+        row=1,
+        col=1,
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=nav_df.index,
+            y=nav_df["Equal_Weight_Portfolio"],
+            mode="lines",
+            name="样本外等权基准",
+            line={"width": 2.0, "color": "#64748b"},
+        ),
+        row=1,
+        col=1,
+    )
+    if "In_Sample_Portfolio" in nav_df.columns:
+        figure.add_trace(
+            go.Scatter(
+                x=nav_df.index,
+                y=nav_df["In_Sample_Portfolio"],
+                mode="lines",
+                name="全样本后视参考（非真实可投）",
+                line={"width": 1.6, "color": "#2563eb", "dash": "dash"},
+            ),
+            row=1,
+            col=1,
+        )
+
+    dd_oos = _nav_to_underwater(nav_df["OOS_Portfolio"])
+    dd_eq = _nav_to_underwater(nav_df["Equal_Weight_Portfolio"])
+    figure.add_trace(
+        go.Scatter(
+            x=nav_df.index,
+            y=dd_oos,
+            mode="lines",
+            name="Walk-Forward 回撤",
+            line={"width": 1.8, "color": "#dc2626"},
+            fill="tozeroy",
+            fillcolor="rgba(220, 38, 38, 0.18)",
+        ),
+        row=2,
+        col=1,
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=nav_df.index,
+            y=dd_eq,
+            mode="lines",
+            name="等权基准回撤",
+            line={"width": 1.5, "color": "#64748b", "dash": "dot"},
+        ),
+        row=2,
+        col=1,
+    )
+    figure.update_yaxes(title_text="净值", row=1, col=1)
+    figure.update_yaxes(title_text="回撤", tickformat=".0%", row=2, col=1)
+    return apply_theme_layout(
+        figure,
+        height=600,
+        margin={"l": 56, "r": 24, "t": 62, "b": 44},
+    )
+
+
+def build_tab3_weight_history_figure(weight_history: pd.DataFrame) -> Any:
+    """Walk-Forward 各再平衡节点目标权重堆叠演化图。"""
+    go, _ = _load_plotly_modules()
+    figure = go.Figure()
+    x_labels = [
+        idx.strftime("%Y-%m-%d") if isinstance(idx, pd.Timestamp) else str(idx)
+        for idx in weight_history.index
+    ]
+    for idx, col in enumerate(weight_history.columns):
+        color = _SERIES_PALETTE[idx % len(_SERIES_PALETTE)]
+        figure.add_trace(
+            go.Bar(
+                x=x_labels,
+                y=weight_history[col],
+                name=str(col),
+                marker={"color": color},
+            )
+        )
+    return apply_theme_layout(
+        figure,
+        height=400,
+        margin={"l": 50, "r": 24, "t": 54, "b": 48},
+        hovermode="x unified",
+        title="Walk-Forward 各再平衡节点权重配置",
+        extra_layout={
+            "barmode": "stack",
+            "xaxis_title": "再平衡日期",
+            "yaxis_title": "权重占比",
+            "yaxis_tickformat": ".0%",
+        },
+    )
+
+
+__all__ = [
+    "apply_theme_layout",
+    "build_price_volume_figure",
+    "build_tab1_risk_figure",
+    "build_tab3_correlation_heatmap",
+    "build_tab3_efficient_frontier_figure",
+    "build_tab3_gbm_figure",
+    "build_tab3_multi_normalize_figure",
+    "build_tab3_normalize_figure",
+    "build_tab3_portfolio_backtest_figure",
+    "build_tab3_walk_forward_figure",
+    "build_tab3_weight_history_figure",
+]

@@ -1,45 +1,63 @@
-# 工程结构与兼容约定
+# 工程架构、数据口径与兼容边界
 
-## 职责与依赖
+> 更新日期：2026-11-14（M0 基线对齐）  
+> 详细技术债清单、V0.1/V0.2 数据契约与模块拆分方案见 [M0 审计与契约文档](M0_AUDIT_AND_CONTRACTS.md)；长期阶段规划见 [产品定位与开发路线图](ROADMAP.md)。
 
-`app.py` 负责 Streamlit 控件、缓存和展示，`main.py` 负责 CLI 参数、报告和流程。`asset_loader.py` 提供不依赖 Streamlit 的多资产入口；`data_fetcher.py` 保留原有数据 API，数据源实现放在 `data_sources/`。
+---
 
-数据流为：数据源 → `ohlcv.py` 清洗 → `feature_engineering.py` / `analysis_metrics.py` / `quant_models.py` → `charts.py` 或 `visualizer.py`。数据层不导入 UI、指标或图表；资产目录只保存键、标签、默认代码与说明。增加数据源时先实现标准 OHLCV 加载，再补充目录和 `asset_loader.load_asset_data` 的分支即可。
+## 1. 职责分层与模块依赖
 
-`data_sources/base.py` 保留已有自定义抓取器的基类 API；`china_equity.py` 负责境内权益回退，`eastmoney.py` 负责 HTTP/K 线协议，`funds.py` 负责累计净值，`forex.py` 负责外汇，`network.py` 负责代理隔离。没有引入注册器、插件框架或新的继承层级。
+当前工程由两个用户入口、资产目录与路由层、特征/指标/模型计算层、图表可视化层以及数据源与缓存基础设施组成：
 
-## 数据与计算口径
+- **入口层**：
+  - [app.py](../app.py)：Streamlit 三标签页 Web 应用（`量化诊断看板`、`数学原理`、`进阶金融算法`），维护会话结果、侧边栏代理状态及 `@st.cache_data` 内存缓存。
+  - [main.py](../main.py)：全 13 类资产命令行入口（已注册 CLI 脚本 `quantitative-analysis`），负责参数解析、文本诊断报告、`mplfinance` 图表与 CSV 导出。
+- **资产与数据准备层**：
+  - [asset_catalog.py](../asset_catalog.py)：13 类资产稳定 key、标签、默认值、交易日年化因子（`ASSET_TRADING_DAYS`）、默认币种、9 类收益语义 `ASSET_RETURN_BASIS` 及复权支持能力矩阵 `SUPPORTED_ADJUSTMENTS`。
+  - [asset_resolver.py](../asset_resolver.py)（[china_equity_entry.py](../china_equity_entry.py) 保留兼容重导出）：分析窗口校验与境内 ETF/A 股统一错误信息格式化。
+  - [asset_loader.py](../asset_loader.py)：全 13 类资产统一入口 `load_asset_data`、多线程并发拉取，以及 Stage 1 多市场对齐引擎 `align_multi_asset_frames` / `load_and_align_multi_asset_portfolio`（支持 `common_trading_dates`、`weekly_friday`、`mtm_outer`）。
+  - [currency.py](../currency.py)：跨资产计价币种推断、向后防前视泄露 `merge_asof` FX 对齐（`max_staleness_days=4`）、`CNY`/`USD`/`LOCAL` 基准货币折算及显式 USDT/USD 锚定开关 `allow_usdt_usd_peg`。
+  - [ohlcv.py](../ohlcv.py)：日期校验与统一 OHLCV 清洗、缺失策略（`raise`/`drop`/`ffill`）及 9 项质量诊断 `_compute_ohlcv_quality`。
+  - [data_fetcher.py](../data_fetcher.py) 与 [data_sources/](../data_sources/)：各外部行情适配器（`china_equity.py`、`eastmoney.py`、`forex.py`、`funds.py`）、`RequestBudget` 与错误分类（`network.py`、`errors.py`）、以及 Web/CLI 共享 Parquet + JSON 元信息磁盘缓存（`cache.py`）。
 
-- OHLCV 列固定为 `Open`、`High`、`Low`、`Close`、`Volume`，均为 float64；`Date` 为无时区的 datetime64[ns] 升序唯一索引。重复日期稳定保留输入中的最后一条。
-- 数值先转换再将无穷值视作缺失，并前向填充。数据源边界删除开头仍缺失的行；特征/绘图输入拒绝仍缺失的核心值，保留额外指标列及 attrs。不执行价格向后填充。
-- CAGR 仍使用起止价格比和自然日跨度 / 365.25；诊断 Sharpe 仍使用日对数收益、日无风险对数利率、样本标准差和 sqrt(252)。常数序列的 Sharpe 为 NaN，显示为 N/A。
-- SMA、布林带及波动率保留完整滚动窗口和 ddof=1；回撤深度为 `1 - Close / cummax(Close)`。批量 transform 只校验一次输入，重复执行可覆盖已有特征列。
-- 有效前沿使用日简单收益，均值乘交易日数、样本标准差乘其平方根；Dirichlet 权重和固定随机种子行为保留。直接由均值与协方差计算组合矩，避免创建“历史天数 × 组合数”的临时矩阵。
-- 组合回测保留样本首日净值为 1 的规则；宽表仍按不同市场日历 outer 对齐并前向填充。多币种数据不会自动转换币种，GBM 未来日期仍为工作日近似，不包含各市场节假日。
-- 基金仍使用累计净值，OHLC 相同、Volume=0；美债仍是收益率水平序列，保留专门标签与解释。
+**当前已知跨模块耦合边界（M1 解耦目标）**：
+- `asset_loader.py` 顶层导入 `currency`，而 `currency._default_usdt_usd_loader` 在函数内部延迟导入 `asset_loader` 私有 CCXT 辅助函数，存在循环依赖。
+- `data_fetcher.py` 与 `data_sources/forex.py` 直接导入部分底层私有符号；`main.py` 私有 `_convert_ohlcv_to_base_currency` 尚未下沉为共享模块能力。
+- [YFinanceFetcher](../data_sources/base.py) 作为历史 API 保留占位，调用会发出 `DeprecationWarning` 并抛出 `NotImplementedError`；美股日线通过 AKShare 路由加载。
 
-## 修复与兼容边界
+---
 
-恢复缺失的 `china_equity_entry` 兼容导入；`main.py` 使用实际的 `asset_resolver`。`data_fetcher` 的公共函数、异常、抓取器及常量仍可按原路径导入；`app` 的加载、指标和图表函数仍可使用。Web/CLI 启动命令、控件、CSV 编码及列顺序不变。
+## 2. 数据与计算口径
 
-以下差异是明确的 Bug 修复：复权 ETF 不再使用未复权新浪历史；显式空复权参数不会被替换成 hfq；所有境内权益路径都裁剪日期；基金累计净值缺口不再从未来向前补齐；非法日期在调用数据源前拒绝；无穷值、无效权重及非正 GBM 价格得到明确处理；短历史 CLI 图表跳过尚无有效值的滚动指标；指标重算不复用失效 attrs。
+- **OHLCV 契约（`ohlcv.py`）**：固定列为 `Open`、`High`、`Low`、`Close`、`Volume`（`float64`）；索引 `Date` 为无时区、`ns` 时间单位升序唯一 `DatetimeIndex`；去重保留最后一条。`missing_policy="drop"` 剔除无效价格行但**不前向拷贝昨日成交量**（缺成交量补 `0.0` 并计入 `missing_volume_rows`）。
+- **特征工程（`feature_engineering.py`）**：计算 SMA、对数收益滚动年化波动率（`ddof=1`）、布林带、最大回撤（`1 - Close / cummax(Close)`）以及可选 EMA/RSI(14)/MACD；保留并透传 `df.attrs`。
+- **单资产风险收益诊断（`analysis_metrics.py`）**：
+  - CAGR 按自然日跨度（`days / 365.25`）与起止价格比计算；
+  - 年化波动率、Sharpe、Sortino 使用**日对数收益率**、`daily_rf_log = log1p(rf) / trading_days`；年化因子按 `ASSET_TRADING_DAYS` 自适应（加密货币 `365`、外汇 `260`、其余默认 `252`）；
+  - 95% 日 VaR / CVaR 使用日简单收益率分位数；常数序列或单日样本 Sharpe 安全返回 `NaN`。
+- **多资产组合、有效前沿与样本外回测（`quant_models.py`）**：
+  - 使用 **日简单收益率**、`rf_per_period = rf / periods_per_year`；多资产组合采用协方差收缩可选 `ledoit_wolf`（内置解析公式）与 SciPy `SLSQP` 精确优化 GMV / 最大夏普切线 / 精确有效前沿（支持权重上下界与最小持仓校验）；
+  - 样本外验证支持静态 `Train/Test` 切分与滚动/扩展 `Walk-Forward` 回测（严禁前视偏差，支持再平衡频次、`tradable_mask` 停牌隔离与双边 `transaction_cost_bps`）。
+- **已知口径差异（见 M0 审计文档）**：单资产诊断（对数收益 + 静态交易日）与组合优化/回测（简单收益 + 对齐期数）公式尚未统一；`yield_level` 序列仅禁止进入组合优化及 CLI 换汇，单资产诊断层目前仍只做文案警示。
 
-导入库不改写代理。Windows 系统代理策略在入口启动/首次构造客户端时生效；requests 的直连上下文按线程隔离，异常和嵌套调用后恢复解析器，不修改 `os.environ`。代理上下文的安装/恢复使用可重入锁，直接调用数据源的会话可能串行执行。
+---
 
-`YFinanceFetcher` 作为已有 API 保留，仍是未实现的占位类；现有美股入口继续使用 AKShare。生产 GBM 移除了 NumPy 与 SciPy 的重复 IQR 自检，项目不再直接依赖 SciPy。
+## 3. 安全修复与向后兼容边界
 
-## 安装与验证
+- **向后兼容保留清单**：
+  - CLI `quantitative-analysis`（`python main.py`）、Streamlit 入口 `streamlit run app.py`、`data_fetcher` / `asset_resolver` / `china_equity_entry` 既有导入路径、OHLCV CSV UTF-8 BOM 六列格式均保持兼容。
+  - `main.py` 保留历史测试对 `load_china_equity_ohlcv` 的 monkeypatch 兼容路径；`app.py` 保留 `load_multi_leg_close_wide` `@st.cache_data` 包装以兼容旧测试清理调用。
+- **代理与缓存边界**：
+  - 导入模块不改写全局环境变量；境内直连与系统代理回退受线程隔离 `RequestBudget` / `_without_http_proxy_env` 控制，设 `QUANT_USE_SYSTEM_PROXY=1` 时强制走系统/环境代理，加密货币仅使用显式传入的 CCXT `proxy_url`。
+  - 共享 Parquet + JSON 元信息缓存默认写入 `~/.cache/quantitative_analysis/ohlcv`（TTL 3600 秒）；M0 已修复禁止持久化 `proxy_url` 到 `.meta.json`（并在内存属性对代理凭证脱敏），且覆盖范围内切片为空时视为缓存未命中并重新触发上游拉取，避免抛 `ValueError`。
+  - Web Tab 1 `app.py` 在 M0 已对齐 `ohlcv.py` 真实的 `dropped_invalid_rows` / `filled_price_rows` / `missing_volume_rows` / `ohlc_anomaly_rows` / `non_positive_price_rows` 质量字段，确保清洗提示真实可见。
 
-运行依赖只维护在 `requirements.txt`，`pyproject.toml` 动态读取它；`pip install -e ".[dev]"` 安装项目与 pytest/ruff，并提供 `quantitative-analysis` 命令。建议 Python 3.12+；最低 Python 3.9，CCXT 的旧版约束仅用于 Python 3.9。
+---
 
-自动化测试全部使用确定性样本或模拟数据源，不把第三方网络可用性作为测试通过条件。除原有测试外，加入独立公式核对、固定种子模型回归、回退复权、净值缺口、线程代理隔离、图表/CSV、缓存共享、CLI 与 Streamlit AppTest。CI 对 Python 3.9/3.12 执行 pytest、ruff 和依赖检查。
+## 4. 环境依赖与验证边界
 
-真实行情接口、交易所可用性、限流和跨源复权数据精度仍取决于上游；离线测试不能证明任一远端接口实时可用。手工行情验收见 `CHINA_EQUITY_VERIFICATION.md`。
-
-## 本次验证记录（2026-10-11）
-
-- 修复前测试因缺失 `china_equity_entry` 无法收集；修复后原有 40 项测试通过，新增回归用例后共 126 项。
-- 原 Python 3.9.6 环境：126 项通过；仅残留系统 LibreSSL 的 urllib3 警告。依赖检查通过。
-- 全新 Python 3.12.13 环境：126 项通过，无测试警告；使用 Pandas 3.0.6、NumPy 2.5.4、Plotly 7.1.0、Streamlit 1.65.0、AKShare 1.19.1、CCXT 4.5.85，依赖检查通过。
-- Ruff 检查、格式检查、编译、wheel 构建与项目目录外的 CLI 验证通过；20 个本地库/入口模块未发现循环导入。
-- 10,000 行固定样本与原特征实现逐列核对一致；本机单次测量约 34ms → 6ms，性能数值仅作局部参考。
+- **Python 版本要求**：[pyproject.toml](../pyproject.toml) 指定 `requires-python >= 3.11`；本地主要开发与验证环境为 **Python 3.14.5**，GitHub Actions（[.github/workflows/tests.yml](../.github/workflows/tests.yml)）在 Python `3.11` / `3.12` / `3.14` 矩阵上执行回归。
+- **关键依赖约束**：[requirements.txt](../requirements.txt) 由 `pyproject.toml` 动态读取，包含 `scipy>=1.11.0`、`streamlit>=1.50.0`、`plotly>=5.18.0`、`pyarrow<26.0.0`、`ccxt>=4.0.0`、`akshare>=1.13.0`、`httpx>=0.27.0` 等；`pip install -e ".[dev]"` 同时安装 `pytest`、`ruff` 与 `quantitative-analysis` 命令。
+- **离线测试与外部数据源边界**：
+  - 自动化测试全部采用确定性样本或 monkeypatch 模拟数据源（默认 `QUANT_DISABLE_CACHE=1` 隔离），覆盖 OHLCV 清洗、数学公式、FX 折算、网络预算与代理策略、SLSQP 优化与 OOS 回测、共享缓存、CLI 与 Streamlit `AppTest`。
+  - 真实行情接口（AKShare / 东财 / 新浪 / 腾讯 / CCXT）的可用性、限流、字段变化与复权精度取决于第三方上游，**无法通过离线测试保证**；实盘与浏览器端手工验收请核对 [CHINA_EQUITY_VERIFICATION.md](CHINA_EQUITY_VERIFICATION.md) 与 [FRONTEND_VERIFICATION.md](FRONTEND_VERIFICATION.md)。

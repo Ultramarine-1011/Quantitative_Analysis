@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import importlib
+import json
 from collections.abc import Callable, Mapping
 from typing import Any
+from urllib.parse import urlencode, urlparse
 
 import pandas as pd
 import requests
 
 from .errors import NetworkFetchError, VendorUpstreamError
-from .network import _REQUESTS_NO_PROXY
+from .network import _REQUESTS_NO_PROXY, RequestBudget
 
 # 东方财富 push2his 直连：浏览器风格头可降低被边缘节点直接断连的概率；
 # 可被 ``EastMoneyDailyKlineClient`` / ``AKShareFetcher(..., eastmoney_headers=...)`` 覆盖或追加。
@@ -33,31 +35,14 @@ _EASTMONEY_KLINE_APIS: tuple[str, ...] = (
 
 
 def _eastmoney_sec_market_id(symbol: str) -> int:
-    """东方财富 K 线接口 ``secid`` 的市场前缀：0=深、1=沪（不依赖 AKShare 内部实现）。
-
-    规则覆盖常见 A 股与 ETF/LOF；存疑代码由调用方再尝试另一市场前缀。
-    """
+    """东方财富 K 线接口 ``secid`` 的市场前缀：0=深、1=沪（不依赖 AKShare 内部实现）。"""
     code = str(symbol).strip()
     if not code.isdigit():
         raise ValueError("East Money kline API expects a numeric security code, got %r." % symbol)
-    if code.startswith(("0", "3")):
+    if code.startswith(("0", "3", "15", "16", "18", "2", "1")):
         return 0
-    if code.startswith("6"):
+    if code.startswith(("6", "9", "51", "56", "58", "50", "5")):
         return 1
-    if code.startswith("9"):
-        return 1
-    if code.startswith("2"):
-        return 0
-    if code.startswith(("15", "16", "18")):
-        return 0
-    if code.startswith(("51", "56", "58")):
-        return 1
-    if code.startswith("50"):
-        return 1
-    if code.startswith("5"):
-        return 1
-    if code.startswith("1"):
-        return 0
     return 0
 
 
@@ -96,7 +81,7 @@ def parse_daily_kline_payload(payload: dict[str, Any]) -> pd.DataFrame:
 
 
 class EastMoneyDailyKlineClient:
-    """东方财富 push2his 日线 K 线直连；不引用 AKShare 内部符号。"""
+    """东方财富 push2his 日线 K 线直连；复用连接池与请求预算，不引用 AKShare 内部符号。"""
 
     def __init__(self, extra_headers: Mapping[str, str] | None = None) -> None:
         self._headers = dict(_EASTMONEY_DEFAULT_HEADERS)
@@ -135,21 +120,67 @@ class EastMoneyDailyKlineClient:
         adjust: str,
         *,
         trust_env: bool,
+        budget: RequestBudget | None = None,
     ) -> pd.DataFrame:
-        """多域名轮询东方财富 K 线（在新浪/腾讯与 AKShare 主源之后调用）。"""
+        """多域名轮询东方财富 K 线，连接池复用并受 ``RequestBudget`` 约束。"""
+        active_budget = (
+            budget
+            if budget is not None
+            else RequestBudget(
+                total_timeout_seconds=36.0, per_request_timeout_seconds=10.0, max_attempts=8
+            )
+        )
+        httpx = self._load_httpx()
         last_exc: BaseException | None = None
-        # 东财同一个接口有多个可用域名；逐个尝试可绕过单个节点抖动或限流。
-        for api_url in _EASTMONEY_KLINE_APIS:
-            try:
-                df = self._fetch_daily_klines_one_host(
-                    api_url, symbol, start_ts, end_ts, adjust, trust_env=trust_env
-                )
-                if not df.empty:
-                    return df
-            except ValueError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
+
+        direct_kwargs: dict[str, Any] = {
+            "timeout": min(active_budget.per_request_timeout_seconds, 12.0),
+            "trust_env": False,
+            "headers": self._headers,
+            "proxy": None,
+        }
+        env_kwargs: dict[str, Any] = {
+            "timeout": min(active_budget.per_request_timeout_seconds, 12.0),
+            "trust_env": True,
+            "headers": self._headers,
+        }
+
+        with (
+            httpx.Client(**(env_kwargs if trust_env else direct_kwargs)) as primary_httpx,
+            httpx.Client(**(direct_kwargs if trust_env else env_kwargs)) as alt_httpx,
+            requests.Session() as req_session,
+        ):
+            req_session.headers.clear()
+            req_session.headers.update(self._headers)
+            for api_url in _EASTMONEY_KLINE_APIS:
+                if (
+                    active_budget.remaining_seconds() <= 0.2
+                    or active_budget.attempts >= active_budget.max_attempts
+                ):
+                    break
+                try:
+                    df = self._fetch_daily_klines_one_host(
+                        api_url,
+                        symbol,
+                        start_ts,
+                        end_ts,
+                        adjust,
+                        trust_env=trust_env,
+                        budget=active_budget,
+                        httpx_clients={trust_env: primary_httpx, not trust_env: alt_httpx},
+                        requests_session=req_session,
+                    )
+                    if not df.empty:
+                        df.attrs["data_source"] = "eastmoney_direct"
+                        df.attrs["eastmoney_host"] = urlparse(api_url).netloc
+                        return df
+                    # Valid 200 payload with zero klines: do not amplify transport retries across remaining mirrors.
+                    return pd.DataFrame()
+                except (ValueError, VendorUpstreamError):
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+
         if last_exc is not None:
             raise last_exc
         return pd.DataFrame()
@@ -163,16 +194,22 @@ class EastMoneyDailyKlineClient:
         adjust: str,
         *,
         trust_env: bool,
+        budget: RequestBudget | None = None,
+        httpx_clients: dict[bool, Any] | None = None,
+        requests_session: requests.Session | None = None,
     ) -> pd.DataFrame:
-        """单节点东方财富 K 线；列名与 ``stock_zh_a_hist`` / ``fund_etf_hist_em`` 中文列一致。"""
-        import json
-        from urllib.parse import urlencode, urlparse
-
-        httpx = self._load_httpx()
+        """单节点东方财富 K 线；区分为空响应与传输错误，避免无界回退风暴。"""
         adjust_dict = {"qfq": "1", "hfq": "2", "": "0"}
         if adjust not in adjust_dict:
             raise ValueError("adjust must be one of {'qfq', 'hfq', ''}.")
 
+        active_budget = (
+            budget
+            if budget is not None
+            else RequestBudget(
+                total_timeout_seconds=30.0, per_request_timeout_seconds=10.0, max_attempts=6
+            )
+        )
         parsed = urlparse(api_url)
         em_host = parsed.netloc
         path_base = parsed.path or "/api/qt/stock/kline/get"
@@ -211,23 +248,25 @@ class EastMoneyDailyKlineClient:
         market_ids: list[int] = [primary_id]
         alternate_id = 1 - primary_id if primary_id in (0, 1) else None
         if alternate_id is not None:
-            # 本地规则可能判断错沪/深市场，失败时再用另一个市场前缀试一次。
             market_ids.append(alternate_id)
 
-        def pull_market_ids(get_with_params: Callable[[dict[str, str]], Any]) -> pd.DataFrame:
+        def pull_market_ids(
+            get_with_params: Callable[[dict[str, str]], Any],
+        ) -> tuple[pd.DataFrame, bool]:
+            any_valid_json = False
             for mid in market_ids:
                 params = dict(params_base)
                 params["secid"] = "%d.%s" % (mid, sym)
                 frame = _pull_via_http_response(get_with_params(params))
+                any_valid_json = True
                 if not frame.empty:
-                    return frame
-            return pd.DataFrame()
+                    return frame, True
+            return pd.DataFrame(), any_valid_json
 
-        def pull_market_ids_stdlib() -> tuple[pd.DataFrame, int | None]:
+        def pull_market_ids_stdlib(timeout_sec: float) -> tuple[pd.DataFrame, int | None]:
             import http.client
             import ssl
 
-            host = em_host
             ctx = ssl.create_default_context()
             ctx.set_alpn_protocols(["http/1.1"])
             last_status: int | None = None
@@ -235,10 +274,10 @@ class EastMoneyDailyKlineClient:
                 params = dict(params_base)
                 params["secid"] = "%d.%s" % (mid, sym)
                 path = path_base + "?" + urlencode(params)
-                conn = http.client.HTTPSConnection(host, 443, context=ctx, timeout=30)
+                conn = http.client.HTTPSConnection(em_host, 443, context=ctx, timeout=timeout_sec)
                 try:
                     conn.putrequest("GET", path)
-                    conn.putheader("Host", host)
+                    conn.putheader("Host", em_host)
                     for hk, hv in headers.items():
                         if hk.lower() == "host":
                             continue
@@ -262,24 +301,31 @@ class EastMoneyDailyKlineClient:
             return pd.DataFrame(), last_status
 
         last_error: Exception | None = None
-        trust_sequence: list[bool] = []
-        for te in (trust_env, not trust_env):
-            if te not in trust_sequence:
-                trust_sequence.append(te)
+        httpx = self._load_httpx()
+        trust_sequence: list[bool] = [trust_env, not trust_env]
 
         for te in trust_sequence:
+            if active_budget.remaining_seconds() <= 0.2:
+                break
             try:
-                # trust_env 控制是否读取系统代理；两种模式都试，兼容直连和必须代理的网络。
-                client_kwargs: dict[str, Any] = {
-                    "timeout": 30.0,
-                    "trust_env": te,
-                    "headers": headers,
-                }
-                if not te:
-                    client_kwargs["proxy"] = None
-                with httpx.Client(**client_kwargs) as client:
-                    out = pull_market_ids(lambda p: client.get(url, params=p))
-                if not out.empty:
+                req_timeout = active_budget.consume_attempt(f"EastMoney httpx {em_host}")
+                if httpx_clients is not None and te in httpx_clients:
+                    out, got_valid = pull_market_ids(
+                        lambda p, client=httpx_clients[te], timeout=req_timeout: client.get(
+                            url, params=p, timeout=timeout
+                        )
+                    )
+                else:
+                    client_kwargs: dict[str, Any] = {
+                        "timeout": req_timeout,
+                        "trust_env": te,
+                        "headers": headers,
+                    }
+                    if not te:
+                        client_kwargs["proxy"] = None
+                    with httpx.Client(**client_kwargs) as client:
+                        out, got_valid = pull_market_ids(lambda p: client.get(url, params=p))
+                if not out.empty or got_valid:
                     return out
             except VendorUpstreamError:
                 raise
@@ -293,17 +339,30 @@ class EastMoneyDailyKlineClient:
                         ) from exc
                     raise
 
+            if active_budget.remaining_seconds() <= 0.2:
+                break
             try:
-                # httpx 失败后再用 requests 试一次，减少单一 HTTP 客户端兼容性问题。
-                with requests.Session() as session:
-                    session.trust_env = te
-                    session.headers.clear()
-                    session.headers.update(headers)
+                req_timeout = active_budget.consume_attempt(f"EastMoney requests {em_host}")
+                if requests_session is not None:
+                    requests_session.trust_env = te
                     req_proxies = None if te else _REQUESTS_NO_PROXY
-                    out = pull_market_ids(
-                        lambda p: session.get(url, timeout=30, params=p, proxies=req_proxies)
+                    out, got_valid = pull_market_ids(
+                        lambda p, timeout=req_timeout, proxies=req_proxies: requests_session.get(
+                            url, timeout=timeout, params=p, proxies=proxies
+                        )
                     )
-                if not out.empty:
+                else:
+                    with requests.Session() as session:
+                        session.trust_env = te
+                        session.headers.clear()
+                        session.headers.update(headers)
+                        req_proxies = None if te else _REQUESTS_NO_PROXY
+                        out, got_valid = pull_market_ids(
+                            lambda p, sess=session, timeout=req_timeout, proxies=req_proxies: (
+                                sess.get(url, timeout=timeout, params=p, proxies=proxies)
+                            )
+                        )
+                if not out.empty or got_valid:
                     return out
             except VendorUpstreamError:
                 raise
@@ -311,13 +370,17 @@ class EastMoneyDailyKlineClient:
                 last_error = exc
 
         stdlib_status: int | None = None
-        try:
-            # 最后用标准库 http.client 兜底，避开第三方 HTTP 库的部分协议差异。
-            out, stdlib_status = pull_market_ids_stdlib()
-            if not out.empty:
-                return out
-        except Exception as exc:
-            last_error = exc
+        if (
+            active_budget.remaining_seconds() > 0.5
+            and active_budget.attempts < active_budget.max_attempts
+        ):
+            try:
+                req_timeout = active_budget.consume_attempt(f"EastMoney stdlib {em_host}")
+                out, stdlib_status = pull_market_ids_stdlib(req_timeout)
+                if not out.empty:
+                    return out
+            except Exception as exc:
+                last_error = exc
 
         if last_error is not None:
             if stdlib_status is not None and stdlib_status != 200:

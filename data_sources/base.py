@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import time
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
-import time
 from typing import Any
 
 import pandas as pd
 
 from ohlcv import DateLike, coerce_analysis_date, normalize_ohlcv, validate_ohlcv
+
 from .errors import DataFetchError, EmptySymbolDataError
 
 
@@ -65,11 +67,21 @@ class BaseDataFetcher(ABC):
 
 
 class YFinanceFetcher(BaseDataFetcher):
-    """基于 yfinance 的美股数据获取器。"""
+    """已弃用的 yfinance 占位类；请改用 ``load_asset_data('us_stock', ...)``。"""
+
+    def __init__(self, max_retries: int = 3, retry_delay: float = 1.0) -> None:
+        warnings.warn(
+            "YFinanceFetcher is deprecated and unimplemented; use "
+            "asset_loader.load_asset_data('us_stock', ...) or "
+            "data_fetcher.load_global_market_data('us_stock', ...) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(max_retries=max_retries, retry_delay=retry_delay)
 
     def _fetch_raw(self, symbol: str, **kwargs: Any) -> pd.DataFrame:
-        """抓取 yfinance 原始行情数据。"""
-        raise NotImplementedError("yfinance fetching is not implemented yet.")
+        """抓取 yfinance 原始行情数据（已弃用，未实现）。"""
+        raise NotImplementedError("YFinanceFetcher is deprecated and unimplemented.")
 
     def fetch_us_stock(
         self,
@@ -79,5 +91,5 @@ class YFinanceFetcher(BaseDataFetcher):
         interval: str = "1d",
         auto_adjust: bool = False,
     ) -> pd.DataFrame:
-        """抓取美股行情并输出统一 OHLCV 结构。"""
-        raise NotImplementedError("US stock fetching is not implemented yet.")
+        """抓取美股行情（已弃用，请改用 ``load_global_market_data('us_stock', ...)``）。"""
+        raise NotImplementedError("YFinanceFetcher is deprecated and unimplemented.")

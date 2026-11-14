@@ -10,10 +10,21 @@ from typing import Any, Literal
 import pandas as pd
 
 from ohlcv import A_SHARE_COLUMN_MAPPING, DateLike, filter_by_date_range
+
 from .base import BaseDataFetcher
 from .eastmoney import EastMoneyDailyKlineClient, _eastmoney_sec_market_id
-from .errors import ChinaEquityPipelineError, NetworkFetchError, VendorUpstreamError
-from .network import _configure_windows_proxy_behavior, _without_http_proxy_env
+from .errors import (
+    ChinaEquityPipelineError,
+    EmptySymbolDataError,
+    NetworkFetchError,
+    VendorUpstreamError,
+)
+from .network import (
+    RequestBudget,
+    _configure_windows_proxy_behavior,
+    _without_http_proxy_env,
+    classify_network_exception,
+)
 
 
 class AKShareChinaPrimarySource:
@@ -139,6 +150,7 @@ class AKShareFetcher(BaseDataFetcher):
                     if not raw_s.empty and "volume" in raw_s.columns:
                         conv = _to_em_style(raw_s, "volume")
                         if not conv.empty:
+                            conv.attrs["data_source"] = "akshare.fund_etf_hist_sina"
                             return conv
                 except Exception:  # noqa: BLE001
                     pass
@@ -150,7 +162,10 @@ class AKShareFetcher(BaseDataFetcher):
                 end_date=end_s,
                 adjust=adj,
             )
-            return _to_em_style(raw_tx, "amount")
+            conv_tx = _to_em_style(raw_tx, "amount")
+            if not conv_tx.empty:
+                conv_tx.attrs["data_source"] = "akshare.stock_zh_a_hist_tx"
+            return conv_tx
         except Exception:  # noqa: BLE001
             return pd.DataFrame()
 
@@ -164,29 +179,34 @@ class AKShareFetcher(BaseDataFetcher):
         label_zh: str,
         equity_route: str,
         fetch_primary: Callable[[], pd.DataFrame],
+        primary_source_name: str,
         empty_primary_message: str,
     ) -> pd.DataFrame:
-        def _pipeline() -> pd.DataFrame:
+        def _pipeline(budget: RequestBudget) -> pd.DataFrame:
             # 1) 新浪 / 腾讯（不依赖东方财富域名）
             alt = self._fetch_sina_tencent_china_equity_raw(
                 equity_route, sym, start_ts, end_ts, adjust
             )
             if not alt.empty:
+                alt.attrs.setdefault("data_source", "sina_tencent_fallback")
                 return alt
 
             # 2) AKShare 主路径。若上游返回空表，后面仍会尝试东财直连。
             first_error: BaseException | None = None
+            primary_empty = False
             try:
                 via_ak = fetch_primary()
                 if not via_ak.empty:
+                    via_ak.attrs.setdefault("data_source", primary_source_name)
                     return via_ak
+                primary_empty = True
                 first_error = ValueError(empty_primary_message)
             except ImportError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 first_error = exc
 
-            # 3) 东方财富直连接口作为最终行情兜底，失败时汇总前面每一步的错误。
+            # 3) 东方财富直连接口作为最终行情兜底，受限于总预算并记录故障类别。
             em_fail: BaseException | None = None
             try:
                 direct = self._eastmoney.fetch_daily_klines(
@@ -195,32 +215,51 @@ class AKShareFetcher(BaseDataFetcher):
                     end_ts,
                     adjust,
                     trust_env=False,
+                    budget=budget,
                 )
                 if not direct.empty:
+                    direct.attrs.setdefault("data_source", "eastmoney_direct")
                     return direct
+                if primary_empty:
+                    raise EmptySymbolDataError(
+                        "%s（%s）未返回任何有效 K 线数据，请检查代码是否有效。" % (label_zh, sym)
+                    )
+            except EmptySymbolDataError:
+                raise
             except (NetworkFetchError, VendorUpstreamError) as exc:
                 em_fail = exc
             except Exception as exc:  # noqa: BLE001
                 em_fail = exc
 
+            net_flag = any(
+                e is not None and classify_network_exception(e) == "transport"
+                for e in (first_error, em_fail)
+            )
             if em_fail is not None:
                 raise ChinaEquityPipelineError(
                     "%s：新浪/腾讯无有效数据；AKShare 主源未成功 (%r)；东方财富直连失败 (%s)。"
-                    % (label_zh, first_error, em_fail)
+                    % (label_zh, first_error, em_fail),
+                    network_related=net_flag,
                 ) from em_fail
             raise ChinaEquityPipelineError(
                 "%s：新浪/腾讯无有效数据；AKShare 未返回有效数据 (%r)；东方财富直连返回空 K 线。"
-                % (label_zh, first_error)
+                % (label_zh, first_error),
+                network_related=net_flag,
             ) from first_error
 
+        budget = RequestBudget(
+            total_timeout_seconds=45.0, per_request_timeout_seconds=12.0, max_attempts=10
+        )
         if self._neutralize_env_for_ak_primary:
             try:
                 with _without_http_proxy_env():
-                    return _pipeline()
-            except ChinaEquityPipelineError:
-                # 直连不可达时（例如必须经本机 Clash / 公司代理才能访问外网），再按系统与环境变量走代理重试一轮
-                return _pipeline()
-        return _pipeline()
+                    return _pipeline(budget)
+            except ChinaEquityPipelineError as exc:
+                # 仅在传输/代理相关失败且仍有时间预算时，允许再走系统代理试一轮。
+                if not exc.network_related or budget.remaining_seconds() <= 1.0:
+                    raise
+                return _pipeline(budget)
+        return _pipeline(budget)
 
     def _fetch_equity_raw(self, route: str, symbol: str, **kwargs: Any) -> pd.DataFrame:
         if not symbol or not str(symbol).strip():
@@ -238,6 +277,7 @@ class AKShareFetcher(BaseDataFetcher):
         sym = str(symbol).strip()
         is_etf = route == "etf"
         primary = self._primary.fetch_etf_hist_em if is_etf else self._primary.fetch_stock_hist
+        primary_name = "akshare.fund_etf_hist_em" if is_etf else "akshare.stock_zh_a_hist"
         label = "ETF" if is_etf else "A-share"
         return self._run_with_retry(
             lambda: self._fetch_via_primary_then_eastmoney(
@@ -248,6 +288,7 @@ class AKShareFetcher(BaseDataFetcher):
                 label_zh=f"{label} 日线抓取",
                 equity_route=route,
                 fetch_primary=lambda: primary(sym, start_ts, end_ts, adjust),
+                primary_source_name=primary_name,
                 empty_primary_message=f"AKShare {label} returned an empty DataFrame.",
             ),
             f"AKShare {label} historical data fetch",
@@ -271,7 +312,7 @@ class AKShareFetcher(BaseDataFetcher):
         symbol: str,
         start: DateLike,
         end: DateLike,
-        adjust: Literal["qfq", "hfq"] | None = None,
+        adjust: Literal["qfq", "hfq", ""] | None = None,
     ) -> pd.DataFrame:
         route_key = str(route).strip().lower()
         if route_key == "etf":
@@ -294,15 +335,26 @@ class AKShareFetcher(BaseDataFetcher):
         selected_adjust = "hfq" if adjust is None else adjust
         fetch_raw = self._fetch_etf_raw if route == "etf" else self._fetch_raw
         raw = fetch_raw(symbol=symbol, start_date=start, end_date=end, adjust=selected_adjust)
+        src = raw.attrs.get("data_source")
+        host = raw.attrs.get("eastmoney_host")
         normalized = self._normalize_ohlcv(raw, A_SHARE_COLUMN_MAPPING)
-        return filter_by_date_range(normalized, start, end)
+        out = filter_by_date_range(normalized, start, end)
+        if src:
+            out.attrs["data_source"] = src
+        if host:
+            out.attrs["eastmoney_host"] = host
+        out.attrs["adjust"] = selected_adjust
+        out.attrs["return_basis"] = (
+            "unadjusted_price" if selected_adjust == "" else "adjusted_price"
+        )
+        return out
 
     def fetch_stock(
         self,
         symbol: str,
         start: DateLike | None = None,
         end: DateLike | None = None,
-        adjust: Literal["qfq", "hfq"] | None = None,
+        adjust: Literal["qfq", "hfq", ""] | None = None,
     ) -> pd.DataFrame:
         return self._fetch_normalized("stock", symbol, start, end, adjust)
 
@@ -311,6 +363,6 @@ class AKShareFetcher(BaseDataFetcher):
         symbol: str,
         start: DateLike | None = None,
         end: DateLike | None = None,
-        adjust: Literal["qfq", "hfq"] | None = None,
+        adjust: Literal["qfq", "hfq", ""] | None = None,
     ) -> pd.DataFrame:
         return self._fetch_normalized("etf", symbol, start, end, adjust)

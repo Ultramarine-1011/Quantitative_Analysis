@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pandas as pd
 
-from ohlcv import (
-    A_SHARE_COLUMN_MAPPING,
-    DateLike,
-    REQUIRED_OHLCV_COLUMNS,
-    coerce_analysis_date as _coerce_analysis_timestamp,
-    filter_by_date_range as _filter_ohlcv_by_user_date_range,
-    normalize_ohlcv,
-    validate_analysis_date_range,
-)
+from asset_catalog import resolve_adjustment
 from data_sources.base import BaseDataFetcher, YFinanceFetcher
 from data_sources.china_equity import AKShareChinaPrimarySource, AKShareFetcher
 from data_sources.eastmoney import EastMoneyDailyKlineClient
@@ -27,11 +20,20 @@ from data_sources.errors import (
 )
 from data_sources.forex import _fetch_forex_hist_em_robust, _forex_kline_json_to_dataframe
 from data_sources.funds import (
-    get_fund_data,
     _fund_build_pseudo_ohlcv_raw,
     _fund_raw_to_normalized_ohlcv,
+    get_fund_data,
 )
-from data_sources.network import apply_default_network_proxy_policy, _call_akshare, _import_akshare
+from data_sources.network import _call_akshare, _import_akshare, apply_default_network_proxy_policy
+from ohlcv import (
+    A_SHARE_COLUMN_MAPPING,
+    REQUIRED_OHLCV_COLUMNS,
+    DateLike,
+    coerce_analysis_date as _coerce_analysis_timestamp,
+    filter_by_date_range as _filter_ohlcv_by_user_date_range,
+    normalize_ohlcv,
+    validate_analysis_date_range,
+)
 
 FOREIGN_FUTURES_COLUMN_MAPPING: dict[str, str] = {
     "date": "Date",
@@ -145,6 +147,7 @@ def load_futures_foreign_ohlcv(
     out.attrs["asset_type"] = str(asset_type)
     out.attrs["symbol"] = display
     out.attrs["series_kind"] = str(series_kind)
+    out.attrs["data_source"] = "akshare.futures_foreign_hist"
     if unit_caption:
         out.attrs["unit_caption"] = str(unit_caption)
     return out
@@ -155,8 +158,14 @@ def load_global_market_data(
     symbol: str,
     start_date: DateLike,
     end_date: DateLike,
+    *,
+    adjust: str | None = None,
 ) -> pd.DataFrame:
-    """全球权益/指数：``route`` 为 ``us_stock`` | ``hk_stock`` | ``global_index``。"""
+    """全球权益/指数：``route`` 为 ``us_stock`` | ``hk_stock`` | ``global_index``。
+
+    ``us_stock`` 默认前复权（``'qfq'``，接口仅支持 ``'qfq'`` / ``''``）；
+    ``hk_stock`` 默认后复权（``'hfq'``，接口支持 ``'hfq'`` / ``'qfq'`` / ``''``）。
+    """
     route_key = str(route).strip().lower()
     sym = str(symbol).strip()
     resolved_symbol = sym
@@ -165,31 +174,40 @@ def load_global_market_data(
     if route_key not in {"us_stock", "hk_stock", "global_index"}:
         raise ValueError("load_global_market_data: 未知 route %r。" % route)
     validate_analysis_date_range(start_date, end_date)
+    selected_adjust = (
+        resolve_adjustment(route_key, adjust) if route_key in {"us_stock", "hk_stock"} else ""
+    )
     ak = _import_akshare()
 
     if route_key == "us_stock":
-        # 美股和港股接口返回英文 OHLCV 列，可直接使用外盘映射清洗。
+        # 美股（新浪 stock_us_daily）仅支持前复权 ('qfq') 与不复权 ('')。
         raw = _call_akshare(
-            "stock_us_daily(%r)" % sym,
+            "stock_us_daily(%r, adjust=%r)" % (sym, selected_adjust),
             ak.stock_us_daily,
             symbol=sym,
-            adjust="",
+            adjust=selected_adjust,
         )
         out = normalize_ohlcv(raw, FOREIGN_FUTURES_COLUMN_MAPPING)
         atype = "us_stock"
-        caption = "USD 计价 · 美股日线"
+        data_source = "akshare.stock_us_daily"
+        adj_label = "前复权" if selected_adjust == "qfq" else "不复权"
+        caption = f"USD 计价 · 美股日线（{adj_label}）"
     elif route_key == "hk_stock":
         hk_sym = _normalize_hk_stock_symbol(sym)
         raw = _call_akshare(
-            "stock_hk_daily(%r)" % hk_sym,
+            "stock_hk_daily(%r, adjust=%r)" % (hk_sym, selected_adjust),
             ak.stock_hk_daily,
             symbol=hk_sym,
-            adjust="",
+            adjust=selected_adjust,
         )
         out = normalize_ohlcv(raw, FOREIGN_FUTURES_COLUMN_MAPPING)
         resolved_symbol = hk_sym
         atype = "hk_stock"
-        caption = "HKD 计价 · 港股日线"
+        data_source = "akshare.stock_hk_daily"
+        adj_label = {"hfq": "后复权", "qfq": "前复权", "": "不复权"}.get(
+            selected_adjust, selected_adjust
+        )
+        caption = f"HKD 计价 · 港股日线（{adj_label}）"
     elif route_key == "global_index":
         display_sym = sym.strip()
         if display_sym.startswith("."):
@@ -201,6 +219,7 @@ def load_global_market_data(
             )
             out = normalize_ohlcv(raw, FOREIGN_FUTURES_COLUMN_MAPPING)
             atype = "global_index"
+            data_source = "akshare.index_us_stock_sina"
             caption = "美股指数（新浪）· 点"
         else:
             # 常见简码先映射到东财接口需要的中文/英文指数名称。
@@ -214,6 +233,7 @@ def load_global_market_data(
             out = normalize_ohlcv(raw2, {**A_SHARE_COLUMN_MAPPING, **_EM_KLINE_OHLCV_MAPPING})
             resolved_symbol = em_name
             atype = "global_index"
+            data_source = "akshare.index_global_hist_em"
             caption = "全球指数（东财）· 点"
     else:
         raise ValueError("load_global_market_data: 未知 route %r。" % route)
@@ -223,6 +243,12 @@ def load_global_market_data(
     out.attrs["symbol"] = resolved_symbol
     out.attrs["series_kind"] = "price"
     out.attrs["unit_caption"] = caption
+    out.attrs["data_source"] = data_source
+    if route_key in {"us_stock", "hk_stock"}:
+        out.attrs["adjust"] = selected_adjust
+        out.attrs["return_basis"] = (
+            "unadjusted_price" if selected_adjust == "" else "adjusted_price"
+        )
     return out
 
 
@@ -255,6 +281,7 @@ def load_bond_data(
         out.attrs["symbol"] = code
         out.attrs["series_kind"] = "price"
         out.attrs["unit_caption"] = "人民币计价 · 国债现货/债券 K 线（列含义以数据源为准）"
+        out.attrs["data_source"] = "akshare.bond_zh_hs_daily"
         return out
 
     if kind_key == "us_yield":
@@ -291,6 +318,7 @@ def load_bond_data(
             "收益率水平 %% · %s（非持有期回报，指标为水平序列统计）" % col_name
         )
         out.attrs["yield_column"] = col_name
+        out.attrs["data_source"] = "akshare.bond_zh_us_rate"
         return out
 
     raise ValueError("load_bond_data: 未知 kind %r。" % kind)
@@ -322,6 +350,7 @@ def load_reit_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.
     out.attrs["symbol"] = code
     out.attrs["series_kind"] = "price"
     out.attrs["unit_caption"] = "CNY 计价 · 基础设施 REITs"
+    out.attrs["data_source"] = "akshare.reits_hist_em"
     return out
 
 
@@ -333,6 +362,7 @@ def load_fx_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.Da
     pair = FX_PAIR_ALIASES.get(raw_key, raw_key.replace("/", ""))
     validate_analysis_date_range(start_date, end_date)
     raw = _fetch_forex_hist_em_robust(pair)
+    fx_source = raw.attrs.get("data_source", "eastmoney_forex_direct")
     raw2 = _em_kline_frame_to_ohlcv_raw(raw)
     out = normalize_ohlcv(raw2, {**A_SHARE_COLUMN_MAPPING, **_EM_KLINE_OHLCV_MAPPING})
     out = _filter_ohlcv_by_user_date_range(out, start_date, end_date)
@@ -340,6 +370,7 @@ def load_fx_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.Da
     out.attrs["symbol"] = pair
     out.attrs["series_kind"] = "price"
     out.attrs["unit_caption"] = "汇率 · %s（间接标价含义以数据源为准）" % pair
+    out.attrs["data_source"] = fx_source
     return out
 
 
@@ -395,9 +426,8 @@ def get_multiple_assets_close(
     if start_ts > end_ts:
         raise ValueError("start_date must be earlier than or equal to end_date.")
 
-    fetcher = AKShareFetcher(max_retries=3, retry_delay=1.0)
-    close_frames: list[pd.Series] = []
-    for sym in symbols_ordered:
+    def _fetch_one_etf(sym: str) -> pd.Series:
+        fetcher = AKShareFetcher(max_retries=3, retry_delay=1.0)
         ohlcv = fetcher.fetch_china_equity(
             "etf",
             sym,
@@ -406,7 +436,14 @@ def get_multiple_assets_close(
             adjust=adjust_key,
         )
         clipped = _filter_ohlcv_by_user_date_range(ohlcv, start_date, end_date)
-        close_frames.append(clipped["Close"].rename(sym))
+        return clipped["Close"].rename(sym)
+
+    if len(symbols_ordered) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(symbols_ordered))) as pool:
+            futures = [pool.submit(_fetch_one_etf, sym) for sym in symbols_ordered]
+            close_frames = [fut.result() for fut in futures]
+    else:
+        close_frames = [_fetch_one_etf(symbols_ordered[0])]
 
     wide = pd.concat(close_frames, axis=1, join="outer")
     wide = wide.sort_index().ffill()

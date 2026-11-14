@@ -1,9 +1,9 @@
 """Offline CLI, Streamlit, CSV, chart and crypto-pagination smoke tests."""
 
 import io
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -210,12 +210,20 @@ def test_streamlit_advanced_algorithms_run_offline(monkeypatch, sample_ohlcv):
         )
         return sample_ohlcv.assign(Open=close, High=close * 1.01, Low=close * 0.99, Close=close)
 
+    def fake_fx(symbol, start, end):
+        fx = sample_ohlcv.copy()
+        for col in ("Open", "High", "Low", "Close"):
+            fx[col] = 7.20
+        fx.attrs.update(asset_type="fx", symbol=symbol, series_kind="price")
+        return fx
+
     monkeypatch.setattr(asset_loader, "_fetch_etf_data", fetch)
     monkeypatch.setattr(
         asset_loader,
         "load_global_market_data",
         lambda route, symbol, start, end: fetch(symbol=symbol),
     )
+    monkeypatch.setattr(asset_loader, "load_fx_data", fake_fx)
     page = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
     for key in ("tab3_btn_normalize", "tab3_btn_gbm", "tab3_btn_ef"):
         page.button(key).click().run()
