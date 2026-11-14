@@ -298,6 +298,15 @@ def build_ef_multi_asset_codes_reference_df() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+PRESET_PORTFOLIOS: dict[str, tuple[str, ...]] = {
+    "自定义（默认跨市示例）": ("etf,510300", "etf,510500", "us_stock,AAPL"),
+    "境内大类股债均衡": ("etf,510300", "etf,510500", "etf,511010", "etf,518880"),
+    "中美权益核心资产": ("etf,510300", "us_stock,AAPL", "us_stock,MSFT", "hk_stock,00700"),
+    "全天候跨市场多资产": ("etf,510300", "us_stock,SPY", "gold,GC", "bond_cn,sh010107"),
+    "高波动数字与科技": ("us_stock,NVDA", "us_stock,AAPL", "gold,GC", "crypto,BTC/USDT"),
+}
+
+
 _TAB2_SYSTEM_MATH_MARKDOWN = r"""
 ### 1. 收益与风险度量
 

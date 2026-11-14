@@ -20,12 +20,20 @@ def page(monkeypatch, sample_ohlcv):
         )
         return sample_ohlcv.assign(Open=close, High=close * 1.01, Low=close * 0.99, Close=close)
 
+    def fake_fx(symbol, start, end):
+        fx = sample_ohlcv.copy()
+        for col in ("Open", "High", "Low", "Close"):
+            fx[col] = 7.20
+        fx.attrs.update(asset_type="fx", symbol=symbol, series_kind="price")
+        return fx
+
     monkeypatch.setattr(asset_loader, "_fetch_etf_data", fetch)
     monkeypatch.setattr(
         asset_loader,
         "load_global_market_data",
         lambda route, symbol, start, end: fetch(symbol=symbol),
     )
+    monkeypatch.setattr(asset_loader, "load_fx_data", fake_fx)
     yield AppTest.from_file(app.__file__, default_timeout=20).run()
     app.load_asset_data.clear()
     app.load_multi_leg_close_wide.clear()

@@ -234,7 +234,6 @@ class MplfinanceVisualizer(BaseVisualizer):
         self,
         df: pd.DataFrame,
         title: str | None = None,
-        mav: Sequence[int] | None = None,
         volume: bool = True,
         main_panel_cols: Sequence[str] | None = None,
         lower_panel_cols: Sequence[str] | None = None,
@@ -244,95 +243,52 @@ class MplfinanceVisualizer(BaseVisualizer):
         show: bool = True,
         savepath: str | None = None,
     ) -> Figure:
-        """绘制类似 Bloomberg 终端风格的多面板 K 线图。
+        """绘制类似 Bloomberg 终端风格的多面板 K 线/折线与风险仪表盘。
 
-        Parameters
-        ----------
-        df : pd.DataFrame
-            输入的标准 OHLCV 数据表。
-            除 ``Open``、``High``、``Low``、``Close``、``Volume`` 外，还应包含
-            特征工程层生成的 ``sma_*``、``volatility_*``、``bollinger_*``、
-            ``drawdown`` 等列。
-        title : str | None, default None
-            图表标题前缀。若为 ``None``，则优先从 ``df.attrs["symbol"]``、
-            ``df.attrs["ticker"]`` 或 ``df.attrs["code"]`` 中推断标的代码。
-        mav : Sequence[int] | None, default None
-            兼容保留参数。当前实现优先使用 ``main_panel_cols`` 中显式给出的
-            均线列，而不是依赖 mplfinance 的 ``mav`` 自动生成功能。
-        volume : bool, default True
-            是否绘制成交量副图。当前推荐保持为 ``True``，以形成 1 个主图 +
-            3 个副图的专业布局。
-        main_panel_cols : Sequence[str] | None, default None
-            主图叠加指标列。若为 ``None``，则自动使用 20 日均线、60 日均线与
-            20 日布林带上下轨。
-        lower_panel_cols : Sequence[str] | None, default None
-            附加副图指标列。若为 ``None``，则自动使用年化波动率与历史回撤。
-        style : str, default "yahoo"
-            mplfinance 样式名称。
-        figratio : tuple[int, int], default (12, 8)
-            图像宽高比例。
-        figscale : float, default 1.2
-            图像缩放比例。
-        show : bool, default True
-            是否立即展示图像。
-        savepath : str | None, default None
-            图片保存路径。若给定，函数会自动创建父目录并保存图片。
-
-        Returns
-        -------
-        Figure
-            ``matplotlib.figure.Figure`` 图形对象。
-
-        Raises
-        ------
-        ImportError
-            若运行环境未安装 ``mplfinance``，则抛出该异常。
-        TypeError
-            若输入对象类型错误，则抛出该异常。
-        ValueError
-            若数据结构、指标列或绘图参数非法，则抛出该异常。
-
-        Notes
-        -----
-        图形布局如下：
-
-        - 主图：K 线 + 20/60 日均线 + 布林带上下轨，并对布林带区域淡蓝色填充
-        - 副图 1：成交量
-        - 副图 2：年化波动率曲线
-        - 副图 3：历史回撤曲线，并在 0 轴以下用红色区域填充
-        - 标题：动态显示标的代码与总体最大回撤
+        净值或收益率水平序列自动采用折线模式（``type="line"``）并隐藏无意义成交量。
         """
-        del mav
-
         validated = self.validate_input(df)
+        asset_key = str(validated.attrs.get("asset_type", "") or "").strip().lower()
+        series_kind = str(validated.attrs.get("series_kind", "price") or "price").strip().lower()
+        use_line = asset_key == "mutual_fund" or series_kind == "yield_level"
+        vol_max = float(pd.to_numeric(validated["Volume"], errors="coerce").fillna(0.0).abs().max())
+        effective_volume = (
+            bool(volume and not use_line and vol_max > 0.0) if use_line else bool(volume)
+        )
+
         mpf, plt = self._load_plot_dependencies()
         # addplots 是 mplfinance 的附加图层机制，用来叠加均线、布林带和副图指标。
         addplots, metadata = self._build_addplots(
             validated,
             main_panel_cols=main_panel_cols,
             lower_panel_cols=lower_panel_cols,
-            volume=volume,
+            volume=effective_volume,
         )
         plot_df = metadata["validated_df"]
 
-        num_panels = 4 if volume else 3
-        panel_ratios = (6, 2, 2, 2) if volume else (6, 2, 2)
+        num_panels = 4 if effective_volume else 3
+        panel_ratios = (6, 2, 2, 2) if effective_volume else (6, 2, 2)
+        ylabel = (
+            "Yield (%)"
+            if series_kind == "yield_level"
+            else ("NAV" if asset_key == "mutual_fund" else "Price")
+        )
 
         plot_kwargs = {
-            "type": "candle",
+            "type": "line" if use_line else "candle",
             "style": style,
-            "volume": volume,
+            "volume": effective_volume,
             "addplot": addplots,
             "panel_ratios": panel_ratios,
             "num_panels": num_panels,
             "figratio": figratio,
             "figscale": figscale,
-            "ylabel": "Price",
+            "ylabel": ylabel,
             "ylabel_lower": "Volume",
             "tight_layout": True,
             "returnfig": True,
         }
-        if volume:
+        if effective_volume:
             plot_kwargs["volume_panel"] = 1
         if not addplots:
             plot_kwargs.pop("addplot")
