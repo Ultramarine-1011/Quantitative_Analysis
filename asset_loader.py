@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import pandas as pd
 
@@ -57,6 +57,20 @@ def _normalize_proxy_url(proxy_url: str | None) -> str | None:
     if not parsed.scheme or not parsed.netloc:
         raise ValueError("proxy_url 格式无效，请使用 `http://127.0.0.1:端口`。")
     return normalized
+
+
+def _redact_proxy_url(proxy_url: str) -> str:
+    """Mask embedded credentials in proxy URLs before attaching metadata."""
+    parsed = urlsplit(proxy_url)
+    if parsed.username is None and parsed.password is None:
+        return proxy_url
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    port_part = f":{parsed.port}" if parsed.port is not None else ""
+    return urlunsplit(
+        (parsed.scheme, f"***:***@{host}{port_part}", parsed.path, parsed.query, parsed.fragment)
+    )
 
 
 def _resolve_gold_symbol(symbol: str) -> tuple[str, str]:
@@ -234,7 +248,7 @@ def _fetch_crypto_data(
     normalized.attrs["symbol"] = symbol_text
     normalized.attrs["data_source"] = "ccxt.binance"
     if proxies is not None:
-        normalized.attrs["proxy_url"] = proxies["https"]
+        normalized.attrs["proxy_url"] = _redact_proxy_url(proxies["https"])
     return normalized
 
 

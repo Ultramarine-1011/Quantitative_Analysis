@@ -307,12 +307,26 @@ def _render_diagnosis(streamlit: Any, df: pd.DataFrame, metrics: dict, query: tu
         streamlit.warning(metrics["metric_disclaimer"])
 
     quality = metrics.get("data_quality") or {}
-    dropped = int(quality.get("dropped_rows", 0) or 0)
-    ffilled = int(quality.get("ffilled_cells", 0) or 0)
-    if dropped > 0 or ffilled > 0:
+    dropped = int(quality.get("dropped_invalid_rows", quality.get("dropped_rows", 0)) or 0)
+    ffilled = int(quality.get("filled_price_rows", quality.get("ffilled_cells", 0)) or 0)
+    missing_vol = int(quality.get("missing_volume_rows", 0) or 0)
+    ohlc_anomaly = int(quality.get("ohlc_anomaly_rows", 0) or 0)
+    non_pos = int(quality.get("non_positive_price_rows", 0) or 0)
+    if dropped > 0 or ffilled > 0 or missing_vol > 0 or ohlc_anomaly > 0 or non_pos > 0:
+        quality_parts: list[str] = []
+        if dropped > 0:
+            quality_parts.append("清理异常/缺失 %d 行" % dropped)
+        if ffilled > 0:
+            quality_parts.append("前向填补价格 %d 行" % ffilled)
+        if missing_vol > 0:
+            quality_parts.append("缺失成交量补零 %d 行" % missing_vol)
+        if ohlc_anomaly > 0:
+            quality_parts.append("OHLC 极值异常 %d 行" % ohlc_anomaly)
+        if non_pos > 0:
+            quality_parts.append("非正价格 %d 行" % non_pos)
         streamlit.warning(
-            "数据质量提示：已清理异常/缺失记录 %d 行，前向填补 %d 单元格（策略：%s）。"
-            % (dropped, ffilled, quality.get("missing_policy", "drop"))
+            "数据质量提示：%s（策略：%s）。"
+            % ("，".join(quality_parts), quality.get("missing_policy", "drop"))
         )
 
     columns = streamlit.columns(3)

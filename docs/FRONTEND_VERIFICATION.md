@@ -1,4 +1,6 @@
-# 前端验收与优化（2026-10-11）
+# 前端验收与优化（2026-10-11 历史快照）
+
+> **M0 说明**：以下为 2026-10-11 初版前端交互与兼容性手工验收记录（当时尚为 Python 3.9.6 / Streamlit 1.50 / 134 项测试）。Stages 1–5 与 M0 之后，最新架构与离线测试基线请以 [工程架构](ARCHITECTURE.md) 和 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
 
 通过 computer-use 操作本地 Streamlit 页面，并使用真实 ETF 行情检查加载、下载与进阶计算。验收环境为 Python 3.9.6 / Streamlit 1.50.0，使用 Codex 内置浏览器。
 

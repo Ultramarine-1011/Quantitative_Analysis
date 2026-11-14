@@ -2,6 +2,12 @@
 
 基于 Python 3.11+ 的量化分析工具集：提供 **Streamlit Web 应用** 与 **命令行入口** 统一覆盖 13 类跨市场资产的历史行情诊断、多币种折算、精确有效前沿优化与无前视偏差样本外回测。数据经统一 **OHLCV**（开高低收量）契约清洗后，复用同一套特征工程、风险指标与跨端持久化缓存。
 
+## 产品方向与开发路线图
+
+项目长期围绕两个目标建设：**面向人类的多资产可视化分析平台**，以及**面向 AI Agent 的金融数据处理与指标工具模块**。后者以 CLI 为主要调用入口，自动完成数据检索、清洗、质量检查和指标计算，输出机器可读的结构化结果，并按需生成报告与图表。
+
+当前仓库已具备部分数据、指标、可视化和 CLI 能力；统一分析服务、完整的 Agent CLI 和自动报告等仍属于后续开发计划。具体设计原则、M0–M5 阶段目标、验收标准与 V0.1–V1.0 版本规划，请参阅 **[产品定位与开发路线图](docs/ROADMAP.md)**。
+
 ---
 
 ## 功能概览
@@ -41,7 +47,7 @@
 
 ## 环境要求
 
-- **Python**：最低 **3.11**（推荐 **3.11 / 3.12+**）。
+- **Python**：最低 **3.11**（推荐 **3.12 / 3.14**，本地主开发与验收基准为 Python **3.14**，CI 覆盖 **3.11 / 3.12 / 3.14**）。
 - **网络**：A 股、基金、贵金属等依赖 **AKShare** 等数据源；加密货币依赖交易所 API（默认 Binance），部分地区可能需要代理。
 - **共享磁盘缓存**：默认写入 `~/.cache/quantitative_analysis/ohlcv`，可通过环境变量 `QUANT_CACHE_DIR`、`QUANT_CACHE_TTL`（秒，默认 `3600`）与 `QUANT_DISABLE_CACHE=1` 控制。
 
@@ -162,7 +168,7 @@ ruff format --check .
 python -m pip check
 ```
 
-测试目录为 `tests/`（配置见 `pytest.ini`），使用固定样本和模拟数据源，不访问行情网络。覆盖清洗、缺失值与交易日历、外汇折算、并发与超时预算、SLSQP 精确前沿、Ledoit-Wolf 收缩、Walk-Forward OOS 回测、共享磁盘缓存隔离、CSV、CLI 和 Streamlit。GitHub Actions 对 Python 3.11 / 3.12 执行检查。验证说明见 `docs/CHINA_EQUITY_VERIFICATION.md`；重构说明与兼容边界见 `docs/ARCHITECTURE.md`；实际浏览器验收记录见 `docs/FRONTEND_VERIFICATION.md`。
+测试目录为 `tests/`（配置见 `pytest.ini`），使用固定样本和模拟数据源，不访问行情网络。覆盖清洗、缺失值与交易日历、外汇折算、并发与超时预算、SLSQP 精确前沿、Ledoit-Wolf 收缩、Walk-Forward OOS 回测、共享磁盘缓存隔离、CSV、CLI 和 Streamlit。GitHub Actions 对 Python **3.11 / 3.12 / 3.14** 执行检查。验证说明见 `docs/CHINA_EQUITY_VERIFICATION.md`；架构说明与兼容边界见 `docs/ARCHITECTURE.md`；M0 技术债审计与 V0.1/V0.2 契约设计见 `docs/M0_AUDIT_AND_CONTRACTS.md`；历史浏览器验收记录见 `docs/FRONTEND_VERIFICATION.md`。
 
 ---
 

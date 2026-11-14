@@ -54,7 +54,7 @@ python -m pytest tests\ -v
 
 ### 5. 其他依赖版本
 
-- 使用 `requirements.txt` 中注明的 Python 版本建议（3.9+）；过旧的 `numpy`/`pandas` 可能导致类型或索引行为不一致。
+- 最低要求 Python **3.11+**（推荐 **3.12 / 3.14**）；过旧的 `numpy`/`pandas` 可能导致类型或索引行为不一致（`pyarrow<26` 约束见 `requirements.txt`）。
 
 ## 相关代码入口
 

@@ -23,6 +23,7 @@ CACHE_SCHEMA_VERSION = 1
 ENV_CACHE_DIR = "QUANT_CACHE_DIR"
 ENV_DISABLE_CACHE = "QUANT_DISABLE_CACHE"
 ENV_CACHE_TTL = "QUANT_CACHE_TTL"
+_TRANSIENT_OR_SENSITIVE_ATTRS = frozenset({"cache_hit", "cache_path", "proxy_url"})
 
 
 def is_cache_enabled() -> bool:
@@ -198,6 +199,8 @@ def load_cached_ohlcv(
     df.index.name = "Date"
 
     sliced = df.loc[(df.index >= req_start) & (df.index <= req_end)].copy()
+    if sliced.empty:
+        return None
     attrs = meta.get("attrs")
     if isinstance(attrs, dict):
         sliced.attrs.update(attrs)
@@ -248,7 +251,7 @@ def save_cached_ohlcv(
             cov_end = last_ts
 
     clean_attrs = _to_json_safe(
-        {k: v for k, v in dict(df.attrs).items() if k not in {"cache_hit", "cache_path"}}
+        {k: v for k, v in dict(df.attrs).items() if k not in _TRANSIENT_OR_SENSITIVE_ATTRS}
     )
     meta_payload = {
         "version": CACHE_SCHEMA_VERSION,
