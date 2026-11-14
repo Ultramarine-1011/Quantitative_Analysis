@@ -8,9 +8,9 @@ import pytest
 import data_fetcher
 from data_fetcher import AKShareFetcher, EmptySymbolDataError, NetworkFetchError
 from data_sources import china_equity, funds
+from data_sources.base import BaseDataFetcher
 from data_sources.eastmoney import EastMoneyDailyKlineClient, parse_daily_kline_payload
 from data_sources.forex import _forex_kline_json_to_dataframe
-from data_sources.base import BaseDataFetcher
 
 
 def raw_equity(sample_ohlcv):

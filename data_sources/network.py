@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass, field
 import importlib
 import os
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Any
 
 from .errors import DataFetchError, EmptySymbolDataError, NetworkFetchError, VendorUpstreamError

@@ -11,7 +11,7 @@ import pandas as pd
 
 from data_sources.errors import EmptySymbolDataError
 
-DateLike = Union[str, datetime, pd.Timestamp]
+DateLike = Union[str, datetime, pd.Timestamp]  # noqa: UP007 (evaluated at import time)
 REQUIRED_OHLCV_COLUMNS = ("Open", "High", "Low", "Close", "Volume")
 PRICE_COLUMNS = ("Open", "High", "Low", "Close")
 MissingPolicy = Literal["raise", "drop", "ffill"]

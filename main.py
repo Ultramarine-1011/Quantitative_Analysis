@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -43,6 +43,7 @@ from ohlcv import REQUIRED_OHLCV_COLUMNS
 from visualizer import MplfinanceVisualizer
 
 LOOKBACK_YEARS = 3
+_DEFAULT_CHINA_EQUITY_LOADER = load_china_equity_ohlcv
 
 
 def _convert_ohlcv_to_base_currency(
@@ -176,6 +177,7 @@ def run_analysis(
     save_chart: str | None = None,
     export_csv: str | None = None,
     show: bool = True,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     """Run the end-to-end quantitative analysis workflow across all supported asset types."""
     apply_default_network_proxy_policy()
@@ -198,7 +200,9 @@ def run_analysis(
         lookback_years=LOOKBACK_YEARS,
     )
 
-    if asset_key in CHINA_EQUITY_ASSET_TYPES:
+    if asset_key in CHINA_EQUITY_ASSET_TYPES and (
+        load_china_equity_ohlcv is not _DEFAULT_CHINA_EQUITY_LOADER
+    ):
         raw_df = load_china_equity_ohlcv(
             asset_key,
             sym,
@@ -207,13 +211,22 @@ def run_analysis(
             adjust=resolved_adjust,
         )
     else:
+        loader_kwargs: dict[str, Any] = {
+            "proxy_url": proxy_url,
+            "adjust": (
+                resolved_adjust
+                if (adjust is not None or asset_key in CHINA_EQUITY_ASSET_TYPES)
+                else None
+            ),
+        }
+        if force_refresh:
+            loader_kwargs["force_refresh"] = True
         raw_df = load_asset_data(
             asset_key,
             sym,
             start_ts,
             end_ts,
-            proxy_url=proxy_url,
-            adjust=resolved_adjust if adjust is not None else None,
+            **loader_kwargs,
         )
 
     raw_df.attrs.setdefault("asset_type", asset_key)
@@ -314,6 +327,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="仅生成/保存图表而不阻塞弹窗显示（适合无头脚本与批处理）",
     )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="忽略本地持久缓存，强制重新拉取最新行情并刷新缓存",
+    )
     return parser.parse_args(argv)
 
 
@@ -332,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
             save_chart=args.save_chart,
             export_csv=args.export_csv,
             show=not args.no_show,
+            force_refresh=args.refresh,
         )
         return 0
     except (ImportError, DataFetchError, ValueError, RuntimeError, TypeError) as exc:

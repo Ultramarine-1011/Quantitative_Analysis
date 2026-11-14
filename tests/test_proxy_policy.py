@@ -1,8 +1,8 @@
 """Proxy isolation across concurrent Streamlit sessions and nested failures."""
 
-from concurrent.futures import ThreadPoolExecutor
 import os
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import requests.sessions

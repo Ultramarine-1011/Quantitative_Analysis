@@ -5,7 +5,8 @@ from __future__ import annotations
 import importlib
 import io
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 
@@ -21,6 +22,7 @@ from analysis_metrics import (
     get_quant_metrics,
 )
 from asset_catalog import (
+    _TAB2_SYSTEM_MATH_MARKDOWN,
     ADJUSTMENT_LABELS,
     ASSET_LABELS,
     ASSET_RETURN_BASIS_NOTES,
@@ -28,7 +30,6 @@ from asset_catalog import (
     DEFAULT_SYMBOLS,
     PRESET_PORTFOLIOS,
     SUPPORTED_ASSET_TYPES,
-    _TAB2_SYSTEM_MATH_MARKDOWN,
     build_ef_multi_asset_codes_reference_df,
     format_asset_guide_markdown,
     get_supported_adjustments,
@@ -281,8 +282,9 @@ def _render_diagnosis(streamlit: Any, df: pd.DataFrame, metrics: dict, query: tu
     source_text = metrics.get("data_source") or "N/A"
     ccy_text = metrics.get("currency") or "N/A"
     adj_text = str(df.attrs.get("adjust", "") or "") or "默认/不适用"
+    cache_text = " · 本地缓存命中" if df.attrs.get("cache_hit") else ""
     streamlit.caption(
-        "样本区间：%s 至 %s · %d 条记录 · 数据源：%s · 计价：%s · 复权：%s"
+        "样本区间：%s 至 %s · %d 条记录 · 数据源：%s · 计价：%s · 复权：%s%s"
         % (
             df.index[0].strftime("%Y-%m-%d"),
             df.index[-1].strftime("%Y-%m-%d"),
@@ -290,6 +292,7 @@ def _render_diagnosis(streamlit: Any, df: pd.DataFrame, metrics: dict, query: tu
             source_text,
             ccy_text,
             adj_text,
+            cache_text,
         )
     )
     unit_cap = str(df.attrs.get("unit_caption", "") or "").strip()
@@ -600,6 +603,16 @@ def _render_advanced(
     )
 
     def _cached_fx_loader(pair_symbol: str, s_dt: object, e_dt: object) -> pd.DataFrame:
+        force_refresh = bool(streamlit.session_state.get("force_refresh_input", False))
+        if force_refresh:
+            return _load_asset_data(
+                asset_type="fx",
+                symbol=pair_symbol,
+                start_date=s_dt,
+                end_date=e_dt,
+                proxy_url=proxy_url,
+                force_refresh=True,
+            )
         return load_asset_data(
             asset_type="fx",
             symbol=pair_symbol,
@@ -609,6 +622,10 @@ def _render_advanced(
         )
 
     def optimize():
+        force_refresh = bool(streamlit.session_state.get("force_refresh_input", False))
+        if force_refresh:
+            load_asset_data.clear()
+            load_multi_leg_close_wide.clear()
         legs = parse_multi_asset_legs(ef_legs_text)
         aligned = _load_and_align_multi_asset_portfolio(
             legs,
@@ -618,8 +635,9 @@ def _render_advanced(
             calendar_mode=calendar_mode,
             base_currency=base_currency,
             allow_usdt_usd_peg=allow_usdt_peg,
-            loader=load_asset_data,
+            loader=None if force_refresh else load_asset_data,
             fx_loader=_cached_fx_loader,
+            force_refresh=force_refresh,
         )
         min_hist = 10 if calendar_mode == "weekly_friday" else 30
         ppy = float(aligned.backtest_periods_per_year)
@@ -941,6 +959,14 @@ def render_app() -> None:
                 key="include_momentum_input",
             )
         )
+        force_refresh = bool(
+            streamlit.checkbox(
+                "强制刷新行情（跳过本地持久缓存）",
+                value=False,
+                key="force_refresh_input",
+                help="勾选后在本次诊断或组合优化时绕过本地 Parquet 磁盘与内存缓存并重新抓取。",
+            )
+        )
 
     dates_present = start_date is not None and end_date is not None
     dates_valid = dates_present and start_date <= end_date
@@ -980,14 +1006,26 @@ def render_app() -> None:
     )
 
     def load_single():
-        df = load_asset_data(
-            asset_type=asset_type,
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            proxy_url=proxy_url,
-            adjust=adj_param,
-        )
+        if force_refresh:
+            load_asset_data.clear()
+            df = _load_asset_data(
+                asset_type=asset_type,
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                proxy_url=proxy_url,
+                adjust=adj_param,
+                force_refresh=True,
+            )
+        else:
+            df = load_asset_data(
+                asset_type=asset_type,
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                proxy_url=proxy_url,
+                adjust=adj_param,
+            )
         if df.empty:
             raise EmptySymbolDataError(EMPTY_SYMBOL_FETCH_HINT)
         return df

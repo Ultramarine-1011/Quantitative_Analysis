@@ -1,9 +1,9 @@
 """Offline CLI, Streamlit, CSV, chart and crypto-pagination smoke tests."""
 
 import io
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd

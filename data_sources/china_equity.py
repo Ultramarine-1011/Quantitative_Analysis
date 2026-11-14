@@ -10,6 +10,7 @@ from typing import Any, Literal
 import pandas as pd
 
 from ohlcv import A_SHARE_COLUMN_MAPPING, DateLike, filter_by_date_range
+
 from .base import BaseDataFetcher
 from .eastmoney import EastMoneyDailyKlineClient, _eastmoney_sec_market_id
 from .errors import (

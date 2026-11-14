@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 from asset_resolver import format_diagnosis_user_message
 from data_fetcher import (
     ChinaEquityPipelineError,

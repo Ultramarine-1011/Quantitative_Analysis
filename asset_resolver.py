@@ -4,19 +4,17 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ohlcv import coerce_analysis_date, validate_analysis_date_range
-
-from data_fetcher import (
-    AKShareFetcher,
-    DataFetchError,
-    EmptySymbolDataError,
-)
-
 from asset_catalog import (
     CHINA_EQUITY_ASSET_TYPES as CHINA_EQUITY_ASSET_TYPES,
     CHINA_EQUITY_LABELS as CHINA_EQUITY_LABELS,
     DEFAULT_CHINA_EQUITY_SYMBOLS as DEFAULT_CHINA_EQUITY_SYMBOLS,
 )
+from data_fetcher import (
+    AKShareFetcher,
+    DataFetchError,
+    EmptySymbolDataError,
+)
+from ohlcv import coerce_analysis_date, validate_analysis_date_range
 
 EMPTY_SYMBOL_FETCH_HINT = (
     "未找到该代码的数据，请检查代码是否输入正确，或该资产类别是否匹配"

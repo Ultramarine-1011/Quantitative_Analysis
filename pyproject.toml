@@ -7,7 +7,7 @@ name = "quantitative-analysis"
 version = "0.1.0"
 description = "Multi-asset OHLCV diagnostics with Streamlit and a Python CLI"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dynamic = ["dependencies"]
 
 [project.optional-dependencies]
@@ -30,13 +30,27 @@ include = ["data_sources*"]
 dependencies = {file = ["requirements.txt"]}
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E9", "F"]
+select = ["E9", "F", "I", "B", "UP"]
+ignore = [
+    "B905",  # zip(..., strict=...) requires Python >=3.10 runtime (dev .venv may be 3.9)
+    "UP017", # Keep timezone.utc where older developer venvs need Python 3.9 runtime safety
+    "UP031", # Retain readable %-style diagnostic formatting
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
 
 [tool.ruff.lint.per-file-ignores]
 # These modules also preserve import paths used by existing callers.
 "app.py" = ["F401"]
 "data_fetcher.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true

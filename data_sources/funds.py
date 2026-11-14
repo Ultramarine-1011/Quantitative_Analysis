@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import importlib
 import inspect
+from typing import TYPE_CHECKING
 
 import numpy as np
-
 import pandas as pd
 
 from ohlcv import (
@@ -16,12 +16,11 @@ from ohlcv import (
     normalize_ohlcv,
     validate_analysis_date_range,
 )
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .china_equity import AKShareFetcher
 from .errors import DataFetchError, EmptySymbolDataError
-from .network import apply_default_network_proxy_policy, _call_akshare
+from .network import _call_akshare, apply_default_network_proxy_policy
 
 
 def _fund_find_date_column(df: pd.DataFrame) -> str:

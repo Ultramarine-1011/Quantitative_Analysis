@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 import importlib
 import json
+from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
@@ -311,8 +311,8 @@ class EastMoneyDailyKlineClient:
                 req_timeout = active_budget.consume_attempt(f"EastMoney httpx {em_host}")
                 if httpx_clients is not None and te in httpx_clients:
                     out, got_valid = pull_market_ids(
-                        lambda p, client=httpx_clients[te]: client.get(
-                            url, params=p, timeout=req_timeout
+                        lambda p, client=httpx_clients[te], timeout=req_timeout: client.get(
+                            url, params=p, timeout=timeout
                         )
                     )
                 else:
@@ -347,8 +347,8 @@ class EastMoneyDailyKlineClient:
                     requests_session.trust_env = te
                     req_proxies = None if te else _REQUESTS_NO_PROXY
                     out, got_valid = pull_market_ids(
-                        lambda p: requests_session.get(
-                            url, timeout=req_timeout, params=p, proxies=req_proxies
+                        lambda p, timeout=req_timeout, proxies=req_proxies: requests_session.get(
+                            url, timeout=timeout, params=p, proxies=proxies
                         )
                     )
                 else:
@@ -358,8 +358,8 @@ class EastMoneyDailyKlineClient:
                         session.headers.update(headers)
                         req_proxies = None if te else _REQUESTS_NO_PROXY
                         out, got_valid = pull_market_ids(
-                            lambda p: session.get(
-                                url, timeout=req_timeout, params=p, proxies=req_proxies
+                            lambda p, sess=session, timeout=req_timeout, proxies=req_proxies: (
+                                sess.get(url, timeout=timeout, params=p, proxies=proxies)
                             )
                         )
                 if not out.empty or got_valid:

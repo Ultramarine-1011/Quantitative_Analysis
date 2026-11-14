@@ -9,6 +9,12 @@ import pytest
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_disk_cache(monkeypatch):
+    """Disable persistent disk cache by default so offline unit tests stay isolated."""
+    monkeypatch.setenv("QUANT_DISABLE_CACHE", "1")
+
+
 @pytest.fixture
 def sample_ohlcv():
     close = 100 * np.exp(np.cumsum(np.random.default_rng(7).normal(0.0004, 0.01, 120)))

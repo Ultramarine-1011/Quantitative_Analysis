@@ -6,14 +6,15 @@
 
 from __future__ import annotations
 
+import importlib
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-import importlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+
 from ohlcv import REQUIRED_OHLCV_COLUMNS, prepare_ohlcv
 
 if TYPE_CHECKING:

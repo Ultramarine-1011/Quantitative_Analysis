@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-import importlib
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -31,10 +31,11 @@ from data_fetcher import (
     load_global_market_data,
     load_reit_data,
 )
+from data_sources.cache import load_cached_ohlcv, save_cached_ohlcv
 from ohlcv import (
-    validate_analysis_date_range as _validate_date_range,
-    normalize_ohlcv as _normalize_ohlcv,
     filter_by_date_range as _filter_by_date_range,
+    normalize_ohlcv as _normalize_ohlcv,
+    validate_analysis_date_range as _validate_date_range,
 )
 
 GOLD_SYMBOL_ALIASES = {"GC": "GC", "AU9999": "GC"}
@@ -245,8 +246,9 @@ def load_asset_data(
     proxy_url: str | None = None,
     *,
     adjust: str | None = None,
+    force_refresh: bool = False,
 ) -> pd.DataFrame:
-    """统一加载多类资产 OHLCV（契约一致），支持按接口能力传入 ``adjust`` 复权口径。"""
+    """统一加载多类资产 OHLCV（契约一致），支持共享持久化缓存与 ``adjust`` 复权口径。"""
     start_date, end_date = _validate_date_range(start_date, end_date)
     asset_key = str(asset_type).strip().lower()
     if asset_key not in SUPPORTED_ASSET_TYPES:
@@ -256,6 +258,27 @@ def load_asset_data(
             resolve_adjustment(asset_key, adjust)
         elif adjust != "":
             resolve_adjustment(asset_key, adjust)
+    if asset_key == "crypto" and proxy_url is not None:
+        _normalize_proxy_url(proxy_url)
+
+    cached = load_cached_ohlcv(
+        asset_key,
+        symbol,
+        start_date,
+        end_date,
+        adjust=adjust,
+        force_refresh=force_refresh,
+    )
+    if cached is not None:
+        resolved_sym = str(cached.attrs.get("symbol", symbol) or symbol).strip()
+        cached.attrs.setdefault("asset_type", asset_key)
+        cached.attrs.setdefault(
+            "return_basis", ASSET_RETURN_BASIS.get(asset_key, "adjusted_or_price")
+        )
+        cached.attrs.setdefault(
+            "currency", infer_asset_currency(asset_key, resolved_sym, cached.attrs)
+        )
+        return cached
 
     # 这里是 Web/CLI 的数据总路由：不同资产来源不同，但返回值都遵循统一 OHLCV 契约。
     if asset_key == "etf":
@@ -327,6 +350,18 @@ def load_asset_data(
     df.attrs.setdefault("asset_type", asset_key)
     df.attrs.setdefault("return_basis", ASSET_RETURN_BASIS.get(asset_key, "adjusted_or_price"))
     df.attrs.setdefault("currency", infer_asset_currency(asset_key, resolved_sym, df.attrs))
+    df.attrs.setdefault("cache_hit", False)
+    if not df.empty:
+        saved_path = save_cached_ohlcv(
+            df,
+            asset_key,
+            symbol,
+            start_date,
+            end_date,
+            adjust=adjust,
+        )
+        if saved_path is not None:
+            df.attrs["cache_path"] = str(saved_path)
     return df
 
 
@@ -413,6 +448,7 @@ def _fetch_legs_frames(
     proxy_url: str | None = None,
     loader: Callable[..., pd.DataFrame] | None = None,
     concurrent: bool = True,
+    force_refresh: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Load multiple heterogeneous legs, concurrently for library calls and sequentially for custom loaders."""
     ordered_cols: list[tuple[str, str, str]] = []
@@ -427,13 +463,16 @@ def _fetch_legs_frames(
     load_leg = loader if loader is not None else load_asset_data
 
     def _one(asset_key: str, symbol: str) -> pd.DataFrame:
-        return load_leg(
-            asset_type=asset_key,
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            proxy_url=proxy_url,
-        )
+        kwargs: dict[str, Any] = {
+            "asset_type": asset_key,
+            "symbol": symbol,
+            "start_date": start_date,
+            "end_date": end_date,
+            "proxy_url": proxy_url,
+        }
+        if force_refresh:
+            kwargs["force_refresh"] = True
+        return load_leg(**kwargs)
 
     # Custom loaders (e.g. Streamlit @st.cache_data wrappers) may require main-thread ScriptRunContext.
     if concurrent and loader is None and len(ordered_cols) > 1:
@@ -777,6 +816,7 @@ def load_and_align_multi_asset_portfolio(
     fx_loader: Callable[..., pd.DataFrame] | None = None,
     usdt_usd_loader: Callable[..., pd.DataFrame] | None = None,
     concurrent: bool = True,
+    force_refresh: bool = False,
 ) -> MultiAssetAlignmentResult:
     """Fetch multiple heterogeneous asset legs and align onto unified valuation & currency."""
     if not legs_tuple:
@@ -788,6 +828,7 @@ def load_and_align_multi_asset_portfolio(
         proxy_url=proxy_url,
         loader=loader,
         concurrent=concurrent,
+        force_refresh=force_refresh,
     )
 
     return align_multi_asset_frames(
