@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-import importlib
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+import importlib
 from typing import Any, Literal
 from urllib.parse import urlparse
 
 import pandas as pd
 
-from asset_catalog import ASSET_RETURN_BASIS, ASSET_RETURN_BASIS_NOTES, SUPPORTED_ASSET_TYPES
+from asset_catalog import (
+    ASSET_RETURN_BASIS,
+    ASSET_RETURN_BASIS_NOTES,
+    SUPPORTED_ADJUSTMENTS,
+    SUPPORTED_ASSET_TYPES,
+    resolve_adjustment,
+)
 from asset_resolver import load_china_equity_ohlcv
 from currency import convert_prices_to_base_currency, infer_asset_currency
 from data_fetcher import (
@@ -60,14 +67,24 @@ def _resolve_gold_symbol(symbol: str) -> tuple[str, str]:
     return display_symbol, vendor_symbol
 
 
-def _fetch_etf_data(symbol: str, start_date: object, end_date: object) -> pd.DataFrame:
+def _fetch_etf_data(
+    symbol: str,
+    start_date: object,
+    end_date: object,
+    adjust: str = "hfq",
+) -> pd.DataFrame:
     """通过 AKShareFetcher 路由抓取 ETF 并返回统一 OHLCV。"""
-    return load_china_equity_ohlcv("etf", symbol, start_date, end_date, adjust="hfq")
+    return load_china_equity_ohlcv("etf", symbol, start_date, end_date, adjust=adjust)
 
 
-def _fetch_ashare_stock_data(symbol: str, start_date: object, end_date: object) -> pd.DataFrame:
+def _fetch_ashare_stock_data(
+    symbol: str,
+    start_date: object,
+    end_date: object,
+    adjust: str = "hfq",
+) -> pd.DataFrame:
     """通过 AKShare ``stock_zh_a_hist`` 抓取 A 股个股并返回统一 OHLCV（Open/High/Low/Close/Volume）。"""
-    return load_china_equity_ohlcv("ashare", symbol, start_date, end_date, adjust="hfq")
+    return load_china_equity_ohlcv("ashare", symbol, start_date, end_date, adjust=adjust)
 
 
 def _fetch_mutual_fund_data(symbol: str, start_date: object, end_date: object) -> pd.DataFrame:
@@ -214,6 +231,7 @@ def _fetch_crypto_data(
     normalized = _normalize_crypto_data(rows, start_date=start_date, end_date=end_date)
     normalized.attrs["asset_type"] = "crypto"
     normalized.attrs["symbol"] = symbol_text
+    normalized.attrs["data_source"] = "ccxt.binance"
     if proxies is not None:
         normalized.attrs["proxy_url"] = proxies["https"]
     return normalized
@@ -225,18 +243,37 @@ def load_asset_data(
     start_date: object,
     end_date: object,
     proxy_url: str | None = None,
+    *,
+    adjust: str | None = None,
 ) -> pd.DataFrame:
-    """统一加载多类资产 OHLCV（契约一致）。"""
+    """统一加载多类资产 OHLCV（契约一致），支持按接口能力传入 ``adjust`` 复权口径。"""
     start_date, end_date = _validate_date_range(start_date, end_date)
     asset_key = str(asset_type).strip().lower()
     if asset_key not in SUPPORTED_ASSET_TYPES:
         raise ValueError("不支持的资产类型: %s" % asset_type)
+    if adjust is not None:
+        if asset_key in SUPPORTED_ADJUSTMENTS:
+            resolve_adjustment(asset_key, adjust)
+        elif adjust != "":
+            resolve_adjustment(asset_key, adjust)
 
-    # 这里是 Web 应用的数据总路由：不同资产来源不同，但返回值都必须是 OHLCV。
+    # 这里是 Web/CLI 的数据总路由：不同资产来源不同，但返回值都遵循统一 OHLCV 契约。
     if asset_key == "etf":
-        df = _fetch_etf_data(symbol=symbol, start_date=start_date, end_date=end_date)
+        df = (
+            _fetch_etf_data(symbol=symbol, start_date=start_date, end_date=end_date)
+            if adjust is None
+            else _fetch_etf_data(
+                symbol=symbol, start_date=start_date, end_date=end_date, adjust=adjust
+            )
+        )
     elif asset_key == "ashare":
-        df = _fetch_ashare_stock_data(symbol=symbol, start_date=start_date, end_date=end_date)
+        df = (
+            _fetch_ashare_stock_data(symbol=symbol, start_date=start_date, end_date=end_date)
+            if adjust is None
+            else _fetch_ashare_stock_data(
+                symbol=symbol, start_date=start_date, end_date=end_date, adjust=adjust
+            )
+        )
     elif asset_key == "mutual_fund":
         df = _fetch_mutual_fund_data(symbol=symbol, start_date=start_date, end_date=end_date)
     elif asset_key == "gold":
@@ -249,9 +286,17 @@ def load_asset_data(
             proxy_url=proxy_url,
         )
     elif asset_key == "us_stock":
-        df = load_global_market_data("us_stock", symbol, start_date, end_date)
+        df = (
+            load_global_market_data("us_stock", symbol, start_date, end_date)
+            if adjust is None
+            else load_global_market_data("us_stock", symbol, start_date, end_date, adjust=adjust)
+        )
     elif asset_key == "hk_stock":
-        df = load_global_market_data("hk_stock", symbol, start_date, end_date)
+        df = (
+            load_global_market_data("hk_stock", symbol, start_date, end_date)
+            if adjust is None
+            else load_global_market_data("hk_stock", symbol, start_date, end_date, adjust=adjust)
+        )
     elif asset_key == "global_index":
         df = load_global_market_data("global_index", symbol, start_date, end_date)
     elif asset_key == "bond_cn":
@@ -360,6 +405,44 @@ def parse_multi_asset_legs(text: str) -> tuple[tuple[str, str], ...]:
     return tuple(legs_ordered)
 
 
+def _fetch_legs_frames(
+    legs_tuple: tuple[tuple[str, str], ...],
+    start_date: object,
+    end_date: object,
+    *,
+    proxy_url: str | None = None,
+    loader: Callable[..., pd.DataFrame] | None = None,
+    concurrent: bool = True,
+) -> dict[str, pd.DataFrame]:
+    """Load multiple heterogeneous legs, concurrently for library calls and sequentially for custom loaders."""
+    ordered_cols: list[tuple[str, str, str]] = []
+    seen_cols: set[str] = set()
+    for asset_key, symbol in legs_tuple:
+        col = multi_asset_leg_column_name(asset_key, symbol)
+        if col in seen_cols:
+            raise ValueError(f"多标的组合不能包含重复标的或列名冲突: {col}")
+        seen_cols.add(col)
+        ordered_cols.append((col, asset_key, symbol))
+
+    load_leg = loader if loader is not None else load_asset_data
+
+    def _one(asset_key: str, symbol: str) -> pd.DataFrame:
+        return load_leg(
+            asset_type=asset_key,
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            proxy_url=proxy_url,
+        )
+
+    # Custom loaders (e.g. Streamlit @st.cache_data wrappers) may require main-thread ScriptRunContext.
+    if concurrent and loader is None and len(ordered_cols) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(ordered_cols))) as pool:
+            futs = [pool.submit(_one, a, s) for _, a, s in ordered_cols]
+            return {col: fut.result() for (col, _, _), fut in zip(ordered_cols, futs)}
+    return {col: _one(a, s) for col, a, s in ordered_cols}
+
+
 def load_multi_leg_close_wide(
     legs_tuple: tuple[tuple[str, str], ...],
     start_date: object,
@@ -372,29 +455,20 @@ def load_multi_leg_close_wide(
     if not legs_tuple:
         raise ValueError("legs_tuple 不能为空。")
 
+    leg_frames = _fetch_legs_frames(
+        legs_tuple,
+        start_date,
+        end_date,
+        proxy_url=proxy_url,
+        loader=loader,
+    )
     close_frames: list[pd.Series] = []
-    load_leg = loader if loader is not None else load_asset_data
-    for asset_key, symbol in legs_tuple:
-        # 每条 leg 独立拉取，再统一成 Close 宽表，列名包含类型以避免代码冲突。
-        col = multi_asset_leg_column_name(asset_key, symbol)
-        df_leg = load_leg(
-            asset_type=asset_key,
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            proxy_url=proxy_url,
-        )
+    for col, df_leg in leg_frames.items():
         if df_leg.empty or "Close" not in df_leg.columns:
-            raise ValueError(
-                "标的 %r（列名 %r）在指定区间内无可用数据或缺少 Close 列。"
-                % ("%s:%s" % (asset_key, symbol), col)
-            )
+            raise ValueError("标的 %r 在指定区间内无可用数据或缺少 Close 列。" % col)
         close = pd.to_numeric(df_leg["Close"], errors="coerce")
         if close.isna().all():
-            raise ValueError(
-                "标的 %r（列名 %r）在指定区间内 Close 全为缺失。"
-                % ("%s:%s" % (asset_key, symbol), col)
-            )
+            raise ValueError("标的 %r 在指定区间内 Close 全为缺失。" % col)
         close_frames.append(close.rename(col))
 
     if len({frame.name for frame in close_frames}) != len(close_frames):
@@ -503,6 +577,8 @@ def align_multi_asset_frames(
     seen_basis_notes: set[str] = set()
     raw_counts: dict[str, int] = {}
     raw_ranges: dict[str, tuple[str, str]] = {}
+    data_sources: dict[str, str] = {}
+    adjustments: dict[str, str] = {}
 
     for col, frame in asset_frames.items():
         attrs = getattr(frame, "attrs", {}) or {}
@@ -539,6 +615,10 @@ def align_multi_asset_frames(
             clean_s.index[0].strftime("%Y-%m-%d"),
             clean_s.index[-1].strftime("%Y-%m-%d"),
         )
+        if attrs.get("data_source"):
+            data_sources[col] = str(attrs["data_source"])
+        if "adjust" in attrs:
+            adjustments[col] = str(attrs["adjust"])
 
         if asset_currencies and col in asset_currencies:
             inferred_ccy[col] = str(asset_currencies[col]).strip().upper()
@@ -659,6 +739,8 @@ def align_multi_asset_frames(
         "raw_ranges": raw_ranges,
         "dropped_non_overlap_days_by_asset": dropped_by_asset,
         "currency_metadata": conv.metadata,
+        "data_sources": data_sources,
+        "adjustments": adjustments,
     }
 
     return MultiAssetAlignmentResult(
@@ -694,24 +776,19 @@ def load_and_align_multi_asset_portfolio(
     loader: Callable[..., pd.DataFrame] | None = None,
     fx_loader: Callable[..., pd.DataFrame] | None = None,
     usdt_usd_loader: Callable[..., pd.DataFrame] | None = None,
+    concurrent: bool = True,
 ) -> MultiAssetAlignmentResult:
     """Fetch multiple heterogeneous asset legs and align onto unified valuation & currency."""
     if not legs_tuple:
         raise ValueError("legs_tuple 不能为空。")
-    load_leg = loader if loader is not None else load_asset_data
-    frames: dict[str, pd.DataFrame] = {}
-    for asset_key, symbol in legs_tuple:
-        col = multi_asset_leg_column_name(asset_key, symbol)
-        if col in frames:
-            raise ValueError(f"多标的组合不能包含重复标的: {col}")
-        df_leg = load_leg(
-            asset_type=asset_key,
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            proxy_url=proxy_url,
-        )
-        frames[col] = df_leg
+    frames = _fetch_legs_frames(
+        legs_tuple,
+        start_date,
+        end_date,
+        proxy_url=proxy_url,
+        loader=loader,
+        concurrent=concurrent,
+    )
 
     return align_multi_asset_frames(
         frames,

@@ -19,3 +19,7 @@ class VendorUpstreamError(DataFetchError):
 
 class ChinaEquityPipelineError(DataFetchError):
     """AKShare 主源与东方财富直连回退均未能返回有效 K 线时的汇总错误。"""
+
+    def __init__(self, *args: object, network_related: bool = True) -> None:
+        super().__init__(*args)
+        self.network_related = bool(network_related)

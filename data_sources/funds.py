@@ -257,5 +257,10 @@ def get_fund_data(fund_code: str, start_date: DateLike, end_date: DateLike) -> p
         )
 
     out = _filter_ohlcv_by_user_date_range(normalized, start_date, end_date)
-    out.attrs.update(asset_type="mutual_fund", symbol=code, series_kind="price")
+    out.attrs.update(
+        asset_type="mutual_fund",
+        symbol=code,
+        series_kind="price",
+        data_source="akshare.fund_open_fund_info_em",
+    )
     return out

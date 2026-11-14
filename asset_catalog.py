@@ -94,6 +94,51 @@ ASSET_RETURN_BASIS_NOTES: dict[str, str] = {
     "fx_rate": "即期汇率比价序列（非生息投资净值，仅反映货币相对波动）。",
 }
 
+SUPPORTED_ADJUSTMENTS: dict[str, tuple[str, ...]] = {
+    "etf": ("hfq", "qfq", ""),
+    "ashare": ("hfq", "qfq", ""),
+    "hk_stock": ("hfq", "qfq", ""),
+    # 新浪美股日线 stock_us_daily 仅实现前复权 ('qfq') 与不复权 ('')，不支持后复权 ('hfq')。
+    "us_stock": ("qfq", ""),
+}
+
+DEFAULT_ADJUSTMENT: dict[str, str] = {
+    "etf": "hfq",
+    "ashare": "hfq",
+    "hk_stock": "hfq",
+    "us_stock": "qfq",
+}
+
+ADJUSTMENT_LABELS: dict[str, str] = {
+    "hfq": "后复权 (hfq)",
+    "qfq": "前复权 (qfq)",
+    "": "不复权 (raw)",
+}
+
+
+def get_supported_adjustments(asset_type: str | None) -> tuple[str, ...]:
+    """返回指定资产类别实际支持的历史行情复权方式元组。"""
+    if asset_type is None:
+        return ()
+    return SUPPORTED_ADJUSTMENTS.get(str(asset_type).strip().lower(), ())
+
+
+def resolve_adjustment(asset_type: str, adjust: str | None) -> str:
+    """校验并解析资产支持的复权方式（严格按底层接口能力报错）。"""
+    key = str(asset_type).strip().lower()
+    supported = get_supported_adjustments(key)
+    if not supported:
+        if adjust in (None, ""):
+            return ""
+        raise ValueError(f"资产类别 {key!r} 不支持复权参数 adjust={adjust!r}。")
+    selected = DEFAULT_ADJUSTMENT[key] if adjust is None else str(adjust).strip()
+    if selected not in supported:
+        labels = ", ".join(repr(x) for x in supported)
+        raise ValueError(
+            f"资产类别 {key!r} 当前数据源不支持复权方式 {selected!r}；仅支持: {labels}。"
+        )
+    return selected
+
 
 def get_asset_trading_days(asset_type: str | None) -> int:
     """返回资产类别对应的默认年化交易日数（未知类别默认 252）。"""
