@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import math
+import tomllib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from importlib import metadata as importlib_metadata
+from pathlib import Path
 from typing import Any, Literal
 
 import pandas as pd
@@ -21,6 +24,28 @@ from ohlcv import compute_ohlcv_quality, validate_analysis_date_range
 
 SCHEMA_VERSION = "0.1.0"
 SUPPORTED_RETURN_CONVENTIONS: tuple[str, ...] = ("log", "simple")
+
+
+def get_software_version() -> str:
+    """Return active project version from ``pyproject.toml`` in source trees or package metadata."""
+    pyproject_path = Path(__file__).resolve().with_name("pyproject.toml")
+    if pyproject_path.is_file():
+        try:
+            parsed = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+            project = parsed.get("project")
+            if isinstance(project, Mapping) and isinstance(project.get("version"), str):
+                ver = project["version"].strip()
+                if ver:
+                    return ver
+        except Exception:
+            pass
+    try:
+        return importlib_metadata.version("quantitative-analysis")
+    except importlib_metadata.PackageNotFoundError:
+        return "0.2.0"
+
+
+SOFTWARE_VERSION = get_software_version()
 
 
 def _json_safe_value(value: Any) -> Any:
@@ -240,15 +265,27 @@ class AnalysisResult:
     warnings: tuple[str, ...] = ()
     disclaimers: tuple[str, ...] = ()
     artifacts: dict[str, str] = field(default_factory=dict)
+    command: str = "analyze"
+    software_version: str = SOFTWARE_VERSION
+    metric_units: dict[str, str] = field(default_factory=dict)
+    data_summary: dict[str, Any] = field(default_factory=dict)
+
+    def with_artifacts(self, artifacts: Mapping[str, str]) -> AnalysisResult:
+        """Return a copy of the result with updated output artifact paths."""
+        return replace(self, artifacts={str(k): str(v) for k, v in artifacts.items()})
 
     def to_dict(self, *, include_data: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "schema_version": self.schema_version,
+            "software_version": self.software_version,
+            "command": self.command,
             "status": self.status,
             "asset": self.asset.to_dict(),
             "quality": self.quality.to_dict(),
+            "data_summary": _json_safe_value(self.data_summary),
             "parameters": _json_safe_value(self.parameters),
             "metrics": _json_safe_value(self.metrics),
+            "metric_units": dict(self.metric_units),
             "metric_reasons": dict(self.metric_reasons),
             "latest_snapshot": _json_safe_value(self.latest_snapshot),
             "warnings": list(self.warnings),
@@ -259,6 +296,86 @@ class AnalysisResult:
             records = self.data_frame.reset_index().to_dict(orient="records")
             payload["data"] = _json_safe_value(records)
         return payload
+
+
+def build_metric_units(
+    metrics: Mapping[str, Any],
+    *,
+    series_kind: str = "price",
+    output_currency: str | None = None,
+) -> dict[str, str]:
+    """Return canonical machine-readable units for every emitted metric key."""
+    if series_kind == "yield_level":
+        price_unit = "percentage_points_yield"
+        level_unit = "percentage_points_yield"
+        change_unit = "percentage_points_change"
+    elif series_kind == "fx_rate":
+        price_unit = f"fx_rate:{output_currency}" if output_currency else "fx_rate"
+        level_unit = price_unit
+        change_unit = "fx_rate_change"
+    elif series_kind == "index_points":
+        price_unit = "index_points"
+        level_unit = "index_points"
+        change_unit = "index_points_change"
+    else:
+        price_unit = f"currency:{output_currency}" if output_currency else "price_units"
+        level_unit = price_unit
+        change_unit = "price_change"
+
+    unit_map = {
+        "cumulative_return": "ratio_decimal",
+        "cagr": "ratio_decimal_per_year",
+        "max_drawdown": "ratio_decimal",
+        "annualized_volatility": "ratio_decimal_per_year",
+        "sharpe_ratio": "dimensionless_ratio",
+        "sortino_ratio": "dimensionless_ratio",
+        "calmar_ratio": "dimensionless_ratio",
+        "var_95": "ratio_decimal",
+        "cvar_95": "ratio_decimal",
+        "latest_close": price_unit,
+        "latest_level": level_unit,
+        "level_change": change_unit,
+        "level_min": level_unit,
+        "level_max": level_unit,
+        "level_diff_std": level_unit,
+        "trading_days": "trading_days_per_year",
+        "periods_per_year": "trading_days_per_year",
+        "return_convention": "categorical",
+        "latest_signal": "categorical",
+    }
+    return {str(key): unit_map[str(key)] for key in metrics if str(key) in unit_map}
+
+
+def build_data_summary(
+    df: pd.DataFrame | None,
+    *,
+    requested_start: str = "",
+    requested_end: str = "",
+) -> dict[str, Any]:
+    """Summarize the delivered DataFrame sample bounds and schema for Agent inspection."""
+    if df is None or df.empty:
+        return {
+            "requested_start": requested_start,
+            "requested_end": requested_end,
+            "actual_start": "",
+            "actual_end": "",
+            "row_count": 0,
+            "index_name": str(df.index.name or "Date") if df is not None else "Date",
+            "columns": [str(col) for col in df.columns] if df is not None else [],
+        }
+
+    idx = pd.to_datetime(df.index, errors="coerce").dropna()
+    actual_start = idx.min().strftime("%Y-%m-%d") if len(idx) else ""
+    actual_end = idx.max().strftime("%Y-%m-%d") if len(idx) else ""
+    return {
+        "requested_start": requested_start,
+        "requested_end": requested_end,
+        "actual_start": actual_start,
+        "actual_end": actual_end,
+        "row_count": int(len(df)),
+        "index_name": str(df.index.name or "Date"),
+        "columns": [str(col) for col in df.columns],
+    }
 
 
 def build_quality_report(df: pd.DataFrame) -> QualityReport:
@@ -278,13 +395,17 @@ def build_quality_report(df: pd.DataFrame) -> QualityReport:
     filled = int(existing.get("filled_price_rows", existing.get("ffilled_cells", 0)) or 0)
     missing_vol = int(existing.get("missing_volume_rows", 0) or 0)
 
-    # Always derive slice row & anomaly counts from the active DataFrame when full stats are absent
-    # or total_rows does not match the current DataFrame length.
-    if (
+    existing_start = str(existing.get("start_date") or "")
+    existing_end = str(existing.get("end_date") or "")
+    reused_existing = bool(
         existing
         and int(existing.get("total_rows", -1)) == len(df)
         and "max_calendar_gap_days" in existing
-    ):
+        and (not existing_start or existing_start == start_str)
+        and (not existing_end or existing_end == end_str)
+    )
+
+    if reused_existing:
         computed = existing
     else:
         computed = compute_ohlcv_quality(
@@ -295,11 +416,14 @@ def build_quality_report(df: pd.DataFrame) -> QualityReport:
             missing_volume_rows=missing_vol,
         )
 
+    quality_scope = (
+        str(existing.get("quality_scope", "slice") or "slice") if reused_existing else "slice"
+    )
     return QualityReport(
         missing_policy=str(computed.get("missing_policy", policy)),
         total_rows=int(computed.get("total_rows", len(df))),
-        start_date=str(existing.get("start_date") or start_str),
-        end_date=str(existing.get("end_date") or end_str),
+        start_date=start_str or existing_start,
+        end_date=end_str or existing_end,
         dropped_invalid_rows=int(computed.get("dropped_invalid_rows", dropped)),
         filled_price_rows=int(computed.get("filled_price_rows", filled)),
         missing_volume_rows=int(computed.get("missing_volume_rows", missing_vol)),
@@ -309,7 +433,7 @@ def build_quality_report(df: pd.DataFrame) -> QualityReport:
         ohlc_anomaly_rows=int(computed.get("ohlc_anomaly_rows", 0)),
         true_zero_return_rows=int(computed.get("true_zero_return_rows", 0)),
         max_calendar_gap_days=int(computed.get("max_calendar_gap_days", 0)),
-        quality_scope=str(existing.get("quality_scope", "slice") or "slice"),
+        quality_scope=quality_scope,
     )
 
 
@@ -390,8 +514,12 @@ __all__ = [
     "AnalysisResult",
     "QualityReport",
     "SCHEMA_VERSION",
+    "SOFTWARE_VERSION",
     "SUPPORTED_RETURN_CONVENTIONS",
     "SeriesMetadata",
+    "build_data_summary",
+    "build_metric_units",
     "build_quality_report",
     "build_series_metadata",
+    "get_software_version",
 ]

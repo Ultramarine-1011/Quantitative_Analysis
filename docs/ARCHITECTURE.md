@@ -1,17 +1,20 @@
 # 工程架构、数据口径与兼容边界
 
-> 更新日期：2026-11-15（M1 / V0.1 基线对齐）  
+> 更新日期：2026-11-15（M2 / V0.2 基线对齐）  
 > 详细技术债清单、V0.1/V0.2 数据契约与模块拆分方案见 [M0 审计与契约文档](M0_AUDIT_AND_CONTRACTS.md)；长期阶段规划见 [产品定位与开发路线图](ROADMAP.md)。
 
 ---
 
 ## 1. 职责分层与模块依赖
 
-当前工程由两个用户入口、资产目录与路由层、特征/指标/模型计算层、图表可视化层以及数据源与缓存基础设施组成：
+当前工程由三个面向用户/Agent 的入口、统一服务与契约层、资产目录与路由层、特征/指标/模型计算层、图表可视化层以及数据源与缓存基础设施组成：
 
 - **入口层**：
+  - [quant_cli.py](../quant_cli.py)：面向 AI Agent 的命令行入口（已注册 CLI 脚本 `quant`，提供 `quant fetch` 与 `quant analyze`），`stdout` 严格输出 JSON，`stderr` 输出诊断日志与结构化 JSON 错误，支持 `--output <dir>` 原子写入 `result.json` + `data.parquet`（可选 `data.csv`）及分级退出码（`0`/`2`/`3`/`4`/`5`/`1`），不触发任何图表渲染。
+  - [main.py](../main.py)：原有全 13 类资产命令行入口（已注册 CLI 脚本 `quantitative-analysis`），保留交互/无头文本诊断报告、`mplfinance` 图表与 CSV 导出兼容。
   - [app.py](../app.py)：Streamlit 三标签页 Web 应用（`量化诊断看板`、`数学原理`、`进阶金融算法`），维护会话结果、侧边栏代理状态及 `@st.cache_data` 内存缓存。
-  - [main.py](../main.py)：全 13 类资产命令行入口（已注册 CLI 脚本 `quantitative-analysis`），负责参数解析、文本诊断报告、`mplfinance` 图表与 CSV 导出。
+- **契约与分析服务层**：
+  - [contracts.py](../contracts.py) 与 [services/analysis_service.py](../services/analysis_service.py)：版本化数据契约（`AnalysisRequest`、`SeriesMetadata`、`QualityReport`、`AnalysisResult`，包含 `metric_units`、`data_summary`、`software_version`、`command` 与 `with_artifacts`）以及解耦 UI/CLI 的单资产服务（`fetch_single_asset` 与 `analyze_single_asset` 共用 `_prepare_single_asset_frame` 完成窗口裁剪、元信息补全与 FX 折算）。
 - **资产与数据准备层**：
   - [asset_catalog.py](../asset_catalog.py)：13 类资产稳定 key、标签、默认值、交易日年化因子（`ASSET_TRADING_DAYS`）、默认币种、9 类收益语义 `ASSET_RETURN_BASIS` 及复权支持能力矩阵 `SUPPORTED_ADJUSTMENTS`。
   - [asset_resolver.py](../asset_resolver.py)（[china_equity_entry.py](../china_equity_entry.py) 保留兼容重导出）：分析窗口校验与境内 ETF/A 股统一错误信息格式化。
@@ -50,17 +53,18 @@
 - **向后兼容保留清单**：
   - CLI `quantitative-analysis`（`python main.py`）、Streamlit 入口 `streamlit run app.py`、`data_fetcher` / `asset_resolver` / `china_equity_entry` 既有导入路径、OHLCV CSV UTF-8 BOM 六列格式均保持兼容。
   - `main.py` 保留历史测试对 `load_china_equity_ohlcv` 的 monkeypatch 兼容路径；`app.py` 保留 `load_multi_leg_close_wide` `@st.cache_data` 包装以兼容旧测试清理调用。
-- **代理与缓存边界**：
-  - 导入模块不改写全局环境变量；境内直连与系统代理回退受线程隔离 `RequestBudget` / `_without_http_proxy_env` 控制，设 `QUANT_USE_SYSTEM_PROXY=1` 时强制走系统/环境代理，加密货币仅使用显式传入的 CCXT `proxy_url`。
-  - 共享 Parquet + JSON 元信息缓存默认写入 `~/.cache/quantitative_analysis/ohlcv`（TTL 3600 秒）；M0 已修复禁止持久化 `proxy_url` 到 `.meta.json`（并在内存属性对代理凭证脱敏），且覆盖范围内切片为空时视为缓存未命中并重新触发上游拉取；M1 补齐 `.locks/` 并发锁、别名归一化、`fetched_at` 追溯及按命中切片窗口重算 `data_quality`（`quality_scope="slice" | "full"`）。
+- **服务与缓存边界加固（M2）**：
+  - `services/analysis_service.py` 在分析与拉取前置阶段严格按 `[request.start_date, request.end_date]` 裁剪传入样本（空重叠直接抛出 `EmptySymbolDataError`），且 `build_quality_report` 与 `data_summary` 始终以实际交付样本与 FX 对齐后行数推导起止日期与质量范围。
+  - 共享 Parquet + JSON 元信息缓存默认写入 `~/.cache/quantitative_analysis/ohlcv`（TTL 3600 秒）；M0 已修复禁止持久化 `proxy_url` 到 `.meta.json` 并在空切片时触发重拉；M1/M2 将进程内线程锁键细化至 `(cache_dir, key)`，在 POSIX `fcntl` 之外增加 Windows `msvcrt` 字节锁回退，`clear_ohlcv_cache()` 按 key 加锁且保留 `.locks/` 句柄避免破坏 POSIX inode 锁，并在 `save_cached_ohlcv` 中先 staged 双临时文件再替换、失败时回滚孤立 Parquet。
   - Web Tab 1 `app.py` 在 M0 已对齐 `ohlcv.py` 真实的 `dropped_invalid_rows` / `filled_price_rows` / `missing_volume_rows` / `ohlc_anomaly_rows` / `non_positive_price_rows` 质量字段，确保清洗提示真实可见。
+  - `data_sources/network.py` 的 `classify_network_exception` 在 M2 支持解析 `ChinaEquityPipelineError.network_related` 与 `DataFetchError` 包裹链，`tests/conftest.py` 的离线隔离门禁覆盖 `socket.connect`/`connect_ex`、`socket.getaddrinfo` 与 `requests`/`urllib3`/`httpx`/`urllib.request` 非回环外连（包括本地环境变量代理路径）。
 
 ---
 
 ## 4. 环境依赖与验证边界
 
-- **Python 版本要求**：[pyproject.toml](../pyproject.toml) 指定 `requires-python >= 3.11`；本地主要开发与验证环境为 **Python 3.14.5**，GitHub Actions（[.github/workflows/tests.yml](../.github/workflows/tests.yml)）在 Python `3.11` / `3.12` / `3.14` 矩阵上执行回归。
-- **关键依赖约束**：[requirements.txt](../requirements.txt) 由 `pyproject.toml` 动态读取，包含 `scipy>=1.11.0`、`streamlit>=1.50.0`、`plotly>=5.18.0`、`pyarrow<26.0.0`、`ccxt>=4.0.0`、`akshare>=1.13.0`、`httpx>=0.27.0` 等；`pip install -e ".[dev]"` 同时安装 `pytest`、`ruff` 与 `quantitative-analysis` 命令。
+- **Python 版本要求**：[pyproject.toml](../pyproject.toml) 指定 `requires-python >= 3.11`；本地主要开发与验证环境为 **Python 3.14.5**。
+- **关键依赖约束**：[requirements.txt](../requirements.txt) 由 `pyproject.toml` 动态读取，包含 `scipy>=1.11.0`、`streamlit>=1.50.0`、`plotly>=5.18.0`、`pyarrow<26.0.0`、`ccxt>=4.0.0`、`akshare>=1.13.0`、`httpx>=0.27.0` 等；`pip install -e ".[dev]"` 同时注册 `quant` 与 `quantitative-analysis` 命令及 `pytest`、`ruff`。
 - **离线测试与外部数据源边界**：
   - 自动化测试全部采用确定性样本或 monkeypatch 模拟数据源（默认 `QUANT_DISABLE_CACHE=1` 隔离），覆盖 OHLCV 清洗、数学公式、FX 折算、网络预算与代理策略、SLSQP 优化与 OOS 回测、共享缓存、CLI 与 Streamlit `AppTest`。
   - 真实行情接口（AKShare / 东财 / 新浪 / 腾讯 / CCXT）的可用性、限流、字段变化与复权精度取决于第三方上游，**无法通过离线测试保证**；实盘与浏览器端手工验收请核对 [CHINA_EQUITY_VERIFICATION.md](CHINA_EQUITY_VERIFICATION.md) 与 [FRONTEND_VERIFICATION.md](FRONTEND_VERIFICATION.md)。

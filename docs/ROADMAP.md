@@ -99,26 +99,24 @@ Human / Browser                  AI Agent / Terminal
 
 **验收标准**：加载与分析单资产可得到标准化序列、`SeriesMetadata`、`QualityReport`、`AnalysisResult` 与结构化警告；`yield_level` 与 `fx_rate` 误用可靠拒绝；M1 与离线网络回退全量测试通过。
 
-### M2 · Agent CLI 与统一分析工作流（V0.2，首个核心 MVP）
+### M2 · Agent CLI 与统一分析工作流（V0.2 — 已完成）
 
 **目标**：Agent 用一条命令得到可直接分析的资产数据和指标，无需手写数据抓取与计算脚本。
 
-**工作内容**
-- 建立与 Streamlit 解耦的分析服务，串联解析、加载、质量校验、特征与指标。
-- 首批命令：`quant fetch`（检索/标准化数据）、`quant analyze`（单资产指标）；后续兼容现有 `quantitative-analysis` 入口的迁移策略需明确。
-- 定义版本化的结果 Schema：资产与数据元信息、样本范围、指标数值及单位、计算参数、警告、错误和生成文件位置。
-- 输出 `result.json` 和可供二次分析的标准数据文件（优先 Parquet；必要时 CSV）。stdout 适合机器读取；进度和诊断日志写 stderr；不同错误类别有稳定退出码。
-- 建立离线固定样本的 CLI 端到端与指标回归测试。
+**工作内容（已在 M2 落地）**
+- [x] 在 [services/analysis_service.py](../services/analysis_service.py) 抽取统一预处理骨架 `_prepare_single_asset_frame`，新增 `fetch_single_asset` 并与 `analyze_single_asset` 共享日期窗口裁剪、实际样本边界重算、元信息规范化与基准货币折算，避免重复拉取与重复计算；在 [contracts.py](../contracts.py) 新增 `metric_units`、`data_summary`（显式区分 `requested_*` 与 `actual_*`）、`software_version` 与 `command` 字段。
+- [x] 新增 Agent 专用命令行入口 [quant_cli.py](../quant_cli.py)（在 [pyproject.toml](../pyproject.toml) 注册脚本命令 `quant`），提供 `quant fetch` 与 `quant analyze`，支持全 13 类资产（含 `TYPE:SYMBOL` 简写）、代码、日期区间、复权方式、`LOCAL`/`CNY`/`USD` 基准货币、`--allow-usdt-peg`、`--proxy`、`--refresh` 及全部单资产指标计算参数（`--rf`、`--trading-days`、`--return-convention`、`--sma-short`、`--sma-long`、`--bb-window`、`--include-momentum`），不触发任何图表渲染。
+- [x] 标准化输出与自动化协议：`--output <dir>` 原子落盘 `result.json` 与 `data.parquet`（可选 `--csv` 输出 `data.csv`），重复执行幂等安全覆盖；`stdout` 严格仅输出可解析 JSON（`allow_nan=False`），`stderr` 输出精简进度、告警与结构化 JSON 错误对象，并映射稳定退出码（`0` 正常/降级、`2` 调用参数/校验错误、`3` 空数据、`4` 网络传输错误、`5` 上游协议错误、`1` 内部/I/O 异常）。
+- [x] 保留历史兼容性与加固边界：保留 `quantitative-analysis`（[main.py](../main.py)）与 Streamlit `app.py` 兼容；加固缓存线程/进程跨平台锁（POSIX `fcntl` + Windows `msvcrt` 回退、目录作用域锁键、`clear_ohlcv_cache` 保留 `.lock`、Parquet+Meta 成对回滚），强化 `tests/conftest.py` DNS/Socket/HTTP 客户端离线隔离与异常分类，并建立 `tests/test_m2_agent_cli_and_hardening.py` 端到端及边界回归测试。
 
-**目标接口示意（尚未实现）**
+**接口示例**
 
 ```bash
-quant analyze NVDA --start 2021-01-01 --end 2026-11-13 --output ./results/nvda
+quant fetch ashare:600519 --start 2024-01-01 --end 2026-11-13 -o ./results/600519_raw
+quant analyze -t us_stock -s NVDA --start 2024-01-01 --end 2026-11-13 -o ./results/nvda
 ```
 
-最小产物示例：`result.json`、`data.parquet`。JSON 应提供 `schema_version`、`asset`、`data`、`metrics`、`parameters`、`warnings` 和 `artifacts` 等稳定字段；数值不足或不适用时要保留机器可辨识的缺失原因。
-
-**验收标准**：编程 Agent 仅凭终端命令和读取输出文件，即可完成单资产数据准备与基本量化分析；在固定数据和参数下结果可复现。
+**验收标准**：编程 Agent 仅凭终端命令 `quant` 与退出码即可无交互完成单资产检索、校验、指标计算与 `result.json` / `data.parquet` 读取；在固定数据和参数下结果稳定可复现。
 
 ### M3 · 多资产比较、统计与组合分析（V0.3）
 
@@ -168,12 +166,12 @@ quant analyze NVDA --start 2021-01-01 --report md --charts html,png
 | 版本 | 覆盖阶段 | 可验证交付 |
 | --- | --- | --- |
 | **V0.1** | M0 + M1 | **已完成**：统一的 `contracts.py` 数据契约、`AnalysisService` 基础服务、质量诊断、语义拦截与离线测试基线 |
-| **V0.2** | M2 | **Agent 可直接使用的单资产 CLI MVP** |
-| **V0.3** | M3 | 多资产比较、组合与严谨统计能力 |
+| **V0.2** | M2 | **已完成**：Agent CLI（`quant fetch` / `quant analyze`）、`result.json` + `data.parquet` 产物、退出码契约与缓存/离线加固 |
+| **V0.3** | M3 | **下一步**：多资产比较（`quant compare`）、组合（`quant portfolio`）与严谨统计能力 |
 | **V0.4** | M4 | 按需生成报告与图表 |
 | **V1.0** | M5 | Web/CLI 共享分析核心的完整平台 |
 
-**近期开发重心是 V0.2。** 在此之前，优先修复会影响数据准确性、指标解释和 CLI 稳定性的缺陷；暂缓纯粹增加资产种类、装饰性图表和算法演示。
+**近期开发重心将转向 V0.3（M3 多资产比较与组合 CLI）。** 继续优先保证计算准确性、口径一致性与接口稳定性；暂缓纯粹增加资产种类或装饰性图表。
 
 ## 6. 成功标准与暂不实施的内容
 

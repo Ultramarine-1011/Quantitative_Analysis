@@ -14,7 +14,8 @@
 - **OHLCV 清洗、校验与特征工程**：标准化六列 OHLCV 契约（无时区升序唯一日期索引），输出 9 项质量诊断计数，并计算 SMA、EMA、布林带、RSI(14)、MACD、对数收益滚动波动率及回撤序列。
 - **风险收益统计与组合模型**：计算累计收益、CAGR、年化波动率、最大回撤、Sharpe / Sortino / Calmar 与 95% 日 VaR / CVaR；支持相关性热图、Ledoit-Wolf 协方差收缩、SciPy SLSQP 精确有效前沿（GMV 与切点最大夏普）、GBM 蒙特卡洛模拟及 Train/Test 与 Walk-Forward 样本外回测。
 - **交互式图表与数据导出**：Streamlit 三标签页界面集成自适应亮暗主题的 Plotly 多面板图表及清洗后 OHLCV CSV（UTF-8 BOM）导出；命令行支持控制台诊断报告、`mplfinance` 多面板静态图与 CSV 导出。
-- **命令行分析流程**：提供 `python main.py`（及安装包命令 `quantitative-analysis`）覆盖全 13 类资产的单资产终端诊断与无头批处理导出。
+- **Agent CLI 与标准化输出（`quant`）**：提供面向 AI Agent 自动化调用的 `quant fetch` 与 `quant analyze` 命令，支持全 13 类资产检索、校验、基准货币折算、单资产定量指标计算，并原子输出版本化 `result.json`（含指标、单位、计算口径、数据来源、质量报告与警告）及 `data.parquet`；`stdout` 严格输出 JSON，`stderr` 输出日志与结构化错误，附稳定退出码（`0`/`2`/`3`/`4`/`5`/`1`），不依赖图表渲染。
+- **既有终端与 Web 入口兼容**：保留 `python main.py` / `quantitative-analysis` 终端报告、`mplfinance` 静态图表导出与 Streamlit Web 看板完整可用。
 
 ---
 
@@ -32,7 +33,7 @@
 
 | 类别 | 主要技术与库 |
 | --- | --- |
-| 运行环境 | Python `>=3.11`（CI 矩阵覆盖 `3.11` / `3.12` / `3.14`） |
+| 运行环境 | Python `>=3.11`（推荐 `3.12+`，当前主验证环境 `3.14.5`） |
 | 数据处理与契约 | `pandas`、`NumPy`、`PyArrow`（`<26`） |
 | 统计与优化算法 | `SciPy`（SLSQP 精确有效前沿）、内置解析 Ledoit-Wolf 收缩与风险指标计算 |
 | 可视化与界面 | `Streamlit`（`>=1.50`）、`Plotly`、`Matplotlib`、`mplfinance` |
@@ -62,20 +63,34 @@ streamlit run app.py
 
 在左侧 **「参数设置」** 选择资产类别、代码与日期区间后点击 **「开始诊断」**，即可在三个标签页间使用单资产诊断、数学定义参考与进阶组合/回测分析。
 
-### 3. 运行命令行单资产诊断（CLI）
+### 3. 运行 Agent CLI（`quant`）与原单资产终端（`quantitative-analysis`）
+
+安装可编辑包（`pip install -e .`）后即可直接调用 `quant` 与兼容命令 `quantitative-analysis`（源码目录内亦可使用 `python quant_cli.py`）：
 
 ```bash
-# 查看完整参数帮助
-python main.py --help
+# 查看 Agent CLI 帮助与子命令参数
+quant --help
+quant analyze --help
 
-# 示例 1：默认 A 股 ETF 510300（最近 3 年），输出终端诊断报告并跳过弹窗
-python main.py --asset-type etf --symbol 510300 --no-show
+# 示例 1：检索并清洗数据，导出 result.json 与 data.parquet（不计算技术指标、不绘图）
+quant fetch ashare:600519 --start 2024-01-01 --end 2026-11-13 --adjust qfq -o outputs/600519_raw
 
-# 示例 2：A 股个股 600519 指定区间诊断，并无头导出图表与标准化 CSV
-python main.py --asset-type ashare --symbol 600519 --start 2023-11-14 --end 2026-11-13 --save-chart outputs/600519.png --export-csv outputs/600519.csv --no-show
+# 示例 2：执行单资产定量分析，指定口径与均线参数并落盘 result.json + data.parquet (+ 可选 CSV)
+quant analyze -t etf -s 510300 --start 2024-01-01 --end 2026-11-13 --return-convention log --rf 0.016 --include-momentum -o outputs/510300 --csv
+
+# 示例 3：静默进度日志、直接通过 stdout 读取结构化 JSON（退出码：0=成功/降级, 2=参数/校验错误, 3=空数据, 4=网络传输错误, 5=上游错误, 1=未预期异常）
+quant analyze -t us_stock -s AAPL --start 2025-01-01 --end 2026-11-13 --quiet --compact
 ```
 
-安装开发/可编辑包（`pip install -e .`）后，也可直接使用注册命令 `quantitative-analysis` 替代 `python main.py`。
+兼容保留原有交互/静态图 CLI（`python main.py` / `quantitative-analysis`）：
+
+```bash
+# 查看原 CLI 完整参数帮助
+python main.py --help
+
+# 默认 A 股 ETF 510300（最近 3 年），输出终端诊断报告并无头导出静态图表与标准化 CSV
+python main.py --asset-type ashare --symbol 600519 --start 2023-11-14 --end 2026-11-13 --save-chart outputs/600519.png --export-csv outputs/600519.csv --no-show
+```
 
 ---
 
@@ -178,7 +193,8 @@ flowchart TB
 | 模块 | 职责 |
 | --- | --- |
 | `app.py` / `charts.py` | Streamlit 三标签页 Web 入口与会话状态管理；主题自适应 Plotly 图表构建器 |
-| `main.py` / `visualizer.py` | 全 13 类资产命令行入口；基于 `mplfinance` 的静态多面板/纯折线图表渲染 |
+| `quant_cli.py` | V0.2 Agent CLI 入口（`quant fetch` / `quant analyze`），原子输出 `result.json` + `data.parquet` 与分级退出码 |
+| `main.py` / `visualizer.py` | 原全 13 类资产命令行入口（`quantitative-analysis`）；基于 `mplfinance` 的静态多面板/纯折线图表渲染 |
 | `asset_catalog.py` | 13 类资产 key、中文标签、默认标的、交易日年化因子、收益语义与复权支持矩阵 |
 | `asset_loader.py` | 13 类资产统一入口 `load_asset_data`、并发加载与多市场交易日历对齐引擎 |
 | `asset_resolver.py` | 日期窗口校验、境内权益加载与统一用户可读错误格式化（`china_equity_entry.py` 保留兼容重导出） |
@@ -196,7 +212,8 @@ flowchart TB
 ```text
 Quantitative_Analysis/
 ├── app.py                  # Streamlit Web 入口
-├── main.py                 # CLI 入口（quantitative-analysis）
+├── quant_cli.py            # Agent CLI 入口（quant fetch / quant analyze）
+├── main.py                 # 原交互/静态图 CLI 入口（quantitative-analysis）
 ├── asset_catalog.py        # 资产元数据、收益语义与预设组合
 ├── asset_loader.py         # 跨资产统一加载与多市场日历对齐
 ├── asset_resolver.py       # 窗口校验与境内权益路由封装
@@ -238,8 +255,8 @@ Quantitative_Analysis/
 
 | 能力状态 | 具体内容 |
 | --- | --- |
-| **当前已实现** | 13 类资产适配、别名归一化与带并发锁及切片质量重算的共享 Parquet 缓存；强类型 `AnalysisRequest` / `SeriesMetadata` / `QualityReport` / `AnalysisResult` 契约（[contracts.py](contracts.py)）与单资产分析服务 [services/analysis_service.py](services/analysis_service.py)；`yield_level` / `fx_rate` 语义拦截与 `return_convention` 对齐；Ledoit-Wolf + SLSQP 精确有效前沿与 Walk-Forward 样本外回测；Streamlit 三标签页看板与 `main.py` / `quantitative-analysis` CLI |
-| **规划中（M2–M5）** | 面向 Agent 的 `quant` CLI 子命令（`quant fetch`、`quant analyze`、`quant compare`、`quant portfolio`）；标准化 `result.json` + `data.parquet` 产物落盘与分级退出码；独立的 Markdown / HTML 自动报告与按需图表渲染器；Web UI 薄层化改造（对应 M2–M5 阶段） |
+| **当前已实现（M0–M2）** | 13 类资产适配、别名归一化与跨平台线程/进程安全共享 Parquet 缓存；强类型 `AnalysisRequest` / `SeriesMetadata` / `QualityReport` / `AnalysisResult` 契约（[contracts.py](contracts.py)）与统一分析服务 [services/analysis_service.py](services/analysis_service.py)（`fetch_single_asset` / `analyze_single_asset`）；Agent CLI `quant fetch` / `quant analyze` 原子输出 `result.json` + `data.parquet` 与分级退出码；`yield_level` / `fx_rate` 语义拦截与 `return_convention` 对齐；Ledoit-Wolf + SLSQP 精确有效前沿与 Walk-Forward 样本外回测；Streamlit 三标签页看板与 `main.py` / `quantitative-analysis` CLI |
+| **规划中（M3–M5）** | 多资产比较与组合 CLI（`quant compare`、`quant portfolio`）；独立的 Markdown / HTML 自动报告与按需图表渲染器；Web UI 调用统一服务层的轻量化改造（对应 M3–M5 阶段） |
 
 详细设计原则、M0–M5 阶段验收标准与 V0.1–V1.0 迭代计划，请参阅 **[产品定位与开发路线图 (docs/ROADMAP.md)](docs/ROADMAP.md)**。
 
@@ -272,7 +289,7 @@ ruff format --check .
 python -m pip check
 ```
 
-- **离线测试范围**：`tests/`（配置见 `pytest.ini`）采用固定合成样本与模拟数据源，不访问外网行情，覆盖 OHLCV 清洗与日期契约、数学指标、FX 防泄露折算、网络预算与代理策略、SLSQP 优化与 Walk-Forward OOS 回测、共享 Parquet 缓存、CLI 与 Streamlit `AppTest`。GitHub Actions 在 Python `3.11` / `3.12` / `3.14` 矩阵上执行检查（见 [.github/workflows/tests.yml](.github/workflows/tests.yml)）。
+- **离线测试范围**：`tests/`（配置见 `pytest.ini`）采用固定合成样本与模拟数据源，并通过 `tests/conftest.py` 强制拦截外网 DNS/Socket/HTTP 连接，覆盖 OHLCV 清洗与日期契约、数学指标、FX 防泄露折算、网络预算与代理策略、SLSQP 优化与 Walk-Forward OOS 回测、共享 Parquet 缓存并发、`quant` / `quantitative-analysis` CLI 与 Streamlit `AppTest`。
 - **外部接口边界**：真实行情节点可用性、限流策略与上游接口字段变更无法由离线测试保证；相关手工验收与文档索引请见 [境内权益最小验证方案](docs/CHINA_EQUITY_VERIFICATION.md) 与 [历史前端验收记录](docs/FRONTEND_VERIFICATION.md)。
 
 ---

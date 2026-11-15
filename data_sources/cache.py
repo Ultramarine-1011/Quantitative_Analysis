@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import math
@@ -26,6 +27,11 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX platforms
     fcntl = None  # type: ignore[assignment]
 
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX platforms
+    msvcrt = None  # type: ignore[assignment]
+
 DEFAULT_CACHE_TTL_SECONDS = 3600.0
 CACHE_SCHEMA_VERSION = 1
 ENV_CACHE_DIR = "QUANT_CACHE_DIR"
@@ -33,7 +39,8 @@ ENV_DISABLE_CACHE = "QUANT_DISABLE_CACHE"
 ENV_CACHE_TTL = "QUANT_CACHE_TTL"
 _TRANSIENT_OR_SENSITIVE_ATTRS = frozenset({"cache_hit", "cache_path", "proxy_url"})
 _KEY_THREAD_LOCKS_GUARD = threading.Lock()
-_KEY_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_KEY_THREAD_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_FILE_LOCK_TIMEOUT_SECONDS = 30.0
 
 
 def is_cache_enabled() -> bool:
@@ -69,23 +76,57 @@ def canonical_cache_symbol(asset_type: str, symbol: object) -> str:
 
 
 @contextmanager
+def _msvcrt_file_lock(
+    fh: Any, *, timeout_seconds: float = _FILE_LOCK_TIMEOUT_SECONDS
+) -> Iterator[None]:
+    """Cross-process byte-range lock on Windows via ``msvcrt.locking``."""
+    fh.seek(0, os.SEEK_END)
+    if fh.tell() == 0:
+        fh.write(b"\0")
+        fh.flush()
+    fh.seek(0)
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[union-attr]
+            break
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EDEADLK, errno.EAGAIN}:
+                raise
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Timed out waiting for cache entry Windows file lock.") from exc
+            time.sleep(0.005)
+    try:
+        yield
+    finally:
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[union-attr]
+
+
+@contextmanager
 def _cache_entry_lock(cache_dir: Path, key: str) -> Iterator[None]:
     """Serialize read/write transitions on a single cache key across threads and processes."""
+    lock_scope = (os.path.abspath(os.fspath(cache_dir)), key)
     with _KEY_THREAD_LOCKS_GUARD:
-        tlock = _KEY_THREAD_LOCKS.setdefault(key, threading.Lock())
+        tlock = _KEY_THREAD_LOCKS.setdefault(lock_scope, threading.Lock())
     with tlock:
-        if fcntl is None:
+        if fcntl is None and msvcrt is None:
             yield
             return
         lock_dir = cache_dir / ".locks"
         lock_dir.mkdir(parents=True, exist_ok=True)
         lock_path = lock_dir / f"{key}.lock"
         with lock_path.open("a+b") as fh:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            if fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            else:
+                with _msvcrt_file_lock(fh):
+                    yield
 
 
 def canonical_cache_adjust(asset_type: str, adjust: str | None) -> str:
@@ -136,6 +177,30 @@ def _to_json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _write_staged_temp_file(
+    parent: Path,
+    writer: Any,
+    *,
+    prefix: str,
+    suffix: str,
+) -> Path:
+    """Create and populate a temporary file in ``parent`` for subsequent ``os.replace``."""
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=str(parent))
+    tmp_path = Path(tmp_name)
+    try:
+        os.close(fd)
+        writer(tmp_path)
+        return tmp_path
+    except Exception:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def _atomic_write_bytes_or_parquet(
     target_path: Path,
     writer: Any,
@@ -144,13 +209,13 @@ def _atomic_write_bytes_or_parquet(
     suffix: str,
 ) -> None:
     """Write via temp file in ``target_path.parent`` then ``os.replace`` atomically."""
-    parent = target_path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=str(parent))
-    tmp_path = Path(tmp_name)
+    tmp_path = _write_staged_temp_file(
+        target_path.parent,
+        writer,
+        prefix=prefix,
+        suffix=suffix,
+    )
     try:
-        os.close(fd)
-        writer(tmp_path)
         os.replace(tmp_path, target_path)
     except Exception:
         try:
@@ -285,6 +350,7 @@ def save_cached_ohlcv(
     parquet_path, meta_path = _entry_paths(cache_dir, key)
 
     to_store = df.copy()
+    to_store.attrs = {}
     if not isinstance(to_store.index, pd.DatetimeIndex):
         to_store.index = pd.to_datetime(to_store.index, errors="raise")
     if to_store.index.tz is not None:
@@ -325,18 +391,42 @@ def save_cached_ohlcv(
 
     try:
         with _cache_entry_lock(cache_dir, key):
-            _atomic_write_bytes_or_parquet(
-                parquet_path,
-                lambda tmp: to_store.to_parquet(tmp, engine="pyarrow", index=True),
-                prefix=f".{key}.",
-                suffix=".parquet.tmp",
-            )
-            _atomic_write_bytes_or_parquet(
-                meta_path,
-                lambda tmp: tmp.write_bytes(meta_bytes),
-                prefix=f".{key}.",
-                suffix=".meta.tmp",
-            )
+            tmp_parquet: Path | None = None
+            tmp_meta: Path | None = None
+            try:
+                tmp_parquet = _write_staged_temp_file(
+                    parquet_path.parent,
+                    lambda tmp: to_store.to_parquet(tmp, engine="pyarrow", index=True),
+                    prefix=f".{key}.",
+                    suffix=".parquet.tmp",
+                )
+                tmp_meta = _write_staged_temp_file(
+                    meta_path.parent,
+                    lambda tmp: tmp.write_bytes(meta_bytes),
+                    prefix=f".{key}.",
+                    suffix=".meta.tmp",
+                )
+                os.replace(tmp_parquet, parquet_path)
+                tmp_parquet = None
+                try:
+                    os.replace(tmp_meta, meta_path)
+                    tmp_meta = None
+                except Exception:
+                    # Keep parquet+meta consistent on partial replace failure.
+                    try:
+                        if parquet_path.exists():
+                            parquet_path.unlink()
+                    except OSError:
+                        pass
+                    raise
+            finally:
+                for leftover in (tmp_parquet, tmp_meta):
+                    if leftover is not None:
+                        try:
+                            if leftover.exists():
+                                leftover.unlink()
+                        except OSError:
+                            pass
     except Exception:
         return None
     return parquet_path
@@ -347,21 +437,24 @@ def clear_ohlcv_cache() -> int:
     cache_dir = get_cache_dir()
     if not cache_dir.is_dir():
         return 0
+
+    keys_to_clear: set[str] = set()
+    for path in cache_dir.glob("*.parquet"):
+        keys_to_clear.add(path.name[: -len(".parquet")])
+    for path in cache_dir.glob("*.meta.json"):
+        keys_to_clear.add(path.name[: -len(".meta.json")])
+
     removed = 0
-    for pattern in ("*.parquet", "*.meta.json"):
-        for path in cache_dir.glob(pattern):
-            try:
-                path.unlink()
-                removed += 1
-            except OSError:
-                pass
-    locks_dir = cache_dir / ".locks"
-    if locks_dir.is_dir():
-        for lock_path in locks_dir.glob("*.lock"):
-            try:
-                lock_path.unlink()
-            except OSError:
-                pass
+    for key in sorted(keys_to_clear):
+        with _cache_entry_lock(cache_dir, key):
+            for path in _entry_paths(cache_dir, key):
+                try:
+                    path.unlink()
+                    removed += 1
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
     return removed
 
 
@@ -371,10 +464,12 @@ def get_ohlcv_cache_stats() -> dict[str, Any]:
     if not cache_dir.is_dir():
         return {"enabled": is_cache_enabled(), "dir": str(cache_dir), "entries": 0, "bytes": 0}
     parquet_files = list(cache_dir.glob("*.parquet"))
-    total_bytes = sum(
-        p.stat().st_size
-        for p in list(cache_dir.glob("*.parquet")) + list(cache_dir.glob("*.meta.json"))
-    )
+    total_bytes = 0
+    for path in [*parquet_files, *cache_dir.glob("*.meta.json")]:
+        try:
+            total_bytes += path.stat().st_size
+        except OSError:
+            pass
     return {
         "enabled": is_cache_enabled(),
         "dir": str(cache_dir),
