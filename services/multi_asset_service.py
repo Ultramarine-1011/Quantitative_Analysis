@@ -857,9 +857,12 @@ def _align_benchmark_to_oos_nav(
         raise ValueError(f"基准标的 {bench_spec.leg_name!r} 包含非正收盘价，无法构建对比净值。")
 
     target_idx = pd.DatetimeIndex(target_nav_df.index)
-    # Forward-fill benchmark prices only onto target dates on/after benchmark's first date (no backfill).
+    first_bench_dt = bench_prices.index[0]
+    last_bench_dt = bench_prices.index[-1]
+    # Forward-fill benchmark prices strictly within [first_bench_dt, last_bench_dt] (no backfill or tail extrapolation).
     union_idx = bench_prices.index.union(target_idx).sort_values()
     bench_ff = bench_prices.reindex(union_idx).ffill().reindex(target_idx)
+    bench_ff = bench_ff.where((target_idx >= first_bench_dt) & (target_idx <= last_bench_dt))
     valid_bench = bench_ff.dropna()
     if len(valid_bench) < 2:
         raise ValueError(

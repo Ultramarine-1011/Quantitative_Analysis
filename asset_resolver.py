@@ -8,6 +8,7 @@ from asset_catalog import (
     CHINA_EQUITY_ASSET_TYPES as CHINA_EQUITY_ASSET_TYPES,
     CHINA_EQUITY_LABELS as CHINA_EQUITY_LABELS,
     DEFAULT_CHINA_EQUITY_SYMBOLS as DEFAULT_CHINA_EQUITY_SYMBOLS,
+    normalize_symbol_alias,
 )
 from data_fetcher import (
     AKShareFetcher,
@@ -81,7 +82,7 @@ def load_china_equity_ohlcv(
 ) -> pd.DataFrame:
     """拉取境内 ETF 或 A 股 OHLCV，并写入 ``attrs``（``asset_type`` / ``symbol``）。"""
     asset_key = normalize_china_equity_asset_type(asset_type)
-    sym = validate_china_equity_symbol(asset_key, symbol)
+    sym = normalize_symbol_alias(asset_key, validate_china_equity_symbol(asset_key, symbol))
     start_ts, end_ts = validate_analysis_date_range(start_date, end_date)
     # UI 里叫 ashare，数据层实际路由叫 stock；集中转换可减少下游分支。
     route = fetch_route_for_china_equity(asset_key)

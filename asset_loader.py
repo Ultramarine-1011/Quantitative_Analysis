@@ -159,19 +159,21 @@ def load_asset_data(
 
     # 这里是 Web/CLI 的数据总路由：不同资产来源不同，但返回值都遵循统一 OHLCV 契约。
     if asset_key == "etf":
+        china_sym = normalize_symbol_alias(asset_key, symbol)
         df = (
-            _fetch_etf_data(symbol=symbol, start_date=start_date, end_date=end_date)
+            _fetch_etf_data(symbol=china_sym, start_date=start_date, end_date=end_date)
             if adjust is None
             else _fetch_etf_data(
-                symbol=symbol, start_date=start_date, end_date=end_date, adjust=adjust
+                symbol=china_sym, start_date=start_date, end_date=end_date, adjust=adjust
             )
         )
     elif asset_key == "ashare":
+        china_sym = normalize_symbol_alias(asset_key, symbol)
         df = (
-            _fetch_ashare_stock_data(symbol=symbol, start_date=start_date, end_date=end_date)
+            _fetch_ashare_stock_data(symbol=china_sym, start_date=start_date, end_date=end_date)
             if adjust is None
             else _fetch_ashare_stock_data(
-                symbol=symbol, start_date=start_date, end_date=end_date, adjust=adjust
+                symbol=china_sym, start_date=start_date, end_date=end_date, adjust=adjust
             )
         )
     elif asset_key == "mutual_fund":

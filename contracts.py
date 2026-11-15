@@ -601,11 +601,7 @@ class AssetSpec:
         object.__setattr__(self, "symbol", sym)
 
         adj_raw = None if self.adjust is None else str(self.adjust).strip()
-        resolved_adj = (
-            resolve_adjustment(asset_key, adj_raw)
-            if adj_raw
-            else resolve_adjustment(asset_key, None)
-        )
+        resolved_adj = resolve_adjustment(asset_key, adj_raw)
         object.__setattr__(self, "adjust", resolved_adj)
 
     @property
@@ -847,6 +843,12 @@ class PortfolioRequest:
             if total <= 1e-12:
                 raise ValueError("custom_weights 权重之和必须大于 0。")
             normalized_w = tuple(x / total for x in arr)
+            tol = 1e-9
+            if any(w < w_min - tol or w > w_max + tol for w in normalized_w):
+                raise ValueError(
+                    f"归一化后的 custom_weights {[round(w, 6) for w in normalized_w]} "
+                    f"违反权重边界约束 [{w_min}, {w_max}]。"
+                )
             object.__setattr__(self, "custom_weights", normalized_w)
         elif self.custom_weights is not None:
             raise ValueError("仅当 strategy='custom' 时才可指定 custom_weights。")

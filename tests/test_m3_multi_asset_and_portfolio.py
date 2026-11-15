@@ -14,6 +14,8 @@ import pandas as pd
 import pytest
 from scipy import stats as scipy_stats
 
+import asset_loader
+import asset_resolver
 import data_sources.cache as cache_mod
 import quant_cli
 from analysis_metrics import (
@@ -22,7 +24,13 @@ from analysis_metrics import (
     compute_return_distribution_stats,
     compute_rolling_comparison_stats,
 )
-from contracts import SCHEMA_VERSION, SOFTWARE_VERSION
+from contracts import (
+    SCHEMA_VERSION,
+    SOFTWARE_VERSION,
+    AssetSpec,
+    PortfolioRequest,
+)
+from data_sources.china_equity import AKShareFetcher
 from quant_models import (
     compute_risk_contributions,
     solve_inverse_volatility_portfolio,
@@ -967,3 +975,425 @@ def test_quant_cli_version_and_no_matplotlib_import() -> None:
         check=False,
     )
     assert imp.returncode == 0, imp.stderr
+
+
+# ---------------------------------------------------------------------------
+# 5. Targeted M3 regression tests (adjust="", benchmark tail cutoff, custom_weights bounds, symbol normalization)
+# ---------------------------------------------------------------------------
+
+
+def test_asset_spec_preserves_explicit_empty_adjust_and_cli_forwards_it() -> None:
+    assert AssetSpec("ashare", "600519").adjust == "hfq"
+    assert AssetSpec("etf", "510300", adjust=None).adjust == "hfq"
+    assert AssetSpec("ashare", "600519", adjust="").adjust == ""
+    assert AssetSpec("etf", "510300", adjust="").adjust == ""
+    assert AssetSpec("ashare", "600519", adjust="qfq").adjust == "qfq"
+
+    with pytest.raises(ValueError, match=r"不支持复权方式|adjust"):
+        AssetSpec("ashare", "600519", adjust="invalid_adj")
+
+    dates = pd.bdate_range("2024-01-02", periods=30)
+    df_stock = _make_ohlcv(
+        dates,
+        np.linspace(100.0, 110.0, len(dates)),
+        asset_type="ashare",
+        symbol="600519",
+        currency="CNY",
+    )
+    df_etf = _make_ohlcv(
+        dates, np.linspace(4.0, 4.5, len(dates)), asset_type="etf", symbol="510300", currency="CNY"
+    )
+    seen_calls: list[tuple[str, str, str | None]] = []
+
+    def fake_loader(
+        *,
+        asset_type: str,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        proxy_url: str | None = None,
+        adjust: str | None = None,
+    ) -> pd.DataFrame:
+        seen_calls.append((asset_type, symbol, adjust))
+        out = (df_stock if symbol == "600519" else df_etf).copy()
+        out.attrs["adjust"] = adjust
+        return out
+
+    code, res = quant_cli.run_cli_command(
+        [
+            "compare",
+            "ashare:600519",
+            "etf:510300",
+            "--adjust",
+            "",
+            "--start",
+            dates[0].strftime("%Y-%m-%d"),
+            "--end",
+            dates[-1].strftime("%Y-%m-%d"),
+            "-q",
+        ],
+        loader=fake_loader,
+    )
+    assert code == 0 and res is not None
+    assert seen_calls == [("ashare", "600519", ""), ("etf", "510300", "")]
+    assert [asset.adjust for asset in res.assets.values()] == ["", ""]
+    assert res.assets["ashare:600519"].return_basis == "unadjusted_price"
+    assert res.assets["etf:510300"].return_basis == "unadjusted_price"
+
+
+def test_external_benchmark_not_forward_filled_after_last_real_quote(tmp_path: Path) -> None:
+    dates = pd.bdate_range("2024-01-02", periods=80)
+    rng = np.random.default_rng(123)
+    df_a = _make_ohlcv(
+        dates,
+        100.0 * np.cumprod(1.0 + 0.001 + 0.01 * rng.normal(size=len(dates))),
+        asset_type="etf",
+        symbol="510300",
+        currency="CNY",
+    )
+    df_b = _make_ohlcv(
+        dates,
+        100.0 * np.cumprod(1.0 + 0.0008 + 0.014 * rng.normal(size=len(dates))),
+        asset_type="etf",
+        symbol="510500",
+        currency="CNY",
+    )
+    # Benchmark ends at index 59 (20 business days before OOS ends) and has a 1-day internal holiday gap at index 50.
+    bm_dates = dates[:50].append(dates[51:60])
+    last_bench_dt = dates[59]
+    bm_close = 100.0 * (1.005 ** np.arange(len(bm_dates)))
+    df_bm = _make_ohlcv(
+        bm_dates,
+        bm_close,
+        asset_type="etf",
+        symbol="510888",
+        currency="CNY",
+    )
+
+    def fake_loader(
+        *, asset_type: str, symbol: str, start_date: str, end_date: str, proxy_url=None, **kwargs
+    ) -> pd.DataFrame:
+        if "510300" in symbol:
+            return df_a
+        if "510500" in symbol:
+            return df_b
+        return df_bm
+
+    out_dir = tmp_path / "bench_tail"
+    code, res = quant_cli.run_cli_command(
+        [
+            "portfolio",
+            "etf:510300",
+            "etf:510500",
+            "--benchmark",
+            "etf:510888",
+            "--start",
+            dates[0].strftime("%Y-%m-%d"),
+            "--end",
+            dates[-1].strftime("%Y-%m-%d"),
+            "--base-currency",
+            "CNY",
+            "--strategy",
+            "equal_weight",
+            "--validation-mode",
+            "train_test",
+            "--train-ratio",
+            "0.5",
+            "--no-sensitivity",
+            "-o",
+            str(out_dir),
+            "-q",
+        ],
+        loader=fake_loader,
+    )
+    assert code == 0 and res is not None and res.benchmark is not None
+
+    bt_df = pd.read_parquet(out_dir / "backtest.parquet")
+    # Internal holiday gap inside [first_bench_dt, last_bench_dt] is aligned/bridged,
+    # whereas dates strictly after last_bench_dt must remain NaN (no trailing ffill).
+    in_span = bt_df.loc[bt_df.index <= last_bench_dt, "Benchmark"]
+    post_tail = bt_df.loc[bt_df.index > last_bench_dt, "Benchmark"]
+    assert len(in_span) == 21
+    assert in_span.notna().all()
+    assert len(post_tail) == 20
+    assert post_tail.isna().all()
+
+    assert res.benchmark["valuation_points"] == 21
+    assert res.benchmark["effective_end"] == last_bench_dt.strftime("%Y-%m-%d")
+    assert any("仅覆盖样本外区间" in w for w in res.warnings)
+    first_aligned_dt = bt_df["Benchmark"].first_valid_index()
+    assert first_aligned_dt is not None
+    expected_bm_cum = float(
+        df_bm.loc[last_bench_dt, "Close"] / df_bm.loc[first_aligned_dt, "Close"] - 1.0
+    )
+    assert res.benchmark["performance"]["cumulative_return"] == pytest.approx(expected_bm_cum)
+
+    oos_valid_ret = bt_df["OOS_Portfolio"].dropna().pct_change().dropna()
+    bm_valid_ret = bt_df["Benchmark"].dropna().pct_change().dropna()
+    common_ret_idx = oos_valid_ret.index.intersection(bm_valid_ret.index)
+    assert common_ret_idx.max() == last_bench_dt
+    expected_rel = compute_benchmark_relative_metrics(
+        oos_valid_ret.loc[common_ret_idx],
+        bm_valid_ret.loc[common_ret_idx],
+        periods_per_year=res.methodology["periods_per_year"],
+    )
+    assert res.benchmark["relative_to_strategy"]["observations"] == 20
+    assert res.benchmark["relative_to_strategy"]["excess_cumulative_return"] == pytest.approx(
+        expected_rel["excess_cumulative_return"]
+    )
+    assert res.benchmark["relative_to_strategy"]["tracking_error"] == pytest.approx(
+        expected_rel["tracking_error"]
+    )
+
+
+def test_custom_weights_must_satisfy_min_max_weight_bounds() -> None:
+    specs_two = (AssetSpec("etf", "510300"), AssetSpec("etf", "510500"))
+    specs_three = (
+        AssetSpec("etf", "510300"),
+        AssetSpec("etf", "510500"),
+        AssetSpec("ashare", "600519"),
+    )
+
+    with pytest.raises(ValueError, match=r"custom_weights.*边界约束|max_weight"):
+        PortfolioRequest(
+            assets=specs_two,
+            start_date="2024-01-02",
+            end_date="2024-04-01",
+            strategy="custom",
+            min_weight=0.1,
+            max_weight=0.6,
+            custom_weights=(80.0, 20.0),
+        )
+
+    with pytest.raises(ValueError, match=r"custom_weights.*边界约束|min_weight"):
+        PortfolioRequest(
+            assets=specs_three,
+            start_date="2024-01-02",
+            end_date="2024-04-01",
+            strategy="custom",
+            min_weight=0.1,
+            max_weight=0.6,
+            custom_weights=(5.0, 45.0, 50.0),
+        )
+
+    valid = PortfolioRequest(
+        assets=specs_two,
+        start_date="2024-01-02",
+        end_date="2024-04-01",
+        strategy="custom",
+        min_weight=0.4,
+        max_weight=0.6,
+        custom_weights=(60.0, 40.0),
+    )
+    assert valid.custom_weights == pytest.approx((0.6, 0.4))
+
+    dates = pd.bdate_range("2024-01-02", periods=65)
+    df_a = _make_ohlcv(
+        dates, np.linspace(10.0, 12.0, len(dates)), asset_type="etf", symbol="510300"
+    )
+    df_b = _make_ohlcv(
+        dates, np.linspace(20.0, 22.0, len(dates)), asset_type="etf", symbol="510500"
+    )
+    code, res = quant_cli.run_cli_command(
+        [
+            "portfolio",
+            "etf:510300",
+            "etf:510500",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-04-01",
+            "--strategy",
+            "custom",
+            "--weights",
+            "90,10",
+            "--min-weight",
+            "0.2",
+            "--max-weight",
+            "0.8",
+            "-q",
+        ],
+        loader=lambda *, symbol, **kwargs: df_a if "510300" in symbol else df_b,
+    )
+    assert code == quant_cli.EXIT_USAGE_OR_CALLER
+    assert res is None
+
+
+def test_china_equity_exchange_prefix_and_suffix_normalized_before_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dates = pd.bdate_range("2024-01-02", periods=10)
+    raw_by_code = {
+        "600519": _make_ohlcv(
+            dates, np.linspace(1700.0, 1750.0, len(dates)), asset_type="ashare", symbol="600519"
+        ),
+        "000001": _make_ohlcv(
+            dates, np.linspace(10.0, 11.0, len(dates)), asset_type="ashare", symbol="000001"
+        ),
+        "510300": _make_ohlcv(
+            dates, np.linspace(3.5, 3.8, len(dates)), asset_type="etf", symbol="510300"
+        ),
+    }
+
+    # 1) asset_loader.load_asset_data normalizes symbols before calling _fetch_ashare_stock_data / _fetch_etf_data
+    seen_loader_symbols: list[tuple[str, str]] = []
+
+    def fake_fetch_ashare(
+        *,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        proxy_url: str | None = None,
+        adjust: str = "hfq",
+    ) -> pd.DataFrame:
+        seen_loader_symbols.append(("ashare", symbol))
+        assert symbol in {"600519", "000001"}
+        return raw_by_code[symbol].copy()
+
+    def fake_fetch_etf(
+        *,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        proxy_url: str | None = None,
+        adjust: str = "hfq",
+    ) -> pd.DataFrame:
+        seen_loader_symbols.append(("etf", symbol))
+        assert symbol == "510300"
+        return raw_by_code[symbol].copy()
+
+    monkeypatch.setattr(asset_loader, "_fetch_ashare_stock_data", fake_fetch_ashare)
+    monkeypatch.setattr(asset_loader, "_fetch_etf_data", fake_fetch_etf)
+
+    sh_frames = [
+        asset_loader.load_asset_data("ashare", alias, "2024-01-02", "2024-01-15")
+        for alias in ("600519", "sh600519", "SH600519", "600519.SH")
+    ]
+    sz_frames = [
+        asset_loader.load_asset_data("ashare", alias, "2024-01-02", "2024-01-15")
+        for alias in ("000001", "sz000001", "000001.SZ")
+    ]
+    etf_frames = [
+        asset_loader.load_asset_data("etf", alias, "2024-01-02", "2024-01-15")
+        for alias in ("510300", "sh510300", "510300.SH")
+    ]
+    assert seen_loader_symbols == [
+        ("ashare", "600519"),
+        ("ashare", "600519"),
+        ("ashare", "600519"),
+        ("ashare", "600519"),
+        ("ashare", "000001"),
+        ("ashare", "000001"),
+        ("ashare", "000001"),
+        ("etf", "510300"),
+        ("etf", "510300"),
+        ("etf", "510300"),
+    ]
+    for group in (sh_frames, sz_frames, etf_frames):
+        for df in group[1:]:
+            pd.testing.assert_frame_equal(df, group[0])
+            assert df.attrs["symbol"] == group[0].attrs["symbol"]
+
+    # 2) asset_resolver.load_china_equity_ohlcv normalizes before fetcher.fetch_china_equity
+    seen_resolver_calls: list[tuple[str, str]] = []
+
+    class _StubFetcher:
+        def fetch_china_equity(
+            self,
+            asset_type: str,
+            symbol: str,
+            *,
+            start: Any = None,
+            end: Any = None,
+            adjust: str = "hfq",
+        ) -> pd.DataFrame:
+            seen_resolver_calls.append((asset_type, symbol))
+            assert symbol in {"600519", "510300"}
+            return raw_by_code[symbol].copy()
+
+    stub = _StubFetcher()
+    res_stock = [
+        asset_resolver.load_china_equity_ohlcv(
+            "ashare", alias, "2024-01-02", "2024-01-15", fetcher=stub
+        )
+        for alias in ("600519", "sh600519", "600519.SH")
+    ]
+    res_etf = [
+        asset_resolver.load_china_equity_ohlcv(
+            "etf", alias, "2024-01-02", "2024-01-15", fetcher=stub
+        )
+        for alias in ("510300", "sh510300", "510300.SH")
+    ]
+    assert seen_resolver_calls == [
+        ("stock", "600519"),
+        ("stock", "600519"),
+        ("stock", "600519"),
+        ("etf", "510300"),
+        ("etf", "510300"),
+        ("etf", "510300"),
+    ]
+    for group in (res_stock, res_etf):
+        for df in group[1:]:
+            pd.testing.assert_frame_equal(df, group[0])
+
+    # 3) AKShareFetcher normalizes before hitting underlying Sina/Tencent/AKShare primary sources
+    raw_cn = pd.DataFrame(
+        {
+            "日期": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"]),
+            "开盘": [10.0, 10.5, 11.0],
+            "最高": [10.2, 10.8, 11.2],
+            "最低": [9.9, 10.3, 10.9],
+            "收盘": [10.1, 10.6, 11.1],
+            "成交量": [1_000_000.0, 1_100_000.0, 900_000.0],
+        }
+    )
+    fetcher = AKShareFetcher(max_retries=1, retry_delay=0.0, use_system_proxy=True)
+    seen_ak_symbols: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_sina_tencent_china_equity_raw",
+        lambda route, sym, start_ts, end_ts, adjust: (
+            seen_ak_symbols.append((f"alt:{route}", sym)) or pd.DataFrame()
+        ),
+    )
+    monkeypatch.setattr(
+        fetcher._primary,
+        "fetch_stock_hist",
+        lambda symbol, start_ts, end_ts, adjust: (
+            seen_ak_symbols.append(("primary:stock", symbol)) or raw_cn.copy()
+        ),
+    )
+    monkeypatch.setattr(
+        fetcher._primary,
+        "fetch_etf_hist_em",
+        lambda symbol, start_ts, end_ts, adjust: (
+            seen_ak_symbols.append(("primary:etf", symbol)) or raw_cn.copy()
+        ),
+    )
+
+    ak_stock = [
+        fetcher.fetch_stock(alias, start="2024-01-02", end="2024-01-04", adjust="hfq")
+        for alias in ("600519", "sh600519", "600519.SH")
+    ]
+    ak_etf = [
+        fetcher.fetch_etf(alias, start="2024-01-02", end="2024-01-04", adjust="hfq")
+        for alias in ("510300", "sh510300", "510300.SH")
+    ]
+    assert seen_ak_symbols == [
+        ("alt:stock", "600519"),
+        ("primary:stock", "600519"),
+        ("alt:stock", "600519"),
+        ("primary:stock", "600519"),
+        ("alt:stock", "600519"),
+        ("primary:stock", "600519"),
+        ("alt:etf", "510300"),
+        ("primary:etf", "510300"),
+        ("alt:etf", "510300"),
+        ("primary:etf", "510300"),
+        ("alt:etf", "510300"),
+        ("primary:etf", "510300"),
+    ]
+    for group in (ak_stock, ak_etf):
+        for df in group[1:]:
+            pd.testing.assert_frame_equal(df, group[0])

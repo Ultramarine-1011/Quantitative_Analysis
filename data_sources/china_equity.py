@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 import pandas as pd
 
+from asset_catalog import normalize_symbol_alias
 from ohlcv import A_SHARE_COLUMN_MAPPING, DateLike, filter_by_date_range
 
 from .base import BaseDataFetcher
@@ -295,8 +296,8 @@ class AKShareFetcher(BaseDataFetcher):
         adjust = kwargs.get("adjust", "hfq")
         if adjust not in {"", "qfq", "hfq"}:
             raise ValueError("adjust must be one of {'qfq', 'hfq', ''}.")
-        sym = str(symbol).strip()
         is_etf = route == "etf"
+        sym = normalize_symbol_alias("etf" if is_etf else "ashare", symbol)
         primary = self._primary.fetch_etf_hist_em if is_etf else self._primary.fetch_stock_hist
         primary_name = "akshare.fund_etf_hist_em" if is_etf else "akshare.stock_zh_a_hist"
         label = "ETF" if is_etf else "A-share"
