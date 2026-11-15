@@ -664,3 +664,90 @@ def test_ui_helpers_leg_parsing_weights_and_edge_cases() -> None:
         app._parse_ui_custom_weights("0.5, bad")
     with pytest.raises(ValueError):
         app._parse_ui_custom_weights("nan, 1.0")
+
+
+def test_custom_in_sample_labels_distinguish_non_oos_from_lookahead_and_oos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_deterministic_market(monkeypatch)
+    page = _open_page()
+    page.text_area("tab3_ef_legs_input").set_value("etf:510300\nus_stock:AAPL\ngold:GC").run()
+    page.selectbox("portfolio_strategy_input").set_value("custom").run()
+    page.text_input("portfolio_custom_weights_input").set_value("0.5, 0.3, 0.2").run()
+    page.selectbox("tab3_val_mode").set_value("in_sample").run()
+    page.button("tab3_btn_ef").click().run()
+
+    assert not page.exception
+    assert not page.error
+    res = page.session_state["_workspace_portfolio"]["result"]
+    assert res.methodology["validation_mode"] == "in_sample"
+    assert res.methodology["is_out_of_sample"] is False
+    assert res.methodology["has_lookahead_bias"] is False
+
+    warnings_text = "\n".join(w.value for w in page.warning)
+    infos_text = "\n".join(info.value for info in page.info)
+    assert "全样本固定权重回测" in warnings_text
+    assert "非样本外评估" in warnings_text
+    assert "Walk-Forward" not in infos_text
+    assert "样本外协议" not in infos_text
+
+    metric_labels = [m.label for m in page.metric]
+    assert "样本内全样本 CAGR" in metric_labels
+    assert "样本内全样本最大回撤" in metric_labels
+    assert "样本内全样本夏普比率" in metric_labels
+    assert not any(label.startswith("样本外策略") for label in metric_labels)
+
+
+def test_compare_summary_reads_effective_dates_currency_and_periods_per_year(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_deterministic_market(monkeypatch)
+    page = _open_page()
+    page.text_area("compare_assets_input").set_value("etf:510300\nus_stock:AAPL\ngold:GC").run()
+    page.selectbox("compare_base_currency").set_value("CNY").run()
+    page.button("compare_run_btn").click().run()
+
+    assert not page.exception
+    assert not page.error
+    res = page.session_state["_workspace_compare"]["result"]
+    eff_start = res.data_summary["effective_start"]
+    eff_end = res.data_summary["effective_end"]
+    assert eff_start and eff_end
+
+    periods_metric = next(m for m in page.metric if m.label == "有效年化期数 / 年")
+    assert periods_metric.value != "N/A"
+    assert float(periods_metric.value) == pytest.approx(
+        float(res.methodology["effective_periods_per_year"]), abs=0.1
+    )
+
+    captions_text = "\n".join(c.value for c in page.caption)
+    assert "估值货币：`CNY`" in captions_text
+    assert f"区间：{eff_start} ~ {eff_end}" in captions_text
+    assert "None" not in captions_text
+
+
+def test_single_advanced_explorer_respects_force_refresh_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, calls = _install_deterministic_market(monkeypatch)
+    page = _open_page()
+    page.button("single_run_btn").click().run()
+    assert len(calls) == 1
+
+    # With force_refresh=False, normalize reuses the existing single-asset DataFrame.
+    page.button("single_btn_normalize").click().run()
+    assert not page.exception
+    assert not page.error
+    assert len(calls) == 1
+
+    # Enabling force_refresh forces normalize & GBM to fetch fresh market data.
+    page.checkbox("force_refresh_input").set_value(True).run()
+    page.button("single_btn_normalize").click().run()
+    assert not page.exception
+    assert not page.error
+    assert len(calls) == 2
+
+    page.button("single_btn_gbm").click().run()
+    assert not page.exception
+    assert not page.error
+    assert len(calls) == 3

@@ -1187,7 +1187,8 @@ def _render_single_advanced_explorer(cfg: dict[str, Any], state: dict[str, Any])
                 cfg["allow_usdt_peg"],
             )
             if (
-                existing is not None
+                not cfg["force_refresh"]
+                and existing is not None
                 and existing.data_frame is not None
                 and state.get("fetch_signature") == fetch_sig
             ):
@@ -1580,20 +1581,24 @@ def _render_compare_workspace(cfg: dict[str, Any]) -> None:
         return
 
     summary = result.data_summary
+    methodology = result.methodology
     _render_quality_and_warnings(result.warnings)
 
     m1, m2, m3 = st.columns(3)
     m1.metric("对齐估值样本数", format_integer(summary.get("valuation_points")))
     m2.metric("同期收益观测期数", format_integer(summary.get("concurrent_return_periods")))
     m3.metric(
-        "有效年化期数 / 年", format_ratio(summary.get("effective_periods_per_year"), decimals=1)
+        "有效年化期数 / 年",
+        format_ratio(methodology.get("effective_periods_per_year"), decimals=1),
     )
 
+    eff_start = summary.get("effective_start") or summary.get("requested_start") or ""
+    eff_end = summary.get("effective_end") or summary.get("requested_end") or ""
     st.caption(
-        f"估值货币：`{summary.get('base_currency', base_currency)}` | "
-        f"区间：{summary.get('start_date')} ~ {summary.get('end_date')} | "
-        f"日历口径：`{result.methodology.get('calendar_mode', calendar_mode)}` | "
-        f"协方差估计：`{result.methodology.get('cov_method', cov_method)}`"
+        f"估值货币：`{methodology.get('base_currency', base_currency)}` | "
+        f"区间：{eff_start} ~ {eff_end} | "
+        f"日历口径：`{methodology.get('calendar_mode', calendar_mode)}` | "
+        f"协方差估计：`{methodology.get('cov_method', cov_method)}`"
     )
 
     st.markdown("#### 📊 历史实现绩效对照 (Historical Realized Performance)")
@@ -1995,13 +2000,23 @@ def _render_portfolio_workspace(cfg: dict[str, Any]) -> None:
     methodology = result.methodology
     validation_meta = result.metrics.get("validation") or {}
     backtest_metrics = result.metrics.get("backtest") or {}
+    res_val_mode = str(methodology.get("validation_mode") or validation_mode)
+    is_oos = res_val_mode != "in_sample" and bool(methodology.get("is_out_of_sample", True))
+    has_lookahead = bool(methodology.get("has_lookahead_bias", False))
 
-    if methodology.get("has_lookahead_bias"):
-        st.warning(
-            "⚠️ 当前为 **全样本拟合 (In-Sample Fit)**：权重估计与评估使用全区间事后信息，"
-            "存在前视偏差（Lookahead Bias），不代表真实样本外可执行收益。"
-        )
-    elif validation_mode == "train_test":
+    if not is_oos:
+        if has_lookahead:
+            st.warning(
+                "⚠️ 当前为 **全样本拟合 (In-Sample Fit)**：权重估计与评估使用全区间事后信息，"
+                "存在前视偏差（Lookahead Bias），不代表真实样本外可执行收益。"
+            )
+        else:
+            st.warning(
+                "⚠️ 当前为 **全样本固定权重回测 (In-Sample Non-OOS Backtest)**："
+                "采用外生自定义权重在完整历史区间直接回测，未经过时间切分或滚动样本外隔离，"
+                "非样本外评估（OOS）；若权重基于事后观察手工选定，仍可能存在选择偏差。"
+            )
+    elif res_val_mode == "train_test":
         st.info(
             f"样本外独立测试协议 (`train_test`)：训练集 {validation_meta.get('train_start')} ~ "
             f"{validation_meta.get('train_end')} ({validation_meta.get('train_rows')} 期) | "
@@ -2010,16 +2025,25 @@ def _render_portfolio_workspace(cfg: dict[str, Any]) -> None:
         )
     else:
         st.info(
-            f"因果 Walk-Forward 样本外协议 (`{validation_mode}`)："
+            f"因果 Walk-Forward 样本外协议 (`{res_val_mode}`)："
             f"OOS 区间 {validation_meta.get('oos_start')} ~ {validation_meta.get('oos_end')} "
             f"({validation_meta.get('oos_periods')} 期，共执行 {validation_meta.get('rebalance_count')} 次滚动优化调仓)"
         )
 
     _render_quality_and_warnings(result.warnings)
 
-    primary_perf = backtest_metrics.get("OOS_Portfolio") or backtest_metrics.get("Portfolio") or {}
+    primary_perf = (
+        (backtest_metrics.get("Portfolio") or backtest_metrics.get("OOS_Portfolio") or {})
+        if not is_oos
+        else (backtest_metrics.get("OOS_Portfolio") or backtest_metrics.get("Portfolio") or {})
+    )
     ew_perf = backtest_metrics.get("Equal_Weight_Portfolio") or {}
-    primary_title = "样本内拟合" if methodology.get("has_lookahead_bias") else "样本外策略"
+    if is_oos:
+        primary_title = "样本外策略"
+    elif has_lookahead:
+        primary_title = "样本内拟合"
+    else:
+        primary_title = "样本内全样本"
 
     m1, m2, m3 = st.columns(3)
     m1.metric(f"{primary_title} CAGR", format_percent(primary_perf.get("cagr")))
