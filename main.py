@@ -32,61 +32,17 @@ from asset_resolver import (
     load_china_equity_ohlcv,
     resolve_analysis_date_window,
 )
-from currency import (
-    convert_prices_to_base_currency,
-    infer_asset_currency,
-    normalize_currency_code,
-)
+from contracts import AnalysisRequest
+from currency import convert_ohlcv_to_base_currency
 from data_fetcher import DataFetchError, apply_default_network_proxy_policy
 from feature_engineering import OHLCVFeatureEngineer
 from ohlcv import REQUIRED_OHLCV_COLUMNS
+from services.analysis_service import analyze_single_asset
 from visualizer import MplfinanceVisualizer
 
 LOOKBACK_YEARS = 3
 _DEFAULT_CHINA_EQUITY_LOADER = load_china_equity_ohlcv
-
-
-def _convert_ohlcv_to_base_currency(
-    df: pd.DataFrame,
-    asset_key: str,
-    symbol: str,
-    target_currency: str,
-    *,
-    proxy_url: str | None = None,
-) -> pd.DataFrame:
-    """将单标的 OHLCV 价格列按对齐汇率同比例折算为目标基准货币。"""
-    series_kind = str(df.attrs.get("series_kind", "price") or "price").strip().lower()
-    if series_kind == "yield_level" or asset_key == "bond_us_yield":
-        raise ValueError("收益率水平序列（yield_level）不是货币计价资产价格，不支持基准货币换算。")
-    native_ccy = infer_asset_currency(asset_key, symbol, df.attrs)
-    target_norm = normalize_currency_code(target_currency)
-    if target_norm == native_ccy:
-        out = df.copy()
-        out.attrs["native_currency"] = native_ccy
-        out.attrs["currency"] = target_norm
-        return out
-
-    col_key = f"{asset_key}:{symbol}"
-    conv = convert_prices_to_base_currency(
-        pd.DataFrame({col_key: df["Close"]}),
-        {col_key: native_ccy},
-        base_currency=target_norm,
-        proxy_url=proxy_url,
-    )
-    aligned_idx = conv.base_prices.index
-    local_close = conv.local_prices[col_key]
-    base_close = conv.base_prices[col_key]
-    fx_ratio = base_close / local_close
-
-    out = df.reindex(aligned_idx).copy()
-    for price_col in ("Open", "High", "Low", "Close"):
-        out[price_col] = pd.to_numeric(out[price_col], errors="coerce") * fx_ratio
-    out.attrs = dict(df.attrs)
-    out.attrs["native_currency"] = native_ccy
-    out.attrs["currency"] = conv.base_currency
-    if conv.warnings:
-        out.attrs["fx_warnings"] = conv.warnings
-    return out
+_convert_ohlcv_to_base_currency = convert_ohlcv_to_base_currency
 
 
 def _export_ohlcv_csv(df: pd.DataFrame, export_path: str) -> Path:
@@ -106,12 +62,15 @@ def build_diagnostic_report(
     df: pd.DataFrame,
     engineer: OHLCVFeatureEngineer,
     risk_free_rate: float = RISK_FREE_RATE,
+    *,
+    metrics: dict[str, Any] | None = None,
 ) -> str:
     """Build the comprehensive mathematical diagnostic report for console output."""
     del (
         engineer
     )  # Kept in signature for caller compatibility; shared get_quant_metrics runs pipeline.
-    metrics = get_quant_metrics(df, risk_free_rate=risk_free_rate)
+    if metrics is None:
+        metrics = get_quant_metrics(df, risk_free_rate=risk_free_rate)
     asset_key = str(df.attrs.get("asset_type", "") or "").strip().lower()
     asset_label = ASSET_LABELS.get(asset_key, asset_key or "未知资产")
     currency = str(metrics.get("currency") or df.attrs.get("currency") or "").strip()
@@ -126,37 +85,82 @@ def build_diagnostic_report(
     adjust_text = adjust if adjust else "未指定/不适用"
     return_basis = str(metrics.get("return_basis") or "")
     basis_note = ASSET_RETURN_BASIS_NOTES.get(return_basis, "")
+    return_convention = str(metrics.get("return_convention") or "log")
+    trading_days = metrics.get("trading_days") or get_asset_trading_days(asset_key or None)
 
     lines = [
         "【资产数学诊断报告】",
         f"资产类别: {asset_label}",
         f"标的代码: {symbol}",
         f"数据源 / 计价币种 / 复权口径: {data_source} | {ccy_text} | {adjust_text}",
+        f"计算口径: return_convention={return_convention} | 年化交易日数={trading_days}",
         "样本区间: %s 至 %s (%d 条观测)"
         % (
             df.index[0].strftime("%Y-%m-%d"),
             df.index[-1].strftime("%Y-%m-%d"),
             len(df),
         ),
-        "%s: %s"
-        % (
-            "水平相对变化" if metrics["series_kind"] == "yield_level" else "期间累计收益率",
-            _format_percent(metrics["cumulative_return"], signed=True),
-        ),
-        "年化收益率 (CAGR): %s" % _format_percent(metrics["cagr"]),
-        "年化波动率: %s" % _format_percent(metrics["annualized_volatility"]),
-        "最大回撤: %s" % _format_percent(-abs(float(metrics["max_drawdown"]))),
-        "夏普比率 (Rf=%.1f%%): %s"
-        % (risk_free_rate * 100.0, _format_ratio(metrics["sharpe_ratio"])),
-        "索提诺比率 (Sortino): %s" % _format_ratio(metrics["sortino_ratio"]),
-        "卡玛比率 (Calmar): %s" % _format_ratio(metrics["calmar_ratio"]),
-        "95%% 日 VaR / CVaR: %s / %s"
-        % (
-            _format_percent(metrics["var_95"], signed=True),
-            _format_percent(metrics["cvar_95"], signed=True),
-        ),
-        "当前布林带位置: %s" % metrics["latest_signal"],
     ]
+    if metrics["series_kind"] == "yield_level":
+        latest_lvl = metrics.get("latest_level", float("nan"))
+        lvl_chg = metrics.get("level_change", float("nan"))
+        if pd.notna(latest_lvl) and pd.notna(lvl_chg):
+            lines.append(
+                f"收益率水平（非总回报）: 最新 {float(latest_lvl):.4f}% | 区间点差变化 {float(lvl_chg):+.4f}%"
+            )
+    lines.extend(
+        [
+            "%s: %s"
+            % (
+                "水平变化（禁用收益率）"
+                if metrics["series_kind"] == "yield_level"
+                else "期间累计收益率",
+                _format_percent(metrics["cumulative_return"], signed=True),
+            ),
+            "年化收益率 (CAGR): %s" % _format_percent(metrics["cagr"]),
+            "年化波动率: %s" % _format_percent(metrics["annualized_volatility"]),
+            "最大回撤: %s"
+            % (
+                _format_percent(-abs(float(metrics["max_drawdown"])))
+                if pd.notna(metrics["max_drawdown"])
+                else "N/A"
+            ),
+            "夏普比率 (Rf=%.1f%%): %s"
+            % (risk_free_rate * 100.0, _format_ratio(metrics["sharpe_ratio"])),
+            "索提诺比率 (Sortino): %s" % _format_ratio(metrics["sortino_ratio"]),
+            "卡玛比率 (Calmar): %s" % _format_ratio(metrics["calmar_ratio"]),
+            "95%% 日 VaR / CVaR: %s / %s"
+            % (
+                _format_percent(metrics["var_95"], signed=True),
+                _format_percent(metrics["cvar_95"], signed=True),
+            ),
+            "当前布林带位置: %s" % metrics["latest_signal"],
+        ]
+    )
+
+    quality = metrics.get("data_quality") or {}
+    if isinstance(quality, dict):
+        dropped = int(quality.get("dropped_invalid_rows", 0) or 0)
+        filled = int(quality.get("filled_price_rows", 0) or 0)
+        missing_vol = int(quality.get("missing_volume_rows", 0) or 0)
+        non_pos = int(quality.get("non_positive_price_rows", 0) or 0)
+        ohlc_bad = int(quality.get("ohlc_anomaly_rows", 0) or 0)
+        if dropped or filled or missing_vol or non_pos or ohlc_bad:
+            lines.append(
+                "数据质量: dropped=%d, filled=%d, missing_vol=%d, non_positive_price=%d, ohlc_anomaly=%d (policy=%s)"
+                % (
+                    dropped,
+                    filled,
+                    missing_vol,
+                    non_pos,
+                    ohlc_bad,
+                    quality.get("missing_policy", "drop"),
+                )
+            )
+    for fx_warn in df.attrs.get("fx_warnings") or ():
+        lines.append(f"汇率提示: {fx_warn}")
+    for fb_warn in df.attrs.get("fallback_warnings") or ():
+        lines.append(f"数据源回退提示: {fb_warn}")
     if basis_note:
         lines.append(f"口径说明: {basis_note}")
     if metrics.get("metric_disclaimer"):
@@ -203,53 +207,86 @@ def run_analysis(
     if asset_key in CHINA_EQUITY_ASSET_TYPES and (
         load_china_equity_ohlcv is not _DEFAULT_CHINA_EQUITY_LOADER
     ):
-        raw_df = load_china_equity_ohlcv(
-            asset_key,
-            sym,
-            start_ts,
-            end_ts,
-            adjust=resolved_adjust,
-        )
+
+        def _active_loader(
+            req_asset: str,
+            req_sym: str,
+            req_start: object,
+            req_end: object,
+            **kwargs: Any,
+        ) -> pd.DataFrame:
+            return load_china_equity_ohlcv(
+                req_asset,
+                req_sym,
+                req_start,
+                req_end,
+                adjust=resolved_adjust,
+            )
+
     else:
-        loader_kwargs: dict[str, Any] = {
-            "proxy_url": proxy_url,
-            "adjust": (
-                resolved_adjust
-                if (adjust is not None or asset_key in CHINA_EQUITY_ASSET_TYPES)
-                else None
-            ),
-        }
-        if force_refresh:
-            loader_kwargs["force_refresh"] = True
-        raw_df = load_asset_data(
-            asset_key,
-            sym,
-            start_ts,
-            end_ts,
-            **loader_kwargs,
-        )
 
-    raw_df.attrs.setdefault("asset_type", asset_key)
-    raw_df.attrs.setdefault("symbol", sym)
-    if base_currency is not None:
-        raw_df = _convert_ohlcv_to_base_currency(
-            raw_df,
-            asset_key,
-            sym,
-            base_currency,
-            proxy_url=proxy_url,
-        )
+        def _active_loader(
+            req_asset: str,
+            req_sym: str,
+            req_start: object,
+            req_end: object,
+            **kwargs: Any,
+        ) -> pd.DataFrame:
+            call_kwargs: dict[str, Any] = {
+                "proxy_url": kwargs.get("proxy_url"),
+                "adjust": (
+                    resolved_adjust
+                    if (adjust is not None or asset_key in CHINA_EQUITY_ASSET_TYPES)
+                    else None
+                ),
+            }
+            if kwargs.get("force_refresh"):
+                call_kwargs["force_refresh"] = True
+            return load_asset_data(
+                req_asset,
+                req_sym,
+                req_start,
+                req_end,
+                **call_kwargs,
+            )
 
-    trading_days = get_asset_trading_days(asset_key)
+    request = AnalysisRequest(
+        asset_type=asset_key,
+        symbol=sym,
+        start_date=start_ts.strftime("%Y-%m-%d"),
+        end_date=end_ts.strftime("%Y-%m-%d"),
+        adjust=resolved_adjust,
+        base_currency=(base_currency or "LOCAL"),
+        risk_free_rate=risk_free_rate,
+        trading_days=get_asset_trading_days(asset_key),
+        force_refresh=force_refresh,
+        proxy_url=proxy_url,
+    )
+    analysis_result = analyze_single_asset(request, loader=_active_loader)
+    featured_df = analysis_result.data_frame
+    assert featured_df is not None
+    raw_df = featured_df.loc[:, list(REQUIRED_OHLCV_COLUMNS)].copy()
+    raw_df.attrs = dict(featured_df.attrs)
+
+    service_metrics: dict[str, Any] = {
+        **analysis_result.metrics,
+        "featured_df": featured_df,
+        "series_kind": featured_df.attrs.get("series_kind", analysis_result.asset.series_kind),
+        "metric_reasons": dict(analysis_result.metric_reasons),
+        "data_quality": analysis_result.quality.to_dict(),
+        "data_source": analysis_result.asset.data_source or "",
+        "currency": analysis_result.asset.output_currency or "",
+        "return_basis": analysis_result.asset.return_basis,
+        "metric_disclaimer": analysis_result.disclaimers[-1]
+        if (
+            analysis_result.disclaimers
+            and analysis_result.disclaimers[-1]
+            != ASSET_RETURN_BASIS_NOTES.get(analysis_result.asset.return_basis)
+        )
+        else "",
+    }
+
     engineer = OHLCVFeatureEngineer()
-    featured_df = engineer.transform(raw_df, trading_days=trading_days)
-    featured_df.attrs["symbol"] = sym
-    featured_df.attrs["asset_type"] = asset_key
-    featured_df.attrs["analysis_start"] = start_ts.strftime("%Y-%m-%d")
-    featured_df.attrs["analysis_end"] = end_ts.strftime("%Y-%m-%d")
-    if "adjust" not in featured_df.attrs and resolved_adjust:
-        featured_df.attrs["adjust"] = resolved_adjust
-
     visualizer = MplfinanceVisualizer()
     figure = visualizer.plot(featured_df, show=show, savepath=save_chart)
     csv_path = _export_ohlcv_csv(raw_df, export_csv) if export_csv is not None else None
@@ -258,6 +295,7 @@ def run_analysis(
         df=featured_df,
         engineer=engineer,
         risk_free_rate=risk_free_rate,
+        metrics=service_metrics,
     )
     print(report)
 
@@ -267,6 +305,7 @@ def run_analysis(
         "figure": figure,
         "report": report,
         "saved_csv": str(csv_path) if csv_path is not None else None,
+        "analysis_result": analysis_result,
     }
 
 

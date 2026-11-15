@@ -335,8 +335,14 @@ def compute_backtest_metrics(
     *,
     periods_per_year: float = 252.0,
     risk_free_rate: float = RISK_FREE_RATE,
+    return_convention: Literal["simple", "log"] = "simple",
 ) -> dict[str, float]:
     """Compute CAGR, total return, annualized volatility, max drawdown, Sharpe, Sortino, and Calmar."""
+    conv = str(return_convention or "simple").strip().lower()
+    if conv not in ("simple", "log"):
+        raise ValueError(
+            f"Unsupported return_convention: {return_convention!r}; choose 'simple' or 'log'."
+        )
     s = pd.to_numeric(nav_series, errors="coerce").dropna().astype(float)
     if len(s) < 2 or s.iloc[0] <= 0.0 or s.iloc[-1] <= 0.0:
         return {
@@ -364,11 +370,18 @@ def compute_backtest_metrics(
     mdd = float((1.0 - s / running_peak).max())
     simple_r = s.pct_change().dropna().to_numpy(dtype=float)
     ppy = float(periods_per_year)
-    if simple_r.size >= 2:
-        std_r = float(np.std(simple_r, ddof=1))
-        ann_vol = std_r * float(np.sqrt(ppy))
+    if conv == "log":
+        ratio = (s / s.shift(1)).dropna().to_numpy(dtype=float)
+        period_r = np.log(ratio[ratio > 0.0]) if ratio.size else ratio
+        rf_per_period = float(np.log1p(risk_free_rate)) / ppy
+    else:
+        period_r = simple_r
         rf_per_period = float(risk_free_rate) / ppy
-        excess = simple_r - rf_per_period
+
+    if period_r.size >= 2:
+        std_r = float(np.std(period_r, ddof=1))
+        ann_vol = std_r * float(np.sqrt(ppy))
+        excess = period_r - rf_per_period
         sharpe = (float(np.mean(excess)) * ppy / ann_vol) if ann_vol > 0.0 else float("nan")
         down = np.minimum(excess, 0.0)
         down_dev = float(np.sqrt(np.mean(down * down))) * float(np.sqrt(ppy))
@@ -500,6 +513,7 @@ def backtest_portfolio(
         "rebalance_freq": rebalance_freq,
         "transaction_cost_bps": float(transaction_cost_bps),
         "periods_per_year": float(periods_per_year),
+        "return_convention": "simple",
     }
     return out
 
@@ -1606,6 +1620,7 @@ def run_walk_forward_backtest(
         "objective": objective,
         "transaction_cost_bps": float(transaction_cost_bps),
         "periods_per_year": float(periods_per_year),
+        "return_convention": "simple",
         "in_sample_weights": in_sample_sol.weights.tolist(),
     }
     nav_df.attrs["performance"] = perf

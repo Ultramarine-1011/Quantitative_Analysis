@@ -83,17 +83,21 @@ Human / Browser                  AI Agent / Terminal
 > - **M3 算法核心已先行落地**：`quant_models.py` 已通过 SLSQP 精确有效前沿与 `run_walk_forward_backtest` 实现约束优化、样本内外划分与调仓/费率控制，`charts.py` 已同图区分精确有效前沿与随机组合；M3 重点转为提供 `quant compare`/`quant portfolio` CLI 及对齐 Log/Simple 年化与夏普口径。
 > - **M5 前端基础已优化**：`app.py` 与 `charts.py` 已完成自适应主题与会话结果保存；M5 重点转为调用统一 `AnalysisService` 与补齐单资产基准货币选项。
 
-### M1 · 统一金融数据层（V0.1）
+### M1 · 统一金融数据层（V0.1 — 已完成）
 
 **目标**：让数据不仅格式统一，而且来源明确、经济意义清楚、质量可检查。
 
-**工作内容**
-- 为资产与序列定义元数据：资产类型、符号、市场、币种、序列类别、数据来源、抓取时间、实际覆盖区间、复权/报价单位等。
-- 扩展数据检索、清洗与质量报告：重复值、缺失值、异常范围、市场日历、价格有效性、样本覆盖度。
-- 区分“价格/可投资资产收益”“基金净值”“利率水平”等不同分析语义；为不适用的指标提供显式阻止或语义匹配的替代计算。
-- 跨资产数据对齐和币种转换必须明确策略；不可直接将前向填充、不同计价币种的价格当作无条件可比较的投资收益。
+**工作内容（已在 M1 落地）**
+- [x] 建立强类型统一契约 [contracts.py](../contracts.py)（`SCHEMA_VERSION = "0.1.0"`）：`AnalysisRequest`、`SeriesMetadata`、`QualityReport`、`AnalysisResult`（支持 strict JSON `to_dict()`），统一输出资产/源/口径/质量/诊断原因与告警。
+- [x] 在 [asset_catalog.py](../asset_catalog.py) 统一 `normalize_symbol_alias`、`resolve_return_basis`（覆盖动态复权 `adjusted_price` / `unadjusted_price`）与 `resolve_semantic_series_kind`。
+- [x] 修复金融语义与口径：
+  - `yield_level` 在 `analysis_metrics.get_quant_metrics` 硬阻止 `cumulative_return` / `cagr` / `max_drawdown` / 波动率 / Sharpe / Sortino / Calmar / VaR / CVaR（输出 `NaN` + `metric_reasons="yield_level_not_return"`，保留描述性 `latest_level` / `level_change`），并在 `currency.py` / `asset_loader.py` 禁止基准货币折算。
+  - `fx_rate` 在 `currency.convert_ohlcv_to_base_currency` 与 `asset_loader.align_multi_asset_frames` 禁止非 `LOCAL` 基准货币换汇，并在单资产统计附带无 Carry 警示；有效 FX 折算后去重透传 `fx_warnings` 并在删行时重算 `data_quality`。
+  - 对齐单资产（`return_convention="log" | "simple"`、`periods_per_year`）与 `quant_models.py` 组合简单收益口径；`backtest_portfolio` / `run_walk_forward_backtest` 元数据显式声明 `return_convention="simple"`。
+- [x] 加固 OHLCV 质量与共享缓存：`ohlcv.prepare_ohlcv` / `validate_ohlcv` 保留上游 `missing_policy`；`data_sources/cache.py` 统一别名键、引入 `.locks/` 进程/线程读写锁、按返回切片重算 `data_quality`（`quality_scope="slice" | "full"`）。
+- [x] 模块解耦：抽离 CCXT 至 `data_sources/crypto.py` 切断 `asset_loader <-> currency` 循环依赖；收敛 `convert_ohlcv_to_base_currency` 至 `currency.py`；清理跨模块私有导入并记录 `china_equity.py` 回退降级告警；落地共享分析服务 [services/analysis_service.py](../services/analysis_service.py)（`analyze_single_asset`），由 `main.run_analysis` 单次调用串联（避免双次特征重算）并为 M2 `quant` CLI 奠基。
 
-**验收标准**：加载一项资产可得到标准化序列、元数据、质量结果与警告；不合适的计算能可靠拒绝或显式说明，不静默制造收益记录。
+**验收标准**：加载与分析单资产可得到标准化序列、`SeriesMetadata`、`QualityReport`、`AnalysisResult` 与结构化警告；`yield_level` 与 `fx_rate` 误用可靠拒绝；M1 与离线网络回退全量测试通过。
 
 ### M2 · Agent CLI 与统一分析工作流（V0.2，首个核心 MVP）
 
@@ -163,7 +167,7 @@ quant analyze NVDA --start 2021-01-01 --report md --charts html,png
 
 | 版本 | 覆盖阶段 | 可验证交付 |
 | --- | --- | --- |
-| **V0.1** | M0 + M1 | 稳定的金融数据契约、质量检查与测试基线 |
+| **V0.1** | M0 + M1 | **已完成**：统一的 `contracts.py` 数据契约、`AnalysisService` 基础服务、质量诊断、语义拦截与离线测试基线 |
 | **V0.2** | M2 | **Agent 可直接使用的单资产 CLI MVP** |
 | **V0.3** | M3 | 多资产比较、组合与严谨统计能力 |
 | **V0.4** | M4 | 按需生成报告与图表 |

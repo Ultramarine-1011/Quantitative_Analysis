@@ -299,12 +299,24 @@ def _render_diagnosis(streamlit: Any, df: pd.DataFrame, metrics: dict, query: tu
     if unit_cap:
         streamlit.caption("单位与口径：%s" % unit_cap)
     return_basis = str(metrics.get("return_basis") or "")
-    if return_basis in ("futures_continuous", "price_index", "fx_rate", "adjusted_or_price"):
+    if return_basis:
         basis_note = ASSET_RETURN_BASIS_NOTES.get(return_basis)
         if basis_note:
             streamlit.caption("口径说明：%s" % basis_note)
+    for fx_warn in df.attrs.get("fx_warnings") or ():
+        streamlit.warning(str(fx_warn))
     if metrics.get("metric_disclaimer"):
         streamlit.warning(metrics["metric_disclaimer"])
+    if metrics.get("series_kind") == "yield_level" and pd.notna(metrics.get("level_change")):
+        streamlit.caption(
+            "收益率水平参考：最新 %.3f%% · 区间点差变化 %+.3f 个百分点 · 区间 %.3f%%–%.3f%%"
+            % (
+                float(metrics.get("latest_level", 0.0)),
+                float(metrics.get("level_change", 0.0)),
+                float(metrics.get("level_min", 0.0)),
+                float(metrics.get("level_max", 0.0)),
+            )
+        )
 
     quality = metrics.get("data_quality") or {}
     dropped = int(quality.get("dropped_invalid_rows", quality.get("dropped_rows", 0)) or 0)

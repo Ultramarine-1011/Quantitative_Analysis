@@ -234,18 +234,32 @@ def prepare_ohlcv(
     out.index.name = out.index.name or "Date"
     out.attrs = dict(df.attrs)
     prev_quality = df.attrs.get("data_quality")
+    recorded_policy = policy
     if isinstance(prev_quality, Mapping):
+        prev_policy = str(prev_quality.get("missing_policy", "") or "").strip()
+        if (
+            missing_policy is None
+            and not drop_invalid
+            and dropped_invalid_rows == 0
+            and filled_price_rows == 0
+            and missing_volume_rows == 0
+            and prev_policy in ("raise", "drop", "ffill")
+        ):
+            recorded_policy = prev_policy  # type: ignore[assignment]
         dropped_invalid_rows += int(prev_quality.get("dropped_invalid_rows", 0))
         filled_price_rows += int(prev_quality.get("filled_price_rows", 0))
         missing_volume_rows += int(prev_quality.get("missing_volume_rows", 0))
     out.attrs["data_quality"] = _compute_ohlcv_quality(
         out,
-        missing_policy=policy,
+        missing_policy=recorded_policy,
         dropped_invalid_rows=dropped_invalid_rows,
         filled_price_rows=filled_price_rows,
         missing_volume_rows=missing_volume_rows,
     )
     return out
+
+
+compute_ohlcv_quality = _compute_ohlcv_quality
 
 
 def normalize_ohlcv(

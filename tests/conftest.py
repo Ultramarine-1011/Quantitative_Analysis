@@ -1,12 +1,35 @@
 """Deterministic daily OHLCV fixtures; tests never need vendor services."""
 
+import http.client
 import os
+import socket
 
 import numpy as np
 import pandas as pd
 import pytest
 
 os.environ.setdefault("MPLBACKEND", "Agg")
+
+_ORIG_SOCKET_CREATE_CONNECTION = socket.create_connection
+
+
+@pytest.fixture(autouse=True)
+def _block_outbound_network(monkeypatch):
+    """Fail fast if an offline test attempts a real outbound network connection."""
+
+    def _deny_http_connect(self, *args, **kwargs):
+        host = getattr(self, "host", None)
+        raise OSError(f"Offline test guard blocked outbound HTTP connection to {host!r}")
+
+    def _deny_create_connection(address, *args, **kwargs):
+        host = address[0] if isinstance(address, tuple) and address else address
+        if host in {"127.0.0.1", "::1", "localhost"}:
+            return _ORIG_SOCKET_CREATE_CONNECTION(address, *args, **kwargs)
+        raise OSError(f"Offline test guard blocked outbound socket connection to {address!r}")
+
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", _deny_http_connect)
+    monkeypatch.setattr(http.client.HTTPSConnection, "connect", _deny_http_connect)
+    monkeypatch.setattr(socket, "create_connection", _deny_create_connection)
 
 
 @pytest.fixture(autouse=True)

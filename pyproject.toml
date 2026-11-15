@@ -21,10 +21,11 @@ py-modules = [
     "app", "main", "asset_resolver", "china_equity_entry", "data_fetcher",
     "feature_engineering", "visualizer", "quant_models", "ohlcv",
     "analysis_metrics", "asset_catalog", "asset_loader", "charts", "currency",
+    "contracts",
 ]
 
 [tool.setuptools.packages.find]
-include = ["data_sources*"]
+include = ["data_sources*", "services*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

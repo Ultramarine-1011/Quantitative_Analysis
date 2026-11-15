@@ -20,7 +20,9 @@ from ohlcv import (
 if TYPE_CHECKING:
     from .china_equity import AKShareFetcher
 from .errors import DataFetchError, EmptySymbolDataError
-from .network import _call_akshare, apply_default_network_proxy_policy
+from .network import apply_default_network_proxy_policy, call_akshare
+
+_call_akshare = call_akshare
 
 
 def _fund_find_date_column(df: pd.DataFrame) -> str:
@@ -260,6 +262,11 @@ def get_fund_data(fund_code: str, start_date: DateLike, end_date: DateLike) -> p
         asset_type="mutual_fund",
         symbol=code,
         series_kind="price",
+        return_basis="cumulative_nav",
         data_source="akshare.fund_open_fund_info_em",
     )
     return out
+
+
+fund_build_pseudo_ohlcv_raw = _fund_build_pseudo_ohlcv_raw
+fund_raw_to_normalized_ohlcv = _fund_raw_to_normalized_ohlcv

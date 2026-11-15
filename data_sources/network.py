@@ -45,7 +45,10 @@ def apply_default_network_proxy_policy() -> None:
 
 
 # 直连东方财富 / 显式关闭 requests 会话的代理继承。
-_REQUESTS_NO_PROXY: dict[str, None] = {"http": None, "https": None}
+REQUESTS_NO_PROXY: dict[str, None] = {"http": None, "https": None}
+_REQUESTS_NO_PROXY = REQUESTS_NO_PROXY
+
+configure_windows_proxy_behavior = _configure_windows_proxy_behavior
 
 _PROXY_LOCK = threading.RLock()
 _PROXY_CONTEXT = threading.local()
@@ -223,10 +226,19 @@ def _call_akshare(
     raise DataFetchError("%s 失败: %r" % (op_label, last_exc)) from last_exc
 
 
+without_http_proxy_env = _without_http_proxy_env
+import_akshare = _import_akshare
+call_akshare = _call_akshare
+
 __all__ = [
+    "REQUESTS_NO_PROXY",
     "RequestBudget",
     "apply_default_network_proxy_policy",
+    "call_akshare",
     "classify_network_exception",
+    "configure_windows_proxy_behavior",
+    "import_akshare",
+    "without_http_proxy_env",
     "_without_http_proxy_env",
     "_import_akshare",
     "_call_akshare",

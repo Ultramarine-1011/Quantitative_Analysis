@@ -1,6 +1,6 @@
 # 工程架构、数据口径与兼容边界
 
-> 更新日期：2026-11-14（M0 基线对齐）  
+> 更新日期：2026-11-15（M1 / V0.1 基线对齐）  
 > 详细技术债清单、V0.1/V0.2 数据契约与模块拆分方案见 [M0 审计与契约文档](M0_AUDIT_AND_CONTRACTS.md)；长期阶段规划见 [产品定位与开发路线图](ROADMAP.md)。
 
 ---
@@ -18,11 +18,12 @@
   - [asset_loader.py](../asset_loader.py)：全 13 类资产统一入口 `load_asset_data`、多线程并发拉取，以及 Stage 1 多市场对齐引擎 `align_multi_asset_frames` / `load_and_align_multi_asset_portfolio`（支持 `common_trading_dates`、`weekly_friday`、`mtm_outer`）。
   - [currency.py](../currency.py)：跨资产计价币种推断、向后防前视泄露 `merge_asof` FX 对齐（`max_staleness_days=4`）、`CNY`/`USD`/`LOCAL` 基准货币折算及显式 USDT/USD 锚定开关 `allow_usdt_usd_peg`。
   - [ohlcv.py](../ohlcv.py)：日期校验与统一 OHLCV 清洗、缺失策略（`raise`/`drop`/`ffill`）及 9 项质量诊断 `_compute_ohlcv_quality`。
-  - [data_fetcher.py](../data_fetcher.py) 与 [data_sources/](../data_sources/)：各外部行情适配器（`china_equity.py`、`eastmoney.py`、`forex.py`、`funds.py`）、`RequestBudget` 与错误分类（`network.py`、`errors.py`）、以及 Web/CLI 共享 Parquet + JSON 元信息磁盘缓存（`cache.py`）。
+  - [data_fetcher.py](../data_fetcher.py) 与 [data_sources/](../data_sources/)：各外部行情适配器（`china_equity.py`、`crypto.py`、`eastmoney.py`、`forex.py`、`funds.py`）、`RequestBudget` 与错误分类（`network.py`、`errors.py`）、以及 Web/CLI 共享 Parquet + JSON 元信息磁盘缓存（`cache.py`）。
+  - [contracts.py](../contracts.py) 与 [services/analysis_service.py](../services/analysis_service.py)：V0.1 统一数据契约（`AnalysisRequest`、`SeriesMetadata`、`QualityReport`、`AnalysisResult`）与无 UI/CLI 耦合的单资产分析服务（`analyze_single_asset`）。
 
-**当前已知跨模块耦合边界（M1 解耦目标）**：
-- `asset_loader.py` 顶层导入 `currency`，而 `currency._default_usdt_usd_loader` 在函数内部延迟导入 `asset_loader` 私有 CCXT 辅助函数，存在循环依赖。
-- `data_fetcher.py` 与 `data_sources/forex.py` 直接导入部分底层私有符号；`main.py` 私有 `_convert_ohlcv_to_base_currency` 尚未下沉为共享模块能力。
+**M1 已完成解耦与兼容保留边界**：
+- 已抽离 [data_sources/crypto.py](../data_sources/crypto.py) 供 `asset_loader.py` 与 `currency.py` 共同依赖，消除 `asset_loader <-> currency` 循环导入；`asset_loader` 保留旧私有别名以兼容现有单测。
+- 已将 OHLCV 换汇收敛至 [currency.py](../currency.py) `convert_ohlcv_to_base_currency`（`main._convert_ohlcv_to_base_currency` 保留重导出别名），并在 `data_fetcher.py` / `data_sources/*` 清理跨模块私有导入。
 - [YFinanceFetcher](../data_sources/base.py) 作为历史 API 保留占位，调用会发出 `DeprecationWarning` 并抛出 `NotImplementedError`；美股日线通过 AKShare 路由加载。
 
 ---
@@ -38,7 +39,9 @@
 - **多资产组合、有效前沿与样本外回测（`quant_models.py`）**：
   - 使用 **日简单收益率**、`rf_per_period = rf / periods_per_year`；多资产组合采用协方差收缩可选 `ledoit_wolf`（内置解析公式）与 SciPy `SLSQP` 精确优化 GMV / 最大夏普切线 / 精确有效前沿（支持权重上下界与最小持仓校验）；
   - 样本外验证支持静态 `Train/Test` 切分与滚动/扩展 `Walk-Forward` 回测（严禁前视偏差，支持再平衡频次、`tradable_mask` 停牌隔离与双边 `transaction_cost_bps`）。
-- **已知口径差异（见 M0 审计文档）**：单资产诊断（对数收益 + 静态交易日）与组合优化/回测（简单收益 + 对齐期数）公式尚未统一；`yield_level` 序列仅禁止进入组合优化及 CLI 换汇，单资产诊断层目前仍只做文案警示。
+- **M1 语义拦截与口径对齐（[analysis_metrics.py](../analysis_metrics.py) / [asset_catalog.py](../asset_catalog.py)）**：
+  - `get_quant_metrics` 与单资产风险/波动/Sharpe/Sortino 函数支持 `return_convention="log" | "simple"`（默认 `"log"`），与 [quant_models.py](../quant_models.py) `compute_backtest_metrics` 的 `"simple"` 口径可在同一 `periods_per_year` 下严格对齐，结果元数据显式声明 `return_convention` 与 `periods_per_year`。
+  - `yield_level` 序列硬阻止无效收益/回撤/波动/Sharpe/Sortino/Calmar/VaR/CVaR（输出 `NaN` + `metric_reasons["..."] = "yield_level_not_return"`，改输出 `latest_level` / `level_change` / `level_min` / `level_max`），并在单/多资产转换层禁止基准货币换算；`fx_rate` 禁止非 `LOCAL` 换算并附无 Carry 警示。
 
 ---
 
@@ -49,7 +52,7 @@
   - `main.py` 保留历史测试对 `load_china_equity_ohlcv` 的 monkeypatch 兼容路径；`app.py` 保留 `load_multi_leg_close_wide` `@st.cache_data` 包装以兼容旧测试清理调用。
 - **代理与缓存边界**：
   - 导入模块不改写全局环境变量；境内直连与系统代理回退受线程隔离 `RequestBudget` / `_without_http_proxy_env` 控制，设 `QUANT_USE_SYSTEM_PROXY=1` 时强制走系统/环境代理，加密货币仅使用显式传入的 CCXT `proxy_url`。
-  - 共享 Parquet + JSON 元信息缓存默认写入 `~/.cache/quantitative_analysis/ohlcv`（TTL 3600 秒）；M0 已修复禁止持久化 `proxy_url` 到 `.meta.json`（并在内存属性对代理凭证脱敏），且覆盖范围内切片为空时视为缓存未命中并重新触发上游拉取，避免抛 `ValueError`。
+  - 共享 Parquet + JSON 元信息缓存默认写入 `~/.cache/quantitative_analysis/ohlcv`（TTL 3600 秒）；M0 已修复禁止持久化 `proxy_url` 到 `.meta.json`（并在内存属性对代理凭证脱敏），且覆盖范围内切片为空时视为缓存未命中并重新触发上游拉取；M1 补齐 `.locks/` 并发锁、别名归一化、`fetched_at` 追溯及按命中切片窗口重算 `data_quality`（`quality_scope="slice" | "full"`）。
   - Web Tab 1 `app.py` 在 M0 已对齐 `ohlcv.py` 真实的 `dropped_invalid_rows` / `filled_price_rows` / `missing_volume_rows` / `ohlc_anomaly_rows` / `non_positive_price_rows` 质量字段，确保清洗提示真实可见。
 
 ---

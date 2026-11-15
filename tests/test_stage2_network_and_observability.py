@@ -209,9 +209,23 @@ def test_eastmoney_reuses_single_client_across_hosts_and_tracks_provenance(monke
         def get(self, *args, **kwargs):
             raise requests.ConnectionError("fallback req fail")
 
+    class DeadHTTPSConnection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            raise OSError("fallback stdlib fail")
+
+        def getresponse(self):
+            raise OSError("fallback stdlib fail")
+
+        def close(self):
+            pass
+
     em = EastMoneyDailyKlineClient()
     monkeypatch.setattr(em, "_load_httpx", lambda: SimpleNamespace(Client=FakeHttpxClient))
     monkeypatch.setattr("data_sources.eastmoney.requests.Session", DeadReqSession)
+    monkeypatch.setattr("http.client.HTTPSConnection", DeadHTTPSConnection)
 
     out = em.fetch_daily_klines(
         "510300",

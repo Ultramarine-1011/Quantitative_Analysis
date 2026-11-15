@@ -7,16 +7,24 @@ import json
 import math
 import os
 import tempfile
+import threading
 import time
-from datetime import date, datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from asset_catalog import SUPPORTED_ADJUSTMENTS, resolve_adjustment
-from ohlcv import coerce_analysis_date
+from asset_catalog import SUPPORTED_ADJUSTMENTS, normalize_symbol_alias, resolve_adjustment
+from ohlcv import coerce_analysis_date, compute_ohlcv_quality
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None  # type: ignore[assignment]
 
 DEFAULT_CACHE_TTL_SECONDS = 3600.0
 CACHE_SCHEMA_VERSION = 1
@@ -24,6 +32,8 @@ ENV_CACHE_DIR = "QUANT_CACHE_DIR"
 ENV_DISABLE_CACHE = "QUANT_DISABLE_CACHE"
 ENV_CACHE_TTL = "QUANT_CACHE_TTL"
 _TRANSIENT_OR_SENSITIVE_ATTRS = frozenset({"cache_hit", "cache_path", "proxy_url"})
+_KEY_THREAD_LOCKS_GUARD = threading.Lock()
+_KEY_THREAD_LOCKS: dict[str, threading.Lock] = {}
 
 
 def is_cache_enabled() -> bool:
@@ -55,13 +65,27 @@ def resolve_cache_ttl(ttl_seconds: float | None = None) -> float:
 
 def canonical_cache_symbol(asset_type: str, symbol: object) -> str:
     """Normalize symbol identifiers so Web and CLI generate identical cache keys."""
-    asset_key = str(asset_type).strip().lower()
-    raw = "" if symbol is None else str(symbol).strip()
-    if asset_key == "bond_us_yield":
-        if not raw or raw.upper() in {"10Y", "默认", "DEFAULT"}:
-            return "10Y"
-        return raw
-    return raw.upper()
+    return normalize_symbol_alias(asset_type, symbol)
+
+
+@contextmanager
+def _cache_entry_lock(cache_dir: Path, key: str) -> Iterator[None]:
+    """Serialize read/write transitions on a single cache key across threads and processes."""
+    with _KEY_THREAD_LOCKS_GUARD:
+        tlock = _KEY_THREAD_LOCKS.setdefault(key, threading.Lock())
+    with tlock:
+        if fcntl is None:
+            yield
+            return
+        lock_dir = cache_dir / ".locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = lock_dir / f"{key}.lock"
+        with lock_path.open("a+b") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def canonical_cache_adjust(asset_type: str, adjust: str | None) -> str:
@@ -160,32 +184,37 @@ def load_cached_ohlcv(
         return None
 
     cache_dir = get_cache_dir()
+    if not cache_dir.is_dir():
+        return None
     key = build_cache_key(asset_type, symbol, adjust=adjust)
     parquet_path, meta_path = _entry_paths(cache_dir, key)
     if not (meta_path.is_file() and parquet_path.is_file()):
         return None
 
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        if not isinstance(meta, dict) or int(meta.get("version", 0)) != CACHE_SCHEMA_VERSION:
+    with _cache_entry_lock(cache_dir, key):
+        if not (meta_path.is_file() and parquet_path.is_file()):
             return None
-        cached_at = float(meta["cached_at"])
-        now = time.time()
-        age = now - cached_at
-        if not math.isfinite(age) or age < -300.0 or age > effective_ttl:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(meta, dict) or int(meta.get("version", 0)) != CACHE_SCHEMA_VERSION:
+                return None
+            cached_at = float(meta["cached_at"])
+            now = time.time()
+            age = now - cached_at
+            if not math.isfinite(age) or age < -300.0 or age > effective_ttl:
+                return None
+            cov_start = coerce_analysis_date(meta["covered_start"], "covered_start")
+            cov_end = coerce_analysis_date(meta["covered_end"], "covered_end")
+        except Exception:
             return None
-        cov_start = coerce_analysis_date(meta["covered_start"], "covered_start")
-        cov_end = coerce_analysis_date(meta["covered_end"], "covered_end")
-    except Exception:
-        return None
 
-    if cov_start > req_start or cov_end < req_end:
-        return None
+        if cov_start > req_start or cov_end < req_end:
+            return None
 
-    try:
-        df = pd.read_parquet(parquet_path, engine="pyarrow")
-    except Exception:
-        return None
+        try:
+            df = pd.read_parquet(parquet_path, engine="pyarrow")
+        except Exception:
+            return None
 
     if not isinstance(df.index, pd.DatetimeIndex):
         try:
@@ -204,6 +233,31 @@ def load_cached_ohlcv(
     attrs = meta.get("attrs")
     if isinstance(attrs, dict):
         sliced.attrs.update(attrs)
+    raw_dq = attrs.get("data_quality") if isinstance(attrs, dict) else None
+    prev_dq = dict(raw_dq) if isinstance(raw_dq, dict) else {}
+    missing_policy = str(prev_dq.get("missing_policy", "drop") or "drop")
+    is_full_slice = len(sliced) == len(df)
+    if is_full_slice:
+        dropped_rows = int(prev_dq.get("dropped_invalid_rows", prev_dq.get("dropped_rows", 0)) or 0)
+        filled_rows = int(prev_dq.get("filled_price_rows", prev_dq.get("ffilled_cells", 0)) or 0)
+        missing_vol_rows = int(prev_dq.get("missing_volume_rows", 0) or 0)
+    else:
+        dropped_rows = 0
+        filled_rows = 0
+        missing_vol_rows = 0
+        if prev_dq:
+            sliced.attrs["cache_source_data_quality"] = prev_dq
+    slice_dq = compute_ohlcv_quality(
+        sliced,
+        missing_policy=missing_policy,
+        dropped_invalid_rows=dropped_rows,
+        filled_price_rows=filled_rows,
+        missing_volume_rows=missing_vol_rows,
+    )
+    slice_dq["quality_scope"] = "full" if is_full_slice else "slice"
+    sliced.attrs["data_quality"] = slice_dq
+    sliced.attrs.setdefault("canonical_symbol", canonical_cache_symbol(asset_type, symbol))
+    sliced.attrs.setdefault("fetched_at", datetime.fromtimestamp(cached_at, tz=UTC).isoformat())
     sliced.attrs["cache_hit"] = True
     sliced.attrs["cached_at"] = cached_at
     sliced.attrs["cache_key"] = key
@@ -250,12 +304,15 @@ def save_cached_ohlcv(
         if last_ts > cov_end:
             cov_end = last_ts
 
+    cached_at_ts = float(time.time())
     clean_attrs = _to_json_safe(
         {k: v for k, v in dict(df.attrs).items() if k not in _TRANSIENT_OR_SENSITIVE_ATTRS}
     )
+    if not clean_attrs.get("fetched_at"):
+        clean_attrs["fetched_at"] = datetime.fromtimestamp(cached_at_ts, tz=UTC).isoformat()
     meta_payload = {
         "version": CACHE_SCHEMA_VERSION,
-        "cached_at": float(time.time()),
+        "cached_at": cached_at_ts,
         "asset_type": str(asset_type).strip().lower(),
         "symbol": canonical_cache_symbol(asset_type, symbol),
         "adjust": canonical_cache_adjust(asset_type, adjust),
@@ -267,18 +324,19 @@ def save_cached_ohlcv(
     meta_bytes = json.dumps(meta_payload, ensure_ascii=False, indent=2).encode("utf-8")
 
     try:
-        _atomic_write_bytes_or_parquet(
-            parquet_path,
-            lambda tmp: to_store.to_parquet(tmp, engine="pyarrow", index=True),
-            prefix=f".{key}.",
-            suffix=".parquet.tmp",
-        )
-        _atomic_write_bytes_or_parquet(
-            meta_path,
-            lambda tmp: tmp.write_bytes(meta_bytes),
-            prefix=f".{key}.",
-            suffix=".meta.tmp",
-        )
+        with _cache_entry_lock(cache_dir, key):
+            _atomic_write_bytes_or_parquet(
+                parquet_path,
+                lambda tmp: to_store.to_parquet(tmp, engine="pyarrow", index=True),
+                prefix=f".{key}.",
+                suffix=".parquet.tmp",
+            )
+            _atomic_write_bytes_or_parquet(
+                meta_path,
+                lambda tmp: tmp.write_bytes(meta_bytes),
+                prefix=f".{key}.",
+                suffix=".meta.tmp",
+            )
     except Exception:
         return None
     return parquet_path
@@ -295,6 +353,13 @@ def clear_ohlcv_cache() -> int:
             try:
                 path.unlink()
                 removed += 1
+            except OSError:
+                pass
+    locks_dir = cache_dir / ".locks"
+    if locks_dir.is_dir():
+        for lock_path in locks_dir.glob("*.lock"):
+            try:
+                lock_path.unlink()
             except OSError:
                 pass
     return removed

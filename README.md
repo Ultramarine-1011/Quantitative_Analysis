@@ -187,6 +187,8 @@ flowchart TB
 | `ohlcv.py` | 六列 OHLCV 契约校验、缺失值策略（`raise`/`drop`/`ffill`）与 9 项质量诊断计数 |
 | `feature_engineering.py` | `OHLCVFeatureEngineer`：SMA、布林带、EMA、RSI、MACD、对数收益波动率与最大回撤 |
 | `analysis_metrics.py` | 单资产累计收益、自然日 CAGR、年化波动率、Sharpe / Sortino / Calmar 与 95% 日 VaR / CVaR |
+| `contracts.py` | V0.1 统一请求/序列元数据/质量报告/分析结果数据契约（strict JSON 序列化） |
+| `services/analysis_service.py` | 解耦于 UI/CLI 的单资产分析流水线服务（加载 -> 换汇 -> 单次特征工程 -> 指标 -> 契约） |
 | `quant_models.py` | GBM 模拟、相关性矩阵、Ledoit-Wolf 收缩、SLSQP 精确有效前沿与 Walk-Forward / Train-Test 样本外回测 |
 
 ### 目录结构
@@ -201,7 +203,10 @@ Quantitative_Analysis/
 ├── china_equity_entry.py   # 兼容重导出路径
 ├── currency.py             # FX 对齐与基准货币折算
 ├── data_fetcher.py         # 行情公共 API 与全球市场路由
-├── data_sources/           # 数据源适配器、超时预算、代理策略与 Parquet 缓存
+├── contracts.py            # 统一数据契约（AnalysisRequest/SeriesMetadata/QualityReport/AnalysisResult）
+├── services/               # M1+ 无 UI 依赖的统一业务分析服务层
+│   └── analysis_service.py # 解耦于 UI/CLI 的单资产分析服务
+├── data_sources/           # 数据源适配器（含 crypto.py）、超时预算、代理策略与 Parquet 缓存
 ├── ohlcv.py                # 共用 OHLCV 清洗与质量诊断契约
 ├── feature_engineering.py  # 向量化技术特征与滚动统计
 ├── analysis_metrics.py     # 单资产诊断指标
@@ -233,8 +238,8 @@ Quantitative_Analysis/
 
 | 能力状态 | 具体内容 |
 | --- | --- |
-| **当前已实现** | 13 类资产适配与共享 Parquet 缓存；OHLCV 清洗与 9 项质量诊断；特征工程与单资产风险指标；Ledoit-Wolf + SLSQP 精确有效前沿与 Walk-Forward 样本外回测；Streamlit 三标签页看板；`main.py` / `quantitative-analysis` 单资产 CLI |
-| **规划中（尚未实现）** | 与 UI 解耦的 `AnalysisService` 统一分析服务层；强类型 `SeriesMetadata` / `QualityReport` / `AnalysisResult` 契约；面向 Agent 的 `quant` CLI 子命令（`quant fetch`、`quant analyze`、`quant compare`、`quant portfolio`）；标准化 `result.json` + `data.parquet` 产物协议；独立的 Markdown / HTML 自动报告与按需图表渲染器（对应 M1–M5 阶段） |
+| **当前已实现** | 13 类资产适配、别名归一化与带并发锁及切片质量重算的共享 Parquet 缓存；强类型 `AnalysisRequest` / `SeriesMetadata` / `QualityReport` / `AnalysisResult` 契约（[contracts.py](contracts.py)）与单资产分析服务 [services/analysis_service.py](services/analysis_service.py)；`yield_level` / `fx_rate` 语义拦截与 `return_convention` 对齐；Ledoit-Wolf + SLSQP 精确有效前沿与 Walk-Forward 样本外回测；Streamlit 三标签页看板与 `main.py` / `quantitative-analysis` CLI |
+| **规划中（M2–M5）** | 面向 Agent 的 `quant` CLI 子命令（`quant fetch`、`quant analyze`、`quant compare`、`quant portfolio`）；标准化 `result.json` + `data.parquet` 产物落盘与分级退出码；独立的 Markdown / HTML 自动报告与按需图表渲染器；Web UI 薄层化改造（对应 M2–M5 阶段） |
 
 详细设计原则、M0–M5 阶段验收标准与 V0.1–V1.0 迭代计划，请参阅 **[产品定位与开发路线图 (docs/ROADMAP.md)](docs/ROADMAP.md)**。
 

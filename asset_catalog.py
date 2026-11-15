@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 import pandas as pd
 
 CHINA_EQUITY_ASSET_TYPES: tuple[str, ...] = ("etf", "ashare")
@@ -84,6 +87,7 @@ ASSET_RETURN_BASIS: dict[str, str] = {
 
 ASSET_RETURN_BASIS_NOTES: dict[str, str] = {
     "adjusted_price": "复权价格序列（除权除息按上游复权因子调整，税费与股息再投口径与全收益指数略有差异）。",
+    "unadjusted_price": "不复权历史行情序列（遇拆股、分红送转将出现价格跳空，不能直接作为连续复权总回报计算）。",
     "cumulative_nav": "基金累计净值序列（含分红口径，但无日内高低价与成交量）。",
     "futures_continuous": "期货主力连续价格（不含展期收益 Roll Yield 与保证金利息，不能直接等价于可投资总回报）。",
     "spot_price": "现货价格序列（不含质押/借贷收益；若以 USDT 计价，需单独处理 USDT/USD 汇率）。",
@@ -93,6 +97,101 @@ ASSET_RETURN_BASIS_NOTES: dict[str, str] = {
     "yield_level": "收益率水平序列（%），并非债券持有期回报，禁止直接纳入资产净值组合优化。",
     "fx_rate": "即期汇率比价序列（非生息投资净值，仅反映货币相对波动）。",
 }
+
+US_TREASURY_YIELD_10Y_CN_COL = "美国国债收益率10年"
+
+FX_PAIR_ALIASES: dict[str, str] = {
+    "USD/CNY": "USDCNH",
+    "USD/CNH": "USDCNH",
+    "USDCNY": "USDCNH",
+    "EUR/USD": "EURUSD",
+    "GBP/USD": "GBPUSD",
+}
+
+GOLD_SYMBOL_ALIASES: dict[str, str] = {"GC": "GC", "AU9999": "GC"}
+
+
+def normalize_symbol_alias(asset_type: str, symbol: object) -> str:
+    """Normalize asset symbol aliases to canonical cache and metadata identifiers."""
+    asset_key = str(asset_type).strip().lower()
+    raw = "" if symbol is None else str(symbol).strip()
+    if asset_key == "bond_us_yield":
+        if (
+            not raw
+            or raw.upper() in {"10Y", "默认", "DEFAULT"}
+            or raw == US_TREASURY_YIELD_10Y_CN_COL
+        ):
+            return "10Y"
+        return raw
+    if asset_key == "hk_stock":
+        if raw.isdigit():
+            return raw.zfill(5)
+        return raw.upper()
+    if asset_key == "fx":
+        cleaned = raw.upper().replace(" ", "")
+        return FX_PAIR_ALIASES.get(cleaned, cleaned.replace("/", ""))
+    if asset_key == "gold":
+        cleaned = raw.upper().replace(".", "")
+        return GOLD_SYMBOL_ALIASES.get(cleaned, raw.upper())
+    if asset_key == "crypto":
+        return raw.upper().replace(" ", "")
+    return raw.upper()
+
+
+def resolve_return_basis(
+    asset_type: str,
+    adjust: str | None = None,
+    attrs: Mapping[str, Any] | None = None,
+) -> str:
+    """Resolve granular 9-value return basis, accounting for dynamic adjust flags."""
+    asset_key = str(asset_type).strip().lower()
+    attr_map = attrs if isinstance(attrs, Mapping) else {}
+    existing = str(attr_map.get("return_basis", "") or "").strip()
+    if existing and existing != "adjusted_or_price":
+        return existing
+
+    if asset_key in {"etf", "ashare", "us_stock", "hk_stock"}:
+        if adjust is not None:
+            eff_adjust = resolve_adjustment(asset_key, adjust)
+        elif "adjust" in attr_map and attr_map.get("adjust") is not None:
+            eff_adjust = str(attr_map.get("adjust") or "").strip()
+        else:
+            eff_adjust = DEFAULT_ADJUSTMENT[asset_key]
+        return "unadjusted_price" if eff_adjust == "" else "adjusted_price"
+
+    return ASSET_RETURN_BASIS.get(asset_key, "adjusted_or_price")
+
+
+def resolve_semantic_series_kind(
+    asset_type: str,
+    return_basis: str | None = None,
+    attrs: Mapping[str, Any] | None = None,
+) -> str:
+    """Resolve semantically aligned series_kind from return_basis and attrs."""
+    asset_key = str(asset_type).strip().lower()
+    attr_map = attrs if isinstance(attrs, Mapping) else {}
+    raw_kind = str(attr_map.get("series_kind", "") or "").strip().lower()
+    basis = (
+        str(
+            return_basis
+            or attr_map.get("return_basis")
+            or ASSET_RETURN_BASIS.get(asset_key, "")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+
+    if raw_kind == "yield_level" or basis == "yield_level" or asset_key == "bond_us_yield":
+        return "yield_level"
+    if raw_kind == "fx_rate" or basis == "fx_rate" or asset_key == "fx":
+        return "fx_rate"
+    if raw_kind == "cumulative_nav" or basis == "cumulative_nav" or asset_key == "mutual_fund":
+        return "cumulative_nav"
+    if basis in {"futures_continuous", "price_index", "exchange_bond_price"}:
+        return basis
+    return raw_kind or "price"
+
 
 SUPPORTED_ADJUSTMENTS: dict[str, tuple[str, ...]] = {
     "etf": ("hfq", "qfq", ""),

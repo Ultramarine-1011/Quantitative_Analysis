@@ -8,16 +8,19 @@ from typing import Any
 
 import pandas as pd
 
-from .eastmoney import _EASTMONEY_DEFAULT_HEADERS, _EASTMONEY_KLINE_APIS
+from .eastmoney import EASTMONEY_DEFAULT_HEADERS, EASTMONEY_KLINE_APIS
 from .errors import DataFetchError, EmptySymbolDataError
 from .network import (
     RequestBudget,
-    _call_akshare,
-    _import_akshare,
     apply_default_network_proxy_policy,
+    call_akshare,
+    import_akshare,
 )
 
-_EASTMONEY_FOREX_KLINE_URLS = _EASTMONEY_KLINE_APIS
+_EASTMONEY_FOREX_KLINE_URLS = EASTMONEY_KLINE_APIS
+_EASTMONEY_DEFAULT_HEADERS = EASTMONEY_DEFAULT_HEADERS
+_call_akshare = call_akshare
+_import_akshare = import_akshare
 
 # 常用外汇品种东财 market code，作为脱离 AKShare 私有常量的内置兜底映射。
 _BUILTIN_FOREX_MARKET_MAP: dict[str, int] = {
@@ -217,3 +220,7 @@ def _fetch_forex_hist_em_robust(
             "外汇历史行情抓取失败（已尝试多东财节点与 AKShare 回退）: %r" % (detail,)
         )
         raise err from detail
+
+
+forex_kline_json_to_dataframe = _forex_kline_json_to_dataframe
+fetch_forex_hist_em_robust = _fetch_forex_hist_em_robust
