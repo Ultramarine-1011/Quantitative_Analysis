@@ -348,7 +348,7 @@ def test_quant_subprocess_end_to_end_via_installed_entrypoint(tmp_path: Path) ->
     assert parsed["asset"]["cache_hit"] is True
     assert parsed["asset"]["canonical_symbol"] == "600519"
     assert parsed["software_version"] == SOFTWARE_VERSION
-    assert SOFTWARE_VERSION == "0.2.0"
+    assert SOFTWARE_VERSION == "0.3.0"
     assert (out_dir / "result.json").is_file()
     assert (out_dir / "data.parquet").is_file()
 

@@ -1,7 +1,7 @@
 # 产品定位与开发路线图（Roadmap）
 
-> 状态：**规划中（已完成 M0 现状重估）** · 更新：2026-11-14  
-> 本文描述目标架构和未来里程碑；所列 `quant` 新 CLI 命令、结构化 JSON/Parquet 服务接口与独立报告渲染**尚未实现**，现有功能和运行方法以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
+> 状态：**M3（V0.3）已完成** · 更新：2026-11-15  
+> V0.1（M0–M1）、V0.2（M2）与 V0.3（M3：`quant fetch` / `analyze` / `compare` / `portfolio`）已落地；M4（按需报告/图表生成）与 M5（Web UI 全面迁移至统一服务层）仍为规划中里程碑。现有功能与口径细节以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
 >
 > **M0 重估提示**：因近期代码分支（Stages 1–5）已提前落地了多市场日历对齐、FX 换汇、9 项 OHLCV 质量诊断、SLSQP 精确有效前沿、Ledoit-Wolf 收缩、Walk-Forward 样本外回测与 Parquet 共享缓存，以下 M1/M3/M5 中的部分基础工作已具备实现，**后续开发须先对照 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md#2-roadmapmd-实际完成度重估防止-m1m5-重复开发) 避免重复造轮子**。
 
@@ -118,18 +118,25 @@ quant analyze -t us_stock -s NVDA --start 2024-01-01 --end 2026-11-13 -o ./resul
 
 **验收标准**：编程 Agent 仅凭终端命令 `quant` 与退出码即可无交互完成单资产检索、校验、指标计算与 `result.json` / `data.parquet` 读取；在固定数据和参数下结果稳定可复现。
 
-### M3 · 多资产比较、统计与组合分析（V0.3）
+### M3 · 多资产比较、统计与组合分析（V0.3 — 已完成）
 
 **目标**：从单资产诊断扩展到常用金融研究任务。
 
-**工作内容**
-- 增加 `quant compare`：标准化净值/价格比较、同口径收益风险、相对基准、相关性与协方差、滚动统计。
-- 增加 `quant portfolio`：权重组合、收益风险与风险贡献、基准对照、历史回测。
-- 加强收益分布、统计检验、稳健性及参数敏感性分析；按功能适用性逐步引入。
-- 明确有效前沿中“随机权重采样”和“约束优化”是不同算法；区分样本内回放与样本外回测，并明确调仓、交易成本和前视信息约束。
-- 明确多市场对齐、非同步交易和汇率处理逻辑，避免夸大相关性或组合收益结论。
+**工作内容（已在 M3 落地）**
+- [x] 新增 `quant compare` 与 [services/multi_asset_service.py](../services/multi_asset_service.py) `compare_assets`：标准化归一化净值比较（`data.parquet`）、统一基准货币收益风险指标、Pearson/Spearman 相关性与 Ledoit-Wolf/样本/对角协方差、收益分布统计（偏度、超额峰度、Jarque-Bera 正态性检验、自相关）、Memmel (2003) 渐近夏普差异检验、相对基准指标（Tracking Error、Information Ratio、CAPM Beta/Jensen Alpha、R²、Up/Down Capture）及滚动统计。
+- [x] 新增 `quant portfolio` 与 [services/multi_asset_service.py](../services/multi_asset_service.py) `analyze_portfolio`：支持 6 类策略（`max_sharpe`、`min_variance`、`risk_parity`、`inverse_volatility`、`equal_weight`、`custom`），输出权重、Euler 风险贡献（`compute_risk_contributions`、分散化比率、有效资产数）、外部基准对照（严格裁剪至样本外重叠区间）与历史回测。
+- [x] 严格区分优化与验证边界：在 `frontier.parquet` 与 JSON 中通过 `frontier_type` / `algorithm` 明确分离约束优化 `slsqp_exact`（SLSQP 精确有效前沿）与 `dirichlet_random`（Dirichlet 随机采样散点）；默认采用严格无前视偏差的 `train_test` 与 `walk_forward_rolling` / `walk_forward_expanding` 样本外验证（`in_sample` 显式标记 `has_lookahead_bias=True` 并发出警告），明确调仓频次（含 `tradable_mask` 停牌顺延）、双边交易成本（`--tx-bps`）与协方差/费率/再平衡敏感性网格（`--no-sensitivity` 可跳过）。
+- [x] 明确多市场对齐、非同步交易与汇率处理：`mtm_outer` 仅用于连续净值展示与非交易日隔离，相关性/协方差严格采用共同真实报价区间（`correlation_returns_base`）；`LOCAL` 多币种混排显式标注 `mixed_local_currencies=True` 并降级告警；`yield_level`（任何基准货币）与 `fx_rate`（非 `LOCAL` 基准货币）继续在比较/组合前置阶段拦截。
+- [x] 修复 M2 遗留边界：完善 [data_sources/cache.py](../data_sources/cache.py) 覆盖已有缓存时的双文件备份与失败回滚（不留残留 `.tmp`/`.bak`）；升级 [quant_cli.py](../quant_cli.py) 多文件事务性提交（先 staged 全量暂存、同盘备份后原子替换、按 `failed/rolled-back` 回滚且仅清理不再产出的受管文件名，绝不误删用户文件）；收紧 CLI 资产类型解析规则，禁止裸代码静默默认猜为 `etf`，规范 A 股/ETF 交易所前缀/后缀别名防重复腿；扩展 [contracts.py](../contracts.py) `AssetSpec` / `CompareRequest` / `PortfolioRequest` / `MultiAssetResult` 并保留向后兼容（`SOFTWARE_VERSION = "0.3.0"`）。
 
-**验收标准**：可用 CLI 完成典型多资产比较和组合研究，结果有可核对的样本、参数、基准和方法说明；模拟不冒充实际预测或有效策略表现。
+**接口示例**
+
+```bash
+quant compare etf:510300 us_stock:SPY --benchmark etf:510500 --start 2024-01-01 --end 2026-11-13 --base-currency CNY -o ./results/compare
+quant portfolio etf:510300 etf:510500 etf:518880 --strategy risk_parity --validation-mode walk_forward_rolling --train-window 60 --tx-bps 10 -o ./results/portfolio
+```
+
+**验收标准**：可用 CLI 完成典型多资产比较和组合研究，结果包含可核对的样本、参数、基准、质量与方法说明；模拟不冒充实际预测或有效策略表现；离线回归测试全量通过。
 
 ### M4 · 可阅读报告与可视化生成（V0.4）
 
@@ -167,11 +174,11 @@ quant analyze NVDA --start 2021-01-01 --report md --charts html,png
 | --- | --- | --- |
 | **V0.1** | M0 + M1 | **已完成**：统一的 `contracts.py` 数据契约、`AnalysisService` 基础服务、质量诊断、语义拦截与离线测试基线 |
 | **V0.2** | M2 | **已完成**：Agent CLI（`quant fetch` / `quant analyze`）、`result.json` + `data.parquet` 产物、退出码契约与缓存/离线加固 |
-| **V0.3** | M3 | **下一步**：多资产比较（`quant compare`）、组合（`quant portfolio`）与严谨统计能力 |
-| **V0.4** | M4 | 按需生成报告与图表 |
+| **V0.3** | M3 | **已完成**：多资产比较（`quant compare`）、组合与无前视偏差回测（`quant portfolio`）、分布/Memmel/风险贡献统计及 M2 事务性落盘与解析加固 |
+| **V0.4** | M4 | **下一步**：消费统一 JSON + Parquet 产物的按需 Markdown / HTML 报告与图表渲染 |
 | **V1.0** | M5 | Web/CLI 共享分析核心的完整平台 |
 
-**近期开发重心将转向 V0.3（M3 多资产比较与组合 CLI）。** 继续优先保证计算准确性、口径一致性与接口稳定性；暂缓纯粹增加资产种类或装饰性图表。
+**近期开发重心将转向 V0.4（M4 按需报告与图表生成）。** 继续优先保证计算准确性、口径一致性与结构化输出可读性；报告与图表严格仅消费 `result.json` 与 Parquet 产物。
 
 ## 6. 成功标准与暂不实施的内容
 

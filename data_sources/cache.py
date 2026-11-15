@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -226,6 +227,36 @@ def _atomic_write_bytes_or_parquet(
         raise
 
 
+def _backup_existing_file(
+    source_path: Path,
+    *,
+    prefix: str,
+    suffix: str,
+) -> Path | None:
+    """Copy an existing cache file to a temp backup in the same directory before overwrite."""
+    if not source_path.exists():
+        return None
+    return _write_staged_temp_file(
+        source_path.parent,
+        lambda tmp: shutil.copy2(source_path, tmp),
+        prefix=prefix,
+        suffix=suffix,
+    )
+
+
+def _restore_or_unlink_file(target_path: Path, backup_path: Path | None) -> Path | None:
+    """Restore ``target_path`` from ``backup_path`` or unlink partial newly written output."""
+    try:
+        if backup_path is not None and backup_path.exists():
+            os.replace(backup_path, target_path)
+            return None
+        if target_path.exists():
+            target_path.unlink()
+    except OSError:
+        pass
+    return backup_path
+
+
 def load_cached_ohlcv(
     asset_type: str,
     symbol: object,
@@ -393,6 +424,8 @@ def save_cached_ohlcv(
         with _cache_entry_lock(cache_dir, key):
             tmp_parquet: Path | None = None
             tmp_meta: Path | None = None
+            bak_parquet: Path | None = None
+            bak_meta: Path | None = None
             try:
                 tmp_parquet = _write_staged_temp_file(
                     parquet_path.parent,
@@ -406,21 +439,34 @@ def save_cached_ohlcv(
                     prefix=f".{key}.",
                     suffix=".meta.tmp",
                 )
-                os.replace(tmp_parquet, parquet_path)
-                tmp_parquet = None
+                bak_parquet = _backup_existing_file(
+                    parquet_path,
+                    prefix=f".{key}.",
+                    suffix=".parquet.bak",
+                )
+                bak_meta = _backup_existing_file(
+                    meta_path,
+                    prefix=f".{key}.",
+                    suffix=".meta.bak",
+                )
+                parquet_replaced = False
+                meta_replaced = False
                 try:
+                    os.replace(tmp_parquet, parquet_path)
+                    tmp_parquet = None
+                    parquet_replaced = True
                     os.replace(tmp_meta, meta_path)
                     tmp_meta = None
+                    meta_replaced = True
                 except Exception:
-                    # Keep parquet+meta consistent on partial replace failure.
-                    try:
-                        if parquet_path.exists():
-                            parquet_path.unlink()
-                    except OSError:
-                        pass
+                    # Restore only targets that were actually overwritten before the failure.
+                    if parquet_replaced:
+                        bak_parquet = _restore_or_unlink_file(parquet_path, bak_parquet)
+                    if meta_replaced:
+                        bak_meta = _restore_or_unlink_file(meta_path, bak_meta)
                     raise
             finally:
-                for leftover in (tmp_parquet, tmp_meta):
+                for leftover in (tmp_parquet, tmp_meta, bak_parquet, bak_meta):
                     if leftover is not None:
                         try:
                             if leftover.exists():

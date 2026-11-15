@@ -14,7 +14,7 @@
 - **OHLCV 清洗、校验与特征工程**：标准化六列 OHLCV 契约（无时区升序唯一日期索引），输出 9 项质量诊断计数，并计算 SMA、EMA、布林带、RSI(14)、MACD、对数收益滚动波动率及回撤序列。
 - **风险收益统计与组合模型**：计算累计收益、CAGR、年化波动率、最大回撤、Sharpe / Sortino / Calmar 与 95% 日 VaR / CVaR；支持相关性热图、Ledoit-Wolf 协方差收缩、SciPy SLSQP 精确有效前沿（GMV 与切点最大夏普）、GBM 蒙特卡洛模拟及 Train/Test 与 Walk-Forward 样本外回测。
 - **交互式图表与数据导出**：Streamlit 三标签页界面集成自适应亮暗主题的 Plotly 多面板图表及清洗后 OHLCV CSV（UTF-8 BOM）导出；命令行支持控制台诊断报告、`mplfinance` 多面板静态图与 CSV 导出。
-- **Agent CLI 与标准化输出（`quant`）**：提供面向 AI Agent 自动化调用的 `quant fetch` 与 `quant analyze` 命令，支持全 13 类资产检索、校验、基准货币折算、单资产定量指标计算，并原子输出版本化 `result.json`（含指标、单位、计算口径、数据来源、质量报告与警告）及 `data.parquet`；`stdout` 严格输出 JSON，`stderr` 输出日志与结构化错误，附稳定退出码（`0`/`2`/`3`/`4`/`5`/`1`），不依赖图表渲染。
+- **Agent CLI 与标准化输出（`quant`）**：提供面向 AI Agent 自动化调用的 `quant fetch`、`quant analyze`、`quant compare` 与 `quant portfolio` 命令，支持全 13 类资产检索、跨市场日历与汇率对齐、多资产统计比较、组合优化（SLSQP 精确有效前沿、`min_variance`/`max_sharpe`/`risk_parity`/`inverse_volatility`/`equal_weight`/`custom`）与严格无前视偏差样本外回测，事务性原子输出版本化 `result.json`（含指标、权重、风险贡献、模型假设、数据质量与警告）及类型化 Parquet 产物；`stdout` 严格输出 JSON，`stderr` 输出日志与结构化错误，附稳定退出码（`0`/`2`/`3`/`4`/`5`/`1`），不依赖图表渲染。
 - **既有终端与 Web 入口兼容**：保留 `python main.py` / `quantitative-analysis` 终端报告、`mplfinance` 静态图表导出与 Streamlit Web 看板完整可用。
 
 ---
@@ -71,6 +71,8 @@ streamlit run app.py
 # 查看 Agent CLI 帮助与子命令参数
 quant --help
 quant analyze --help
+quant compare --help
+quant portfolio --help
 
 # 示例 1：检索并清洗数据，导出 result.json 与 data.parquet（不计算技术指标、不绘图）
 quant fetch ashare:600519 --start 2024-01-01 --end 2026-11-13 --adjust qfq -o outputs/600519_raw
@@ -80,7 +82,15 @@ quant analyze -t etf -s 510300 --start 2024-01-01 --end 2026-11-13 --return-conv
 
 # 示例 3：静默进度日志、直接通过 stdout 读取结构化 JSON（退出码：0=成功/降级, 2=参数/校验错误, 3=空数据, 4=网络传输错误, 5=上游错误, 1=未预期异常）
 quant analyze -t us_stock -s AAPL --start 2025-01-01 --end 2026-11-13 --quiet --compact
+
+# 示例 4：多资产跨市场统一口径比较（CNY 计价、共同交易日对齐、相对基准指标、相关性/协方差与滚动统计）
+quant compare etf:510300 us_stock:SPY gold:GC --benchmark etf:510500 --start 2024-01-01 --end 2026-11-13 --base-currency CNY --calendar-mode common_trading_dates --rolling-window 20 -o outputs/compare --csv
+
+# 示例 5：投资组合优化、风险贡献、SLSQP 有效前沿与无前视偏差样本外回测（Train/Test 或 Walk-Forward）
+quant portfolio etf:510300 etf:510500 etf:511010 etf:518880 --start 2023-01-01 --end 2026-11-13 --strategy risk_parity --validation-mode walk_forward_rolling --train-window 60 --rebalance-freq monthly --tx-bps 10 -o outputs/portfolio --csv
 ```
+
+> 注：为避免跨市场标的静默猜错，Agent CLI 对裸代码强制要求配合 `-t/--asset-type` 或显式 `TYPE:SYMBOL`（如 `ashare:600519`、`us_stock:AAPL`）。
 
 兼容保留原有交互/静态图 CLI（`python main.py` / `quantitative-analysis`）：
 
@@ -161,7 +171,7 @@ python main.py --asset-type ashare --symbol 600519 --start 2023-11-14 --end 2026
 - `--proxy`：显式代理地址（如 `http://127.0.0.1:7890`）。
 - `--save-chart` / `--export-csv` / `--no-show` / `--refresh`：静态图保存路径、CSV 导出路径、无头模式、忽略缓存强制刷新。
 
-> 说明：当前 CLI 已覆盖单资产数据拉取、换汇、特征与诊断报告输出及导出；多资产对比与组合优化目前通过 Web 端和 `asset_loader` / `quant_models` Python API 提供，尚未迁移为 `quant` 独立子命令。
+> 说明：`python main.py`（`quantitative-analysis`）定位为单资产终端报告与静态图导出兼容入口；多资产比较与投资组合研究请使用 `quant compare` / `quant portfolio` CLI、Streamlit「进阶金融算法」或 `services` / `quant_models` Python API。
 
 ---
 
@@ -174,9 +184,9 @@ flowchart TB
     Sources["数据源适配与共享缓存 (data_sources/ · data_fetcher.py · asset_loader.py)"]
     Contract["统一 OHLCV 契约与语义/汇率对齐 (ohlcv.py · asset_catalog.py · asset_resolver.py · currency.py)"]
     Features["特征工程 (feature_engineering.py)"]
-    Analytics["单资产风险指标与组合/回测模型 (analysis_metrics.py · quant_models.py)"]
+    Analytics["单/多资产指标与组合回测模型 (analysis_metrics.py · quant_models.py · services/)"]
     WebUI["Streamlit Web 交互看板 (charts.py · app.py)"]
-    CLI["Python 命令行与静态导出 (visualizer.py · main.py)"]
+    CLI["Agent CLI 与静态图终端 (quant_cli.py · visualizer.py · main.py)"]
 
     Sources --> Contract
     Contract --> Features
@@ -193,26 +203,27 @@ flowchart TB
 | 模块 | 职责 |
 | --- | --- |
 | `app.py` / `charts.py` | Streamlit 三标签页 Web 入口与会话状态管理；主题自适应 Plotly 图表构建器 |
-| `quant_cli.py` | V0.2 Agent CLI 入口（`quant fetch` / `quant analyze`），原子输出 `result.json` + `data.parquet` 与分级退出码 |
+| `quant_cli.py` | V0.3 Agent CLI 入口（`quant fetch` / `quant analyze` / `quant compare` / `quant portfolio`），事务性多文件原子输出 `result.json` + 类型化 Parquet 与分级退出码 |
 | `main.py` / `visualizer.py` | 原全 13 类资产命令行入口（`quantitative-analysis`）；基于 `mplfinance` 的静态多面板/纯折线图表渲染 |
-| `asset_catalog.py` | 13 类资产 key、中文标签、默认标的、交易日年化因子、收益语义与复权支持矩阵 |
+| `asset_catalog.py` | 13 类资产 key、中文标签、默认标的、代码别名归一化、交易日年化因子、收益语义与复权支持矩阵 |
 | `asset_loader.py` | 13 类资产统一入口 `load_asset_data`、并发加载与多市场交易日历对齐引擎 |
 | `asset_resolver.py` | 日期窗口校验、境内权益加载与统一用户可读错误格式化（`china_equity_entry.py` 保留兼容重导出） |
 | `currency.py` | 计价币种推断、向后防泄露 `merge_asof` FX 对齐与 `CNY`/`USD`/`LOCAL` 基准货币折算 |
-| `data_fetcher.py` / `data_sources/` | 公共行情路由与底层适配器（境内回退、基金、东财、外汇）、请求预算、代理隔离与 Parquet 共享缓存 |
+| `data_fetcher.py` / `data_sources/` | 公共行情路由与底层适配器（境内回退、基金、东财、外汇）、请求预算、代理隔离与带覆盖回滚的 Parquet 共享缓存 |
 | `ohlcv.py` | 六列 OHLCV 契约校验、缺失值策略（`raise`/`drop`/`ffill`）与 9 项质量诊断计数 |
 | `feature_engineering.py` | `OHLCVFeatureEngineer`：SMA、布林带、EMA、RSI、MACD、对数收益波动率与最大回撤 |
-| `analysis_metrics.py` | 单资产累计收益、自然日 CAGR、年化波动率、Sharpe / Sortino / Calmar 与 95% 日 VaR / CVaR |
-| `contracts.py` | V0.1 统一请求/序列元数据/质量报告/分析结果数据契约（strict JSON 序列化） |
-| `services/analysis_service.py` | 解耦于 UI/CLI 的单资产分析流水线服务（加载 -> 换汇 -> 单次特征工程 -> 指标 -> 契约） |
-| `quant_models.py` | GBM 模拟、相关性矩阵、Ledoit-Wolf 收缩、SLSQP 精确有效前沿与 Walk-Forward / Train-Test 样本外回测 |
+| `analysis_metrics.py` | 单资产与多资产统计：累计收益、CAGR、年化波动率、Sharpe / Sortino / Calmar、VaR / CVaR、分布高阶矩/JB 正态检验、Memmel 夏普检验、相对基准与滚动统计 |
+| `contracts.py` | 统一请求/序列元数据/质量报告/单资产与多资产结果契约（`AnalysisRequest`/`CompareRequest`/`PortfolioRequest`/`AnalysisResult`/`MultiAssetResult`） |
+| `services/analysis_service.py` | 解耦于 UI/CLI 的单资产分析流水线服务（`fetch_single_asset` / `analyze_single_asset`） |
+| `services/multi_asset_service.py` | 解耦于 UI/CLI 的多资产比较与组合研究服务（`compare_assets` / `analyze_portfolio`） |
+| `quant_models.py` | GBM 模拟、相关性与协方差收缩、Euler 风险贡献、6 类组合策略优化、SLSQP 精确有效前沿与 Walk-Forward / Train-Test 样本外回测 |
 
 ### 目录结构
 
 ```text
 Quantitative_Analysis/
 ├── app.py                  # Streamlit Web 入口
-├── quant_cli.py            # Agent CLI 入口（quant fetch / quant analyze）
+├── quant_cli.py            # Agent CLI 入口（quant fetch / analyze / compare / portfolio）
 ├── main.py                 # 原交互/静态图 CLI 入口（quantitative-analysis）
 ├── asset_catalog.py        # 资产元数据、收益语义与预设组合
 ├── asset_loader.py         # 跨资产统一加载与多市场日历对齐
@@ -220,14 +231,15 @@ Quantitative_Analysis/
 ├── china_equity_entry.py   # 兼容重导出路径
 ├── currency.py             # FX 对齐与基准货币折算
 ├── data_fetcher.py         # 行情公共 API 与全球市场路由
-├── contracts.py            # 统一数据契约（AnalysisRequest/SeriesMetadata/QualityReport/AnalysisResult）
+├── contracts.py            # 统一数据契约（单/多资产 Request、SeriesMetadata、QualityReport、AnalysisResult、MultiAssetResult）
 ├── services/               # M1+ 无 UI 依赖的统一业务分析服务层
-│   └── analysis_service.py # 解耦于 UI/CLI 的单资产分析服务
+│   ├── analysis_service.py     # 解耦于 UI/CLI 的单资产分析服务
+│   └── multi_asset_service.py  # 解耦于 UI/CLI 的多资产比较与组合研究服务
 ├── data_sources/           # 数据源适配器（含 crypto.py）、超时预算、代理策略与 Parquet 缓存
 ├── ohlcv.py                # 共用 OHLCV 清洗与质量诊断契约
 ├── feature_engineering.py  # 向量化技术特征与滚动统计
-├── analysis_metrics.py     # 单资产诊断指标
-├── quant_models.py         # 组合优化、GBM 与样本外回测
+├── analysis_metrics.py     # 单资产诊断、分布检验、相对基准与滚动统计
+├── quant_models.py         # 组合优化、Euler 风险贡献、SLSQP 前沿、GBM 与样本外回测
 ├── charts.py               # Plotly 交互图表
 ├── visualizer.py           # mplfinance 静态图表
 ├── pyproject.toml          # 安装配置、CLI 注册与 Ruff / Mypy 配置
@@ -255,8 +267,8 @@ Quantitative_Analysis/
 
 | 能力状态 | 具体内容 |
 | --- | --- |
-| **当前已实现（M0–M2）** | 13 类资产适配、别名归一化与跨平台线程/进程安全共享 Parquet 缓存；强类型 `AnalysisRequest` / `SeriesMetadata` / `QualityReport` / `AnalysisResult` 契约（[contracts.py](contracts.py)）与统一分析服务 [services/analysis_service.py](services/analysis_service.py)（`fetch_single_asset` / `analyze_single_asset`）；Agent CLI `quant fetch` / `quant analyze` 原子输出 `result.json` + `data.parquet` 与分级退出码；`yield_level` / `fx_rate` 语义拦截与 `return_convention` 对齐；Ledoit-Wolf + SLSQP 精确有效前沿与 Walk-Forward 样本外回测；Streamlit 三标签页看板与 `main.py` / `quantitative-analysis` CLI |
-| **规划中（M3–M5）** | 多资产比较与组合 CLI（`quant compare`、`quant portfolio`）；独立的 Markdown / HTML 自动报告与按需图表渲染器；Web UI 调用统一服务层的轻量化改造（对应 M3–M5 阶段） |
+| **当前已实现（M0–M3）** | 13 类资产适配、别名归一化与带覆盖回滚/锁保护的共享 Parquet 缓存；强类型契约 [contracts.py](contracts.py) 与无 UI 依赖服务 [services/analysis_service.py](services/analysis_service.py) / [services/multi_asset_service.py](services/multi_asset_service.py)；Agent CLI 完整提供 `quant fetch`、`quant analyze`、`quant compare`、`quant portfolio`（严格资产类型解析、多文件事务性落盘与陈旧受管产物清理）；跨市场日历对齐（`common_trading_dates`/`weekly_friday`/`mtm_outer`）与 FX 折算；高阶矩/JB 正态与 Memmel 夏普检验、相对基准、滚动统计、Euler 风险贡献、Ledoit-Wolf + SLSQP 精确有效前沿与 Dirichlet 随机点明确区分、严格无前视偏差 Train/Test 与 Walk-Forward 样本外回测及参数敏感性网格；Streamlit 三标签页看板与 `main.py` / `quantitative-analysis` CLI |
+| **规划中（M4–M5）** | 独立的 Markdown / HTML 自动报告与按需图表渲染器；Web UI 调用统一服务层的轻量化改造（对应 M4–M5 阶段） |
 
 详细设计原则、M0–M5 阶段验收标准与 V0.1–V1.0 迭代计划，请参阅 **[产品定位与开发路线图 (docs/ROADMAP.md)](docs/ROADMAP.md)**。
 

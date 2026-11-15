@@ -123,6 +123,14 @@ def normalize_symbol_alias(asset_type: str, symbol: object) -> str:
         ):
             return "10Y"
         return raw
+    if asset_key in {"ashare", "etf"}:
+        upper = raw.upper()
+        for prefix in ("SH", "SZ", "BJ"):
+            if upper.startswith(prefix) and len(upper) == 8 and upper[2:].isdigit():
+                return upper[2:]
+            if upper.endswith(f".{prefix}") and len(upper) == 9 and upper[:6].isdigit():
+                return upper[:6]
+        return upper
     if asset_key == "hk_stock":
         if raw.isdigit():
             return raw.zfill(5)
