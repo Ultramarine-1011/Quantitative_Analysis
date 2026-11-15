@@ -11,7 +11,7 @@ import pandas as pd
 
 from asset_catalog import ASSET_DEFAULT_CURRENCY
 from data_fetcher import load_fx_data
-from ohlcv import DateLike
+from ohlcv import DateLike, compute_ohlcv_quality
 
 SUPPORTED_BASE_CURRENCIES: tuple[str, ...] = ("CNY", "USD", "LOCAL")
 
@@ -199,37 +199,9 @@ def _default_usdt_usd_loader(
     start_date: DateLike, end_date: DateLike, proxy_url: str | None
 ) -> pd.DataFrame:
     """Attempt to fetch live USDT/USD spot daily OHLCV from a USD-quoted exchange via CCXT."""
-    import importlib
+    from data_sources.crypto import fetch_usdt_usd_ohlcv
 
-    try:
-        ccxt = importlib.import_module("ccxt")
-    except ImportError as exc:
-        raise ValueError("获取 USDT/USD 市场汇率需要 ccxt。") from exc
-
-    from asset_loader import (
-        _build_ccxt_proxy_config,
-        _fetch_crypto_ohlcv_rows,
-        _normalize_crypto_data,
-    )
-
-    proxies = _build_ccxt_proxy_config(proxy_url)
-    last_exc: Exception | None = None
-    for exchange_id in ("kraken", "coinbase", "bitfinex"):
-        exchange_cls = getattr(ccxt, exchange_id, None)
-        if exchange_cls is None:
-            continue
-        cfg: dict[str, Any] = {"timeout": 15000, "enableRateLimit": True}
-        if proxies is not None:
-            cfg["proxies"] = proxies
-        try:
-            ex = exchange_cls(cfg)
-            rows = _fetch_crypto_ohlcv_rows(ex, "USDT/USD", start_date, end_date)
-            if rows:
-                return _normalize_crypto_data(rows, start_date, end_date)
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            continue
-    raise ValueError(f"无法获取真实的 USDT/USD 市场汇率: {last_exc}")
+    return fetch_usdt_usd_ohlcv(start_date, end_date, proxy_url=proxy_url)
 
 
 @dataclass
@@ -530,11 +502,111 @@ def convert_prices_to_base_currency(
     )
 
 
+def convert_ohlcv_to_base_currency(
+    df: pd.DataFrame,
+    asset_key: str,
+    symbol: str,
+    target_currency: str,
+    *,
+    proxy_url: str | None = None,
+    allow_usdt_peg: bool = False,
+    fx_loader: Callable[[str, DateLike, DateLike], pd.DataFrame] | None = None,
+    usdt_usd_loader: Callable[[DateLike, DateLike, str | None], pd.DataFrame] | None = None,
+) -> pd.DataFrame:
+    """将单标的 OHLCV 价格列按对齐汇率同比例折算为目标基准货币（拒绝 yield_level 与 fx_rate）。"""
+    target_norm = normalize_currency_code(target_currency)
+    asset_norm = str(asset_key or "").strip().lower()
+    series_kind = str(df.attrs.get("series_kind", "price") or "price").strip().lower()
+    return_basis = str(df.attrs.get("return_basis", "") or "").strip().lower()
+    if target_norm == "LOCAL":
+        native_ccy = infer_asset_currency(asset_norm, symbol, df.attrs)
+        out = df.copy()
+        out.attrs = dict(df.attrs)
+        out.attrs["native_currency"] = native_ccy
+        out.attrs["currency"] = native_ccy
+        out.attrs["fx_converted"] = False
+        out.attrs["fx_pair"] = None
+        return out
+
+    if (
+        series_kind == "yield_level"
+        or return_basis == "yield_level"
+        or asset_norm == "bond_us_yield"
+    ):
+        raise ValueError("收益率水平序列（yield_level）不是货币计价资产价格，不支持基准货币换算。")
+    if series_kind == "fx_rate" or return_basis == "fx_rate" or asset_norm == "fx":
+        raise ValueError("即期汇率序列（fx_rate）已是货币相对比价，不支持再折算为基准货币。")
+
+    native_ccy = infer_asset_currency(asset_norm, symbol, df.attrs)
+    if target_norm == native_ccy:
+        out = df.copy()
+        out.attrs = dict(df.attrs)
+        out.attrs["native_currency"] = native_ccy
+        out.attrs["currency"] = native_ccy
+        out.attrs["fx_converted"] = False
+        out.attrs["fx_pair"] = None
+        return out
+
+    col_key = f"{asset_norm}:{symbol}"
+    conv = convert_prices_to_base_currency(
+        pd.DataFrame({col_key: df["Close"]}),
+        {col_key: native_ccy},
+        base_currency=target_norm,
+        fx_loader=fx_loader,
+        usdt_usd_loader=usdt_usd_loader,
+        proxy_url=proxy_url,
+        allow_usdt_usd_peg=allow_usdt_peg,
+    )
+    aligned_idx = conv.base_prices.index
+    local_close = conv.local_prices[col_key]
+    base_close = conv.base_prices[col_key]
+    fx_ratio = base_close / local_close
+
+    out = df.reindex(aligned_idx).copy()
+    for price_col in ("Open", "High", "Low", "Close"):
+        out[price_col] = pd.to_numeric(out[price_col], errors="coerce") * fx_ratio
+
+    out.attrs = dict(df.attrs)
+    out.attrs["native_currency"] = native_ccy
+    out.attrs["currency"] = conv.base_currency
+    out.attrs["fx_converted"] = True
+
+    pair_meta = (conv.metadata.get("fx_pairs") or {}).get(col_key) or {}
+    pairs_used = pair_meta.get("pairs_used") or ()
+    out.attrs["fx_pair"] = (
+        " * ".join(str(p) for p in pairs_used)
+        if pairs_used
+        else f"{native_ccy}/{conv.base_currency}"
+    )
+
+    merged_warnings: list[str] = []
+    for w in (*(out.attrs.get("fx_warnings") or ()), *conv.warnings):
+        text = str(w).strip()
+        if text and text not in merged_warnings:
+            merged_warnings.append(text)
+    if merged_warnings:
+        out.attrs["fx_warnings"] = merged_warnings
+
+    prev_quality = out.attrs.get("data_quality")
+    if len(out) != len(df):
+        prev_map = prev_quality if isinstance(prev_quality, Mapping) else {}
+        out.attrs["data_quality"] = compute_ohlcv_quality(
+            out,
+            missing_policy=str(prev_map.get("missing_policy", "drop") or "drop"),
+            dropped_invalid_rows=int(prev_map.get("dropped_invalid_rows", 0) or 0)
+            + max(0, len(df) - len(out)),
+            filled_price_rows=int(prev_map.get("filled_price_rows", 0) or 0),
+            missing_volume_rows=int(prev_map.get("missing_volume_rows", 0) or 0),
+        )
+    return out
+
+
 __all__ = [
     "GLOBAL_INDEX_CURRENCIES",
     "SUPPORTED_BASE_CURRENCIES",
     "CurrencyConversionResult",
     "align_fx_series_to_dates",
+    "convert_ohlcv_to_base_currency",
     "convert_prices_to_base_currency",
     "infer_asset_currency",
     "normalize_currency_code",

@@ -12,7 +12,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from .errors import DataFetchError, EmptySymbolDataError, NetworkFetchError, VendorUpstreamError
+from .errors import (
+    ChinaEquityPipelineError,
+    DataFetchError,
+    EmptySymbolDataError,
+    NetworkFetchError,
+    VendorUpstreamError,
+)
 
 # 全进程仅解析一次：首个 ``AKShareFetcher`` 构造时的参数优先，避免导入本模块即改写全局代理行为。
 _PROXY_POLICY_RESOLVED: bool = False
@@ -45,7 +51,10 @@ def apply_default_network_proxy_policy() -> None:
 
 
 # 直连东方财富 / 显式关闭 requests 会话的代理继承。
-_REQUESTS_NO_PROXY: dict[str, None] = {"http": None, "https": None}
+REQUESTS_NO_PROXY: dict[str, None] = {"http": None, "https": None}
+_REQUESTS_NO_PROXY = REQUESTS_NO_PROXY
+
+configure_windows_proxy_behavior = _configure_windows_proxy_behavior
 
 _PROXY_LOCK = threading.RLock()
 _PROXY_CONTEXT = threading.local()
@@ -86,7 +95,11 @@ class RequestBudget:
         return min(float(self.per_request_timeout_seconds), rem)
 
 
-def classify_network_exception(exc: BaseException) -> str:
+def classify_network_exception(
+    exc: BaseException,
+    *,
+    _seen: set[int] | None = None,
+) -> str:
     """Classify a fetch failure into 'empty', 'transport', 'upstream', or 'caller'."""
     if isinstance(exc, EmptySymbolDataError):
         return "empty"
@@ -94,10 +107,26 @@ def classify_network_exception(exc: BaseException) -> str:
         return "transport"
     if isinstance(exc, VendorUpstreamError):
         return "upstream"
+    if isinstance(exc, ChinaEquityPipelineError):
+        return "transport" if exc.network_related else "upstream"
+    if isinstance(exc, DataFetchError):
+        seen = _seen if _seen is not None else set()
+        seen.add(id(exc))
+        cause = exc.__cause__ or exc.__context__
+        if cause is not None and id(cause) not in seen:
+            return classify_network_exception(cause, _seen=seen)
+        return "upstream"
     if isinstance(exc, (ValueError, TypeError, ImportError)):
         return "caller"
+    if isinstance(exc, (TimeoutError, ConnectionError, EOFError)):
+        return "transport"
     mod = (type(exc).__module__ or "").lower()
     name = type(exc).__name__.lower()
+    if mod.startswith("urllib.error"):
+        if name == "httperror":
+            return "upstream"
+        if name == "urlerror":
+            return "transport"
     if any(
         token in name
         for token in (
@@ -114,6 +143,11 @@ def classify_network_exception(exc: BaseException) -> str:
             "requestexception",
             "networkerror",
         )
+    ):
+        return "transport"
+    if type(exc) is OSError and any(
+        tok in str(exc).lower()
+        for tok in ("network", "socket", "connection", "offline", "timed out", "proxy")
     ):
         return "transport"
     if any(token in name for token in ("httpstatuserror", "jsondecodeerror")):
@@ -223,10 +257,19 @@ def _call_akshare(
     raise DataFetchError("%s 失败: %r" % (op_label, last_exc)) from last_exc
 
 
+without_http_proxy_env = _without_http_proxy_env
+import_akshare = _import_akshare
+call_akshare = _call_akshare
+
 __all__ = [
+    "REQUESTS_NO_PROXY",
     "RequestBudget",
     "apply_default_network_proxy_policy",
+    "call_akshare",
     "classify_network_exception",
+    "configure_windows_proxy_behavior",
+    "import_akshare",
+    "without_http_proxy_env",
     "_without_http_proxy_env",
     "_import_akshare",
     "_call_akshare",

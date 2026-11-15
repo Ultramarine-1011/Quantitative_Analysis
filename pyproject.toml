@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quantitative-analysis"
-version = "0.1.0"
-description = "Multi-asset OHLCV diagnostics with Streamlit and a Python CLI"
+version = "1.0.0"
+description = "Multi-asset OHLCV diagnostics, reports/charts, Agent CLI, and Streamlit UI"
 readme = "README.md"
 requires-python = ">=3.11"
 dynamic = ["dependencies"]
@@ -14,17 +14,19 @@ dynamic = ["dependencies"]
 dev = ["pytest>=7.4", "ruff>=0.6"]
 
 [project.scripts]
+quant = "quant_cli:main"
 quantitative-analysis = "main:main"
 
 [tool.setuptools]
 py-modules = [
-    "app", "main", "asset_resolver", "china_equity_entry", "data_fetcher",
+    "app", "main", "quant_cli", "asset_resolver", "china_equity_entry", "data_fetcher",
     "feature_engineering", "visualizer", "quant_models", "ohlcv",
     "analysis_metrics", "asset_catalog", "asset_loader", "charts", "currency",
+    "contracts",
 ]
 
 [tool.setuptools.packages.find]
-include = ["data_sources*"]
+include = ["data_sources*", "services*", "reporting*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

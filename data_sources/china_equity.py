@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
 import pandas as pd
 
+from asset_catalog import normalize_symbol_alias
 from ohlcv import A_SHARE_COLUMN_MAPPING, DateLike, filter_by_date_range
 
 from .base import BaseDataFetcher
-from .eastmoney import EastMoneyDailyKlineClient, _eastmoney_sec_market_id
+from .eastmoney import EastMoneyDailyKlineClient, eastmoney_sec_market_id
 from .errors import (
     ChinaEquityPipelineError,
     EmptySymbolDataError,
@@ -21,10 +23,15 @@ from .errors import (
 )
 from .network import (
     RequestBudget,
-    _configure_windows_proxy_behavior,
-    _without_http_proxy_env,
     classify_network_exception,
+    configure_windows_proxy_behavior,
+    without_http_proxy_env,
 )
+
+_LOGGER = logging.getLogger(__name__)
+_eastmoney_sec_market_id = eastmoney_sec_market_id
+_configure_windows_proxy_behavior = configure_windows_proxy_behavior
+_without_http_proxy_env = without_http_proxy_env
 
 
 class AKShareChinaPrimarySource:
@@ -111,12 +118,14 @@ class AKShareFetcher(BaseDataFetcher):
         adjust: str,
     ) -> pd.DataFrame:
         """新浪 / 腾讯日线（非东方财富域名，作为境内权益首选数据源）。"""
+        self._last_alt_warnings: list[str] = []
         code = str(sym).strip()
         start_s = start_ts.strftime("%Y%m%d")
         end_s = end_ts.strftime("%Y%m%d")
         try:
-            prefix = "sh" if _eastmoney_sec_market_id(code) == 1 else "sz"
-        except ValueError:
+            prefix = "sh" if eastmoney_sec_market_id(code) == 1 else "sz"
+        except ValueError as exc:
+            self._last_alt_warnings.append(f"china_equity market resolution ({code}): {exc!r}")
             return pd.DataFrame()
         qq = "%s%s" % (prefix, code)
         adj = adjust
@@ -152,8 +161,10 @@ class AKShareFetcher(BaseDataFetcher):
                         if not conv.empty:
                             conv.attrs["data_source"] = "akshare.fund_etf_hist_sina"
                             return conv
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    msg = f"akshare.fund_etf_hist_sina({qq}) failed: {exc!r}"
+                    _LOGGER.warning("%s", msg)
+                    self._last_alt_warnings.append(msg)
             mod_tx = importlib.import_module("akshare.stock_feature.stock_hist_tx")
             # 腾讯源覆盖股票/部分 ETF，作为进入 AKShare 东财主源前的轻量备用路径。
             raw_tx = mod_tx.stock_zh_a_hist_tx(
@@ -166,7 +177,10 @@ class AKShareFetcher(BaseDataFetcher):
             if not conv_tx.empty:
                 conv_tx.attrs["data_source"] = "akshare.stock_zh_a_hist_tx"
             return conv_tx
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            msg = f"akshare.stock_zh_a_hist_tx({qq}) failed: {exc!r}"
+            _LOGGER.warning("%s", msg)
+            self._last_alt_warnings.append(msg)
             return pd.DataFrame()
 
     def _fetch_via_primary_then_eastmoney(
@@ -184,11 +198,15 @@ class AKShareFetcher(BaseDataFetcher):
     ) -> pd.DataFrame:
         def _pipeline(budget: RequestBudget) -> pd.DataFrame:
             # 1) 新浪 / 腾讯（不依赖东方财富域名）
+            self._last_alt_warnings = []
             alt = self._fetch_sina_tencent_china_equity_raw(
                 equity_route, sym, start_ts, end_ts, adjust
             )
+            alt_warnings = list(getattr(self, "_last_alt_warnings", ()))
             if not alt.empty:
                 alt.attrs.setdefault("data_source", "sina_tencent_fallback")
+                if alt_warnings:
+                    alt.attrs["fallback_warnings"] = alt_warnings
                 return alt
 
             # 2) AKShare 主路径。若上游返回空表，后面仍会尝试东财直连。
@@ -198,6 +216,8 @@ class AKShareFetcher(BaseDataFetcher):
                 via_ak = fetch_primary()
                 if not via_ak.empty:
                     via_ak.attrs.setdefault("data_source", primary_source_name)
+                    if alt_warnings:
+                        via_ak.attrs["fallback_warnings"] = alt_warnings
                     return via_ak
                 primary_empty = True
                 first_error = ValueError(empty_primary_message)
@@ -219,6 +239,8 @@ class AKShareFetcher(BaseDataFetcher):
                 )
                 if not direct.empty:
                     direct.attrs.setdefault("data_source", "eastmoney_direct")
+                    if alt_warnings:
+                        direct.attrs["fallback_warnings"] = alt_warnings
                     return direct
                 if primary_empty:
                     raise EmptySymbolDataError(
@@ -274,8 +296,8 @@ class AKShareFetcher(BaseDataFetcher):
         adjust = kwargs.get("adjust", "hfq")
         if adjust not in {"", "qfq", "hfq"}:
             raise ValueError("adjust must be one of {'qfq', 'hfq', ''}.")
-        sym = str(symbol).strip()
         is_etf = route == "etf"
+        sym = normalize_symbol_alias("etf" if is_etf else "ashare", symbol)
         primary = self._primary.fetch_etf_hist_em if is_etf else self._primary.fetch_stock_hist
         primary_name = "akshare.fund_etf_hist_em" if is_etf else "akshare.stock_zh_a_hist"
         label = "ETF" if is_etf else "A-share"

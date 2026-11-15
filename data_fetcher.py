@@ -7,7 +7,12 @@ from typing import Any
 
 import pandas as pd
 
-from asset_catalog import resolve_adjustment
+from asset_catalog import (
+    FX_PAIR_ALIASES,
+    US_TREASURY_YIELD_10Y_CN_COL,
+    resolve_adjustment,
+    resolve_return_basis,
+)
 from data_sources.base import BaseDataFetcher, YFinanceFetcher
 from data_sources.china_equity import AKShareChinaPrimarySource, AKShareFetcher
 from data_sources.eastmoney import EastMoneyDailyKlineClient
@@ -18,13 +23,21 @@ from data_sources.errors import (
     NetworkFetchError,
     VendorUpstreamError,
 )
-from data_sources.forex import _fetch_forex_hist_em_robust, _forex_kline_json_to_dataframe
+from data_sources.forex import fetch_forex_hist_em_robust, forex_kline_json_to_dataframe
 from data_sources.funds import (
-    _fund_build_pseudo_ohlcv_raw,
-    _fund_raw_to_normalized_ohlcv,
+    fund_build_pseudo_ohlcv_raw,
+    fund_raw_to_normalized_ohlcv,
     get_fund_data,
 )
-from data_sources.network import _call_akshare, _import_akshare, apply_default_network_proxy_policy
+from data_sources.network import apply_default_network_proxy_policy, call_akshare, import_akshare
+
+# 兼容已有单测与外部调用对私有符号的 monkeypatch（新代码请使用公开符号）。
+_fetch_forex_hist_em_robust = fetch_forex_hist_em_robust
+_forex_kline_json_to_dataframe = forex_kline_json_to_dataframe
+_fund_build_pseudo_ohlcv_raw = fund_build_pseudo_ohlcv_raw
+_fund_raw_to_normalized_ohlcv = fund_raw_to_normalized_ohlcv
+_call_akshare = call_akshare
+_import_akshare = import_akshare
 from ohlcv import (
     A_SHARE_COLUMN_MAPPING,
     REQUIRED_OHLCV_COLUMNS,
@@ -78,17 +91,6 @@ GLOBAL_INDEX_EM_ALIASES: dict[str, str] = {
     "GDAXI": "德国DAX30",
     "FCHI": "法国CAC40",
     "SX5E": "欧洲斯托克50",
-}
-
-# 美债收益率表默认列（bond_zh_us_rate）
-US_TREASURY_YIELD_10Y_CN_COL = "美国国债收益率10年"
-
-FX_PAIR_ALIASES: dict[str, str] = {
-    "USD/CNY": "USDCNH",
-    "USD/CNH": "USDCNH",
-    "USDCNY": "USDCNH",
-    "EUR/USD": "EURUSD",
-    "GBP/USD": "GBPUSD",
 }
 
 
@@ -147,6 +149,7 @@ def load_futures_foreign_ohlcv(
     out.attrs["asset_type"] = str(asset_type)
     out.attrs["symbol"] = display
     out.attrs["series_kind"] = str(series_kind)
+    out.attrs["return_basis"] = resolve_return_basis(str(asset_type), attrs=out.attrs)
     out.attrs["data_source"] = "akshare.futures_foreign_hist"
     if unit_caption:
         out.attrs["unit_caption"] = str(unit_caption)
@@ -249,6 +252,8 @@ def load_global_market_data(
         out.attrs["return_basis"] = (
             "unadjusted_price" if selected_adjust == "" else "adjusted_price"
         )
+    else:
+        out.attrs["return_basis"] = resolve_return_basis(atype, attrs=out.attrs)
     return out
 
 
@@ -280,6 +285,7 @@ def load_bond_data(
         out.attrs["asset_type"] = "bond_cn"
         out.attrs["symbol"] = code
         out.attrs["series_kind"] = "price"
+        out.attrs["return_basis"] = "exchange_bond_price"
         out.attrs["unit_caption"] = "人民币计价 · 国债现货/债券 K 线（列含义以数据源为准）"
         out.attrs["data_source"] = "akshare.bond_zh_hs_daily"
         return out
@@ -314,6 +320,7 @@ def load_bond_data(
         out.attrs["asset_type"] = "bond_us_yield"
         out.attrs["symbol"] = col_name
         out.attrs["series_kind"] = "yield_level"
+        out.attrs["return_basis"] = "yield_level"
         out.attrs["unit_caption"] = (
             "收益率水平 %% · %s（非持有期回报，指标为水平序列统计）" % col_name
         )
@@ -349,6 +356,7 @@ def load_reit_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.
     out.attrs["asset_type"] = "creit"
     out.attrs["symbol"] = code
     out.attrs["series_kind"] = "price"
+    out.attrs["return_basis"] = resolve_return_basis("creit", attrs=out.attrs)
     out.attrs["unit_caption"] = "CNY 计价 · 基础设施 REITs"
     out.attrs["data_source"] = "akshare.reits_hist_em"
     return out
@@ -369,6 +377,7 @@ def load_fx_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.Da
     out.attrs["asset_type"] = "fx"
     out.attrs["symbol"] = pair
     out.attrs["series_kind"] = "price"
+    out.attrs["return_basis"] = "fx_rate"
     out.attrs["unit_caption"] = "汇率 · %s（间接标价含义以数据源为准）" % pair
     out.attrs["data_source"] = fx_source
     return out

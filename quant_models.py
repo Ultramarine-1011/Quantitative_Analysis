@@ -11,7 +11,7 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from numbers import Real
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -335,12 +335,19 @@ def compute_backtest_metrics(
     *,
     periods_per_year: float = 252.0,
     risk_free_rate: float = RISK_FREE_RATE,
+    return_convention: Literal["simple", "log"] = "simple",
 ) -> dict[str, float]:
     """Compute CAGR, total return, annualized volatility, max drawdown, Sharpe, Sortino, and Calmar."""
+    conv = str(return_convention or "simple").strip().lower()
+    if conv not in ("simple", "log"):
+        raise ValueError(
+            f"Unsupported return_convention: {return_convention!r}; choose 'simple' or 'log'."
+        )
     s = pd.to_numeric(nav_series, errors="coerce").dropna().astype(float)
     if len(s) < 2 or s.iloc[0] <= 0.0 or s.iloc[-1] <= 0.0:
         return {
             "total_return": float("nan"),
+            "cumulative_return": float("nan"),
             "cagr": float("nan"),
             "annualized_volatility": float("nan"),
             "max_drawdown": float("nan"),
@@ -364,11 +371,18 @@ def compute_backtest_metrics(
     mdd = float((1.0 - s / running_peak).max())
     simple_r = s.pct_change().dropna().to_numpy(dtype=float)
     ppy = float(periods_per_year)
-    if simple_r.size >= 2:
-        std_r = float(np.std(simple_r, ddof=1))
-        ann_vol = std_r * float(np.sqrt(ppy))
+    if conv == "log":
+        ratio = (s / s.shift(1)).dropna().to_numpy(dtype=float)
+        period_r = np.log(ratio[ratio > 0.0]) if ratio.size else ratio
+        rf_per_period = float(np.log1p(risk_free_rate)) / ppy
+    else:
+        period_r = simple_r
         rf_per_period = float(risk_free_rate) / ppy
-        excess = simple_r - rf_per_period
+
+    if period_r.size >= 2:
+        std_r = float(np.std(period_r, ddof=1))
+        ann_vol = std_r * float(np.sqrt(ppy))
+        excess = period_r - rf_per_period
         sharpe = (float(np.mean(excess)) * ppy / ann_vol) if ann_vol > 0.0 else float("nan")
         down = np.minimum(excess, 0.0)
         down_dev = float(np.sqrt(np.mean(down * down))) * float(np.sqrt(ppy))
@@ -381,6 +395,7 @@ def compute_backtest_metrics(
     calmar = float(cagr / mdd) if (np.isfinite(cagr) and mdd > 0.0) else float("nan")
     return {
         "total_return": total_return,
+        "cumulative_return": total_return,
         "cagr": cagr,
         "annualized_volatility": ann_vol,
         "max_drawdown": mdd,
@@ -500,13 +515,20 @@ def backtest_portfolio(
         "rebalance_freq": rebalance_freq,
         "transaction_cost_bps": float(transaction_cost_bps),
         "periods_per_year": float(periods_per_year),
+        "return_convention": "simple",
     }
     return out
 
 
 CovMethod = Literal["sample", "ledoit_wolf", "diagonal"]
 WindowMode = Literal["rolling", "expanding"]
-OptimizerObjective = Literal["max_sharpe", "min_variance"]
+OptimizerObjective = Literal[
+    "max_sharpe",
+    "min_variance",
+    "risk_parity",
+    "inverse_volatility",
+    "equal_weight",
+]
 
 
 @dataclass
@@ -1105,6 +1127,299 @@ def solve_tangency_portfolio(
     )
 
 
+def compute_risk_contributions(
+    weights: np.ndarray | Sequence[float],
+    cov_matrix: np.ndarray,
+    asset_names: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """计算 Euler 风险分解：边际风险贡献 (MCR)、绝对风险贡献 (RC)、百分比风险贡献 (PRC) 与分散度指标。"""
+    w = np.asarray(weights, dtype=float).ravel()
+    cov = np.asarray(cov_matrix, dtype=float)
+    n = w.size
+    if n == 0:
+        raise ValueError("weights must be non-empty.")
+    if cov.shape != (n, n):
+        raise ValueError(f"cov_matrix shape {cov.shape} must match weights length ({n}, {n}).")
+    if not np.isfinite(w).all() or not np.isfinite(cov).all():
+        raise ValueError("weights and cov_matrix must be finite.")
+
+    sym_cov = 0.5 * (cov + cov.T)
+    names = (
+        [str(x) for x in asset_names]
+        if asset_names is not None
+        else [f"asset_{i}" for i in range(n)]
+    )
+    if len(names) != n:
+        raise ValueError("asset_names length must match weights length.")
+
+    port_var = max(float(w @ sym_cov @ w), 0.0)
+    port_vol = math.sqrt(port_var)
+    asset_vols = np.sqrt(np.maximum(np.diag(sym_cov), 0.0))
+    weighted_asset_vol = float(np.sum(np.abs(w) * asset_vols))
+
+    if port_vol <= 1e-15:
+        mcr = np.full(n, float("nan"), dtype=float)
+        rc = np.zeros(n, dtype=float)
+        prc = np.full(n, float("nan"), dtype=float)
+        div_ratio = float("nan")
+        eff_n_risk = float("nan")
+    else:
+        marginal = sym_cov @ w
+        mcr = marginal / port_vol
+        rc = w * mcr
+        prc = rc / port_vol
+        div_ratio = float(weighted_asset_vol / port_vol)
+        prc_sq_sum = float(np.sum(prc * prc))
+        eff_n_risk = float(1.0 / prc_sq_sum) if prc_sq_sum > 1e-18 else float("nan")
+
+    abs_w_sum = float(np.sum(np.abs(w)))
+    if abs_w_sum > 1e-18:
+        norm_abs_w = np.abs(w) / abs_w_sum
+        eff_n_weights = float(1.0 / float(np.sum(norm_abs_w * norm_abs_w)))
+    else:
+        eff_n_weights = float("nan")
+
+    per_asset: dict[str, dict[str, float]] = {}
+    for idx, name in enumerate(names):
+        per_asset[name] = {
+            "weight": float(w[idx]),
+            "asset_volatility": float(asset_vols[idx]),
+            "marginal_risk_contribution": float(mcr[idx]),
+            "risk_contribution": float(rc[idx]),
+            "pct_risk_contribution": float(prc[idx]),
+        }
+
+    max_prc_deviation = (
+        float(np.max(np.abs(prc - (1.0 / float(n))))) if np.isfinite(prc).all() else float("nan")
+    )
+    return {
+        "asset_names": names,
+        "portfolio_volatility": float(port_vol),
+        "weighted_asset_volatility": float(weighted_asset_vol),
+        "diversification_ratio": float(div_ratio),
+        "effective_n_weights": float(eff_n_weights),
+        "effective_n_risk": float(eff_n_risk),
+        "max_equal_risk_deviation": float(max_prc_deviation),
+        "weights": {names[i]: float(w[i]) for i in range(n)},
+        "marginal_risk_contribution": {names[i]: float(mcr[i]) for i in range(n)},
+        "risk_contribution": {names[i]: float(rc[i]) for i in range(n)},
+        "pct_risk_contribution": {names[i]: float(prc[i]) for i in range(n)},
+        "per_asset": per_asset,
+    }
+
+
+def _solve_equal_weight_core(
+    mean_ret: np.ndarray,
+    cov_mat: np.ndarray,
+    risk_free_rate: float,
+    lower: float,
+    upper: float,
+) -> PortfolioSolution:
+    n = len(mean_ret)
+    weights = _project_capped_simplex(np.full(n, 1.0 / float(n), dtype=float), lower, upper)
+    ret, vol, sharpe = _portfolio_stats(weights, mean_ret, cov_mat, risk_free_rate)
+    return PortfolioSolution(
+        weights=weights,
+        expected_return=ret,
+        volatility=vol,
+        sharpe=sharpe,
+        converged=True,
+        solver_message="equal_weight_analytical",
+    )
+
+
+def _solve_inverse_volatility_core(
+    mean_ret: np.ndarray,
+    cov_mat: np.ndarray,
+    risk_free_rate: float,
+    lower: float,
+    upper: float,
+) -> PortfolioSolution:
+    diag_vol = np.sqrt(np.maximum(np.diag(cov_mat), 0.0))
+    if np.any(diag_vol <= 1e-15) or not np.isfinite(diag_vol).all():
+        # Clamp tiny variances smoothly while preserving finite ratios.
+        safe_vol = np.where(diag_vol > 1e-15, diag_vol, 1e-15)
+        raw = 1.0 / safe_vol
+    else:
+        raw = 1.0 / diag_vol
+    raw = raw / float(np.sum(raw))
+    weights = _project_capped_simplex(raw, lower, upper)
+    ret, vol, sharpe = _portfolio_stats(weights, mean_ret, cov_mat, risk_free_rate)
+    return PortfolioSolution(
+        weights=weights,
+        expected_return=ret,
+        volatility=vol,
+        sharpe=sharpe,
+        converged=True,
+        solver_message="inverse_volatility_analytical",
+    )
+
+
+def _solve_risk_parity_core(
+    mean_ret: np.ndarray,
+    cov_mat: np.ndarray,
+    risk_free_rate: float,
+    lower: float,
+    upper: float,
+) -> PortfolioSolution:
+    scipy_optimize = importlib.import_module("scipy.optimize")
+    n = len(mean_ret)
+    sym_cov = 0.5 * (cov_mat + cov_mat.T)
+    target_prc = np.full(n, 1.0 / float(n), dtype=float)
+    inv_vol = _solve_inverse_volatility_core(mean_ret, sym_cov, risk_free_rate, lower, upper)
+    eq_w = _solve_equal_weight_core(mean_ret, sym_cov, risk_free_rate, lower, upper)
+    gmv_w = _solve_min_variance_core(mean_ret, sym_cov, risk_free_rate, lower, upper)
+
+    if abs(upper - lower) <= 1e-12:
+        return eq_w
+
+    def objective(w: np.ndarray) -> float:
+        port_var = float(w @ sym_cov @ w)
+        if not np.isfinite(port_var) or port_var <= 1e-18:
+            return 1e6
+        rc_ratio = (w * (sym_cov @ w)) / port_var
+        diff = rc_ratio - target_prc
+        # Scale up O(1e4) so SLSQP ftol stops only after PRC converges tightly.
+        return 1e4 * float(np.dot(diff, diff))
+
+    starts = _deduplicate_starts(
+        [inv_vol.weights, eq_w.weights, gmv_w.weights],
+        lower,
+        upper,
+    )
+    best_w: np.ndarray | None = None
+    best_obj = float("inf")
+    best_msg = "risk_parity_fallback"
+    converged = False
+
+    bounds = [(lower, upper)] * n
+    constraints = ({"type": "eq", "fun": lambda w: float(np.sum(w) - 1.0)},)
+
+    for s in starts:
+        res = _slsqp_minimize(
+            scipy_optimize,
+            objective,
+            s,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"ftol": 1e-12, "maxiter": 600, "disp": False},
+        )
+        cand = np.asarray(res.x, dtype=float)  # type: ignore[attr-defined]
+        if _is_feasible_solution(cand, lower, upper):
+            cand = _project_capped_simplex(cand, lower, upper)
+            val = objective(cand)
+            if np.isfinite(val) and (best_w is None or val < best_obj):
+                best_w = cand
+                best_obj = val
+                best_msg = str(getattr(res, "message", "slsqp_ok"))
+                converged = converged or bool(getattr(res, "success", False))
+
+    for fallback in (inv_vol.weights, eq_w.weights):
+        val = objective(fallback)
+        if np.isfinite(val) and (best_w is None or val < best_obj):
+            best_w = fallback.copy()
+            best_obj = val
+
+    assert best_w is not None
+    ret, vol, sharpe = _portfolio_stats(best_w, mean_ret, sym_cov, risk_free_rate)
+    return PortfolioSolution(
+        weights=best_w,
+        expected_return=ret,
+        volatility=vol,
+        sharpe=sharpe,
+        converged=bool(converged),
+        solver_message=best_msg,
+    )
+
+
+def solve_equal_weight_portfolio(
+    returns_df: pd.DataFrame,
+    *,
+    cov_method: CovMethod = "ledoit_wolf",
+    risk_free_rate: float = RISK_FREE_RATE,
+    trading_days: int = 252,
+    min_history: int = 30,
+    min_weight: float = 0.0,
+    max_weight: float = 1.0,
+) -> PortfolioSolution:
+    """求解等权（1/N）基准组合及其预期收益、波动率与 Sharpe。"""
+    if not np.isfinite(risk_free_rate):
+        raise ValueError("risk_free_rate must be finite.")
+    est = estimate_covariance_and_mean(
+        returns_df,
+        cov_method=cov_method,
+        trading_days=trading_days,
+        min_history=min_history,
+    )
+    w_min, w_max = _validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
+    return _solve_equal_weight_core(
+        est.mean_returns,
+        est.cov_matrix,
+        float(risk_free_rate),
+        w_min,
+        w_max,
+    )
+
+
+def solve_inverse_volatility_portfolio(
+    returns_df: pd.DataFrame,
+    *,
+    cov_method: CovMethod = "ledoit_wolf",
+    risk_free_rate: float = RISK_FREE_RATE,
+    trading_days: int = 252,
+    min_history: int = 30,
+    min_weight: float = 0.0,
+    max_weight: float = 1.0,
+) -> PortfolioSolution:
+    """求解按资产年化波动率倒数加权（并投影到上下界单纯形）的组合。"""
+    if not np.isfinite(risk_free_rate):
+        raise ValueError("risk_free_rate must be finite.")
+    est = estimate_covariance_and_mean(
+        returns_df,
+        cov_method=cov_method,
+        trading_days=trading_days,
+        min_history=min_history,
+    )
+    w_min, w_max = _validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
+    return _solve_inverse_volatility_core(
+        est.mean_returns,
+        est.cov_matrix,
+        float(risk_free_rate),
+        w_min,
+        w_max,
+    )
+
+
+def solve_risk_parity_portfolio(
+    returns_df: pd.DataFrame,
+    *,
+    cov_method: CovMethod = "ledoit_wolf",
+    risk_free_rate: float = RISK_FREE_RATE,
+    trading_days: int = 252,
+    min_history: int = 30,
+    min_weight: float = 0.0,
+    max_weight: float = 1.0,
+) -> PortfolioSolution:
+    """求解约束等风险贡献（ERC / Risk Parity）组合。"""
+    if not np.isfinite(risk_free_rate):
+        raise ValueError("risk_free_rate must be finite.")
+    est = estimate_covariance_and_mean(
+        returns_df,
+        cov_method=cov_method,
+        trading_days=trading_days,
+        min_history=min_history,
+    )
+    w_min, w_max = _validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
+    return _solve_risk_parity_core(
+        est.mean_returns,
+        est.cov_matrix,
+        float(risk_free_rate),
+        w_min,
+        w_max,
+    )
+
+
 def _sample_constrained_dirichlet(
     rng: np.random.Generator,
     num_portfolios: int,
@@ -1269,7 +1584,13 @@ def _optimize_weights_for_window(
     max_weight: float,
     trading_days: int,
 ) -> PortfolioSolution:
-    if objective not in ("max_sharpe", "min_variance"):
+    if objective not in (
+        "max_sharpe",
+        "min_variance",
+        "risk_parity",
+        "inverse_volatility",
+        "equal_weight",
+    ):
         raise ValueError(f"Unsupported objective: {objective!r}")
     est = _estimate_covariance_from_array(
         window_df.to_numpy(dtype=float, copy=False),
@@ -1278,6 +1599,30 @@ def _optimize_weights_for_window(
         trading_days=trading_days,
     )
     w_min, w_max = _validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
+    if objective == "equal_weight":
+        return _solve_equal_weight_core(
+            est.mean_returns,
+            est.cov_matrix,
+            risk_free_rate,
+            w_min,
+            w_max,
+        )
+    if objective == "inverse_volatility":
+        return _solve_inverse_volatility_core(
+            est.mean_returns,
+            est.cov_matrix,
+            risk_free_rate,
+            w_min,
+            w_max,
+        )
+    if objective == "risk_parity":
+        return _solve_risk_parity_core(
+            est.mean_returns,
+            est.cov_matrix,
+            risk_free_rate,
+            w_min,
+            w_max,
+        )
     gmv = _solve_min_variance_core(
         est.mean_returns,
         est.cov_matrix,
@@ -1606,6 +1951,7 @@ def run_walk_forward_backtest(
         "objective": objective,
         "transaction_cost_bps": float(transaction_cost_bps),
         "periods_per_year": float(periods_per_year),
+        "return_convention": "simple",
         "in_sample_weights": in_sample_sol.weights.tolist(),
     }
     nav_df.attrs["performance"] = perf

@@ -2,24 +2,26 @@
 
 from __future__ import annotations
 
-import importlib
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal
-from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import pandas as pd
 
 from asset_catalog import (
     ASSET_RETURN_BASIS,
     ASSET_RETURN_BASIS_NOTES,
+    GOLD_SYMBOL_ALIASES,
     SUPPORTED_ADJUSTMENTS,
     SUPPORTED_ASSET_TYPES,
+    normalize_symbol_alias,
     resolve_adjustment,
+    resolve_return_basis,
 )
 from asset_resolver import load_china_equity_ohlcv
-from currency import convert_prices_to_base_currency, infer_asset_currency
+from currency import convert_prices_to_base_currency, infer_asset_currency, normalize_currency_code
 from data_fetcher import (
     US_TREASURY_YIELD_10Y_CN_COL,
     get_fund_data,
@@ -32,45 +34,25 @@ from data_fetcher import (
     load_reit_data,
 )
 from data_sources.cache import load_cached_ohlcv, save_cached_ohlcv
+from data_sources.crypto import (
+    build_ccxt_proxy_config,
+    fetch_crypto_data,
+    fetch_crypto_ohlcv_rows,
+    normalize_crypto_data,
+    normalize_proxy_url,
+    redact_proxy_url,
+)
 from ohlcv import (
-    filter_by_date_range as _filter_by_date_range,
-    normalize_ohlcv as _normalize_ohlcv,
     validate_analysis_date_range as _validate_date_range,
 )
 
-GOLD_SYMBOL_ALIASES = {"GC": "GC", "AU9999": "GC"}
-
-
-def _normalize_proxy_url(proxy_url: str | None) -> str | None:
-    """将用户输入的代理地址规整为带协议前缀的 URL。"""
-    if proxy_url is None:
-        return None
-
-    normalized = str(proxy_url).strip()
-    if not normalized:
-        return None
-
-    if "://" not in normalized:
-        normalized = "http://%s" % normalized
-
-    parsed = urlparse(normalized)
-    if not parsed.scheme or not parsed.netloc:
-        raise ValueError("proxy_url 格式无效，请使用 `http://127.0.0.1:端口`。")
-    return normalized
-
-
-def _redact_proxy_url(proxy_url: str) -> str:
-    """Mask embedded credentials in proxy URLs before attaching metadata."""
-    parsed = urlsplit(proxy_url)
-    if parsed.username is None and parsed.password is None:
-        return proxy_url
-    host = parsed.hostname or ""
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    port_part = f":{parsed.port}" if parsed.port is not None else ""
-    return urlunsplit(
-        (parsed.scheme, f"***:***@{host}{port_part}", parsed.path, parsed.query, parsed.fragment)
-    )
+# 兼容已有单测与调用方直接访问原私有函数名。
+_build_ccxt_proxy_config = build_ccxt_proxy_config
+_fetch_crypto_data = fetch_crypto_data
+_fetch_crypto_ohlcv_rows = fetch_crypto_ohlcv_rows
+_normalize_crypto_data = normalize_crypto_data
+_normalize_proxy_url = normalize_proxy_url
+_redact_proxy_url = redact_proxy_url
 
 
 def _resolve_gold_symbol(symbol: str) -> tuple[str, str]:
@@ -128,130 +110,6 @@ def _fetch_gold_data(symbol: str, start_date: object, end_date: object) -> pd.Da
     return filtered
 
 
-def _build_ccxt_proxy_config(proxy_url: str | None) -> dict[str, str] | None:
-    """将单个代理地址扩展为 CCXT 期望的代理配置。"""
-    normalized_proxy = _normalize_proxy_url(proxy_url)
-    if normalized_proxy is None:
-        return None
-    return {
-        "http": normalized_proxy,
-        "https": normalized_proxy,
-    }
-
-
-def _fetch_crypto_ohlcv_rows(
-    exchange: Any,
-    symbol: str,
-    start_date: object,
-    end_date: object,
-    timeframe: str = "1d",
-    batch_limit: int = 1000,
-) -> list[list[Any]]:
-    """按日线分页拉取加密货币 K 线。"""
-    start_ts, end_ts = _validate_date_range(start_date, end_date)
-    if timeframe != "1d":
-        raise ValueError("Only the daily 1d timeframe is supported.")
-    if isinstance(batch_limit, bool) or not isinstance(batch_limit, int) or batch_limit < 1:
-        raise ValueError("batch_limit must be a positive integer.")
-    timeframe_ms = 24 * 60 * 60 * 1000
-    end_ms = int((end_ts + pd.Timedelta(days=1)).tz_localize("UTC").timestamp() * 1000)
-    since_ms = int(start_ts.tz_localize("UTC").timestamp() * 1000)
-    rows: list[list[Any]] = []
-
-    # CCXT 的日线接口通常需要通过 since + limit 分页，避免长区间直接被截断。
-    while since_ms < end_ms:
-        batch = exchange.fetch_ohlcv(
-            symbol,
-            timeframe=timeframe,
-            since=since_ms,
-            limit=batch_limit,
-        )
-        if not batch:
-            break
-
-        rows.extend(batch)
-        last_ts = int(batch[-1][0])
-        # 下一页从最后一根 K 线之后开始，避免重复抓取同一天。
-        next_since = last_ts + timeframe_ms
-        if next_since <= since_ms:
-            break
-        since_ms = next_since
-
-        if last_ts >= end_ms:
-            break
-
-    return rows
-
-
-def _normalize_crypto_data(
-    rows: list[list[Any]],
-    start_date: object,
-    end_date: object,
-) -> pd.DataFrame:
-    """将 CCXT 返回的 OHLCV 列表标准化为 DataFrame。"""
-    if not rows:
-        raise ValueError("交易所未返回任何 OHLCV 数据。")
-
-    raw_df = pd.DataFrame(
-        rows,
-        columns=["Date", "Open", "High", "Low", "Close", "Volume"],
-    )
-    raw_df["Date"] = pd.to_datetime(raw_df["Date"], unit="ms", utc=True).dt.tz_localize(None)
-    normalized = _normalize_ohlcv(
-        raw_df,
-        {
-            "Date": "Date",
-            "Open": "Open",
-            "High": "High",
-            "Low": "Low",
-            "Close": "Close",
-            "Volume": "Volume",
-        },
-    )
-    return _filter_by_date_range(normalized, start_date, end_date)
-
-
-def _fetch_crypto_data(
-    symbol: str,
-    start_date: object,
-    end_date: object,
-    proxy_url: str | None = None,
-) -> pd.DataFrame:
-    """通过 CCXT（默认 Binance）抓取加密货币 OHLCV。"""
-    symbol_text = str(symbol).strip().upper()
-    if not symbol_text:
-        raise ValueError("加密货币交易对不能为空，例如 `BTC/USDT`。")
-
-    try:
-        ccxt = importlib.import_module("ccxt")
-    except ImportError as exc:
-        raise ImportError("缺少运行依赖 `ccxt`，请先安装：`pip install ccxt`。") from exc
-    exchange_config: dict[str, Any] = {
-        "timeout": 30000,
-        "enableRateLimit": True,
-    }
-
-    proxies = _build_ccxt_proxy_config(proxy_url)
-    if proxies is not None:
-        # 代理只注入 CCXT 交易所客户端，不影响其他资产类型的数据源。
-        exchange_config["proxies"] = proxies
-
-    exchange = ccxt.binance(exchange_config)
-    rows = _fetch_crypto_ohlcv_rows(
-        exchange=exchange,
-        symbol=symbol_text,
-        start_date=start_date,
-        end_date=end_date,
-    )
-    normalized = _normalize_crypto_data(rows, start_date=start_date, end_date=end_date)
-    normalized.attrs["asset_type"] = "crypto"
-    normalized.attrs["symbol"] = symbol_text
-    normalized.attrs["data_source"] = "ccxt.binance"
-    if proxies is not None:
-        normalized.attrs["proxy_url"] = _redact_proxy_url(proxies["https"])
-    return normalized
-
-
 def load_asset_data(
     asset_type: str,
     symbol: str,
@@ -286,8 +144,13 @@ def load_asset_data(
     if cached is not None:
         resolved_sym = str(cached.attrs.get("symbol", symbol) or symbol).strip()
         cached.attrs.setdefault("asset_type", asset_key)
+        if asset_key in SUPPORTED_ADJUSTMENTS and "adjust" not in cached.attrs:
+            cached.attrs["adjust"] = resolve_adjustment(asset_key, adjust)
+        cached.attrs["return_basis"] = resolve_return_basis(
+            asset_key, adjust=adjust, attrs=cached.attrs
+        )
         cached.attrs.setdefault(
-            "return_basis", ASSET_RETURN_BASIS.get(asset_key, "adjusted_or_price")
+            "canonical_symbol", normalize_symbol_alias(asset_key, resolved_sym or symbol)
         )
         cached.attrs.setdefault(
             "currency", infer_asset_currency(asset_key, resolved_sym, cached.attrs)
@@ -296,19 +159,21 @@ def load_asset_data(
 
     # 这里是 Web/CLI 的数据总路由：不同资产来源不同，但返回值都遵循统一 OHLCV 契约。
     if asset_key == "etf":
+        china_sym = normalize_symbol_alias(asset_key, symbol)
         df = (
-            _fetch_etf_data(symbol=symbol, start_date=start_date, end_date=end_date)
+            _fetch_etf_data(symbol=china_sym, start_date=start_date, end_date=end_date)
             if adjust is None
             else _fetch_etf_data(
-                symbol=symbol, start_date=start_date, end_date=end_date, adjust=adjust
+                symbol=china_sym, start_date=start_date, end_date=end_date, adjust=adjust
             )
         )
     elif asset_key == "ashare":
+        china_sym = normalize_symbol_alias(asset_key, symbol)
         df = (
-            _fetch_ashare_stock_data(symbol=symbol, start_date=start_date, end_date=end_date)
+            _fetch_ashare_stock_data(symbol=china_sym, start_date=start_date, end_date=end_date)
             if adjust is None
             else _fetch_ashare_stock_data(
-                symbol=symbol, start_date=start_date, end_date=end_date, adjust=adjust
+                symbol=china_sym, start_date=start_date, end_date=end_date, adjust=adjust
             )
         )
     elif asset_key == "mutual_fund":
@@ -362,8 +227,14 @@ def load_asset_data(
 
     resolved_sym = str(df.attrs.get("symbol", symbol) or symbol).strip()
     df.attrs.setdefault("asset_type", asset_key)
-    df.attrs.setdefault("return_basis", ASSET_RETURN_BASIS.get(asset_key, "adjusted_or_price"))
+    if asset_key in SUPPORTED_ADJUSTMENTS and "adjust" not in df.attrs:
+        df.attrs["adjust"] = resolve_adjustment(asset_key, adjust)
+    df.attrs["return_basis"] = resolve_return_basis(asset_key, adjust=adjust, attrs=df.attrs)
+    df.attrs.setdefault(
+        "canonical_symbol", normalize_symbol_alias(asset_key, resolved_sym or symbol)
+    )
     df.attrs.setdefault("currency", infer_asset_currency(asset_key, resolved_sym, df.attrs))
+    df.attrs.setdefault("fetched_at", datetime.now(UTC).isoformat())
     df.attrs.setdefault("cache_hit", False)
     if not df.empty:
         saved_path = save_cached_ohlcv(
@@ -645,13 +516,20 @@ def align_multi_asset_frames(
         atype = str(attrs.get("asset_type") or parsed_type).strip().lower()
         sym = str(attrs.get("symbol") or parsed_sym).strip()
         series_kind = str(attrs.get("series_kind", "price") or "price").strip().lower()
+        basis = str(attrs.get("return_basis") or ASSET_RETURN_BASIS.get(atype, "")).strip()
 
-        if series_kind == "yield_level" or atype == "bond_us_yield":
+        if series_kind == "yield_level" or basis == "yield_level" or atype == "bond_us_yield":
             raise ValueError(
                 f"标的 {col!r} 为收益率水平序列（yield_level），不是资产价格或持有期回报，不能直接纳入组合优化。"
             )
-
-        basis = str(attrs.get("return_basis") or ASSET_RETURN_BASIS.get(atype, "")).strip()
+        if (
+            series_kind == "fx_rate" or basis == "fx_rate" or atype == "fx"
+        ) and normalize_currency_code(base_currency) != "LOCAL":
+            target_ccy = normalize_currency_code(base_currency)
+            raise ValueError(
+                f"标的 {col!r} 为汇率比值序列（fx_rate），不支持按单币种资产折算至 {target_ccy}；"
+                "请在基准货币中选择 LOCAL 或移出组合。"
+            )
         if (
             basis in ("futures_continuous", "price_index", "fx_rate")
             and basis not in seen_basis_notes

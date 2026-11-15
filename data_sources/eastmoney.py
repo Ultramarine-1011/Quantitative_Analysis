@@ -12,11 +12,11 @@ import pandas as pd
 import requests
 
 from .errors import NetworkFetchError, VendorUpstreamError
-from .network import _REQUESTS_NO_PROXY, RequestBudget
+from .network import REQUESTS_NO_PROXY, RequestBudget
 
 # 东方财富 push2his 直连：浏览器风格头可降低被边缘节点直接断连的概率；
 # 可被 ``EastMoneyDailyKlineClient`` / ``AKShareFetcher(..., eastmoney_headers=...)`` 覆盖或追加。
-_EASTMONEY_DEFAULT_HEADERS: dict[str, str] = {
+EASTMONEY_DEFAULT_HEADERS: dict[str, str] = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -24,17 +24,19 @@ _EASTMONEY_DEFAULT_HEADERS: dict[str, str] = {
     "Referer": "https://quote.eastmoney.com/",
     "Accept": "application/json, text/plain, */*",
 }
+_EASTMONEY_DEFAULT_HEADERS = EASTMONEY_DEFAULT_HEADERS
 
 # 东方财富 K 线接口多节点（与 AKShare ``stock_hist_em`` 中常见 host 对齐）；单节点被墙或限流时轮询可提高成功率。
-_EASTMONEY_KLINE_APIS: tuple[str, ...] = (
+EASTMONEY_KLINE_APIS: tuple[str, ...] = (
     "https://push2his.eastmoney.com/api/qt/stock/kline/get",
     "https://push2.eastmoney.com/api/qt/stock/kline/get",
     "https://33.push2his.eastmoney.com/api/qt/stock/kline/get",
     "https://63.push2his.eastmoney.com/api/qt/stock/kline/get",
 )
+_EASTMONEY_KLINE_APIS = EASTMONEY_KLINE_APIS
 
 
-def _eastmoney_sec_market_id(symbol: str) -> int:
+def eastmoney_sec_market_id(symbol: str) -> int:
     """东方财富 K 线接口 ``secid`` 的市场前缀：0=深、1=沪（不依赖 AKShare 内部实现）。"""
     code = str(symbol).strip()
     if not code.isdigit():
@@ -44,6 +46,9 @@ def _eastmoney_sec_market_id(symbol: str) -> int:
     if code.startswith(("6", "9", "51", "56", "58", "50", "5")):
         return 1
     return 0
+
+
+_eastmoney_sec_market_id = eastmoney_sec_market_id
 
 
 def parse_daily_kline_payload(payload: dict[str, Any]) -> pd.DataFrame:
@@ -345,7 +350,7 @@ class EastMoneyDailyKlineClient:
                 req_timeout = active_budget.consume_attempt(f"EastMoney requests {em_host}")
                 if requests_session is not None:
                     requests_session.trust_env = te
-                    req_proxies = None if te else _REQUESTS_NO_PROXY
+                    req_proxies = None if te else REQUESTS_NO_PROXY
                     out, got_valid = pull_market_ids(
                         lambda p, timeout=req_timeout, proxies=req_proxies: requests_session.get(
                             url, timeout=timeout, params=p, proxies=proxies
@@ -356,7 +361,7 @@ class EastMoneyDailyKlineClient:
                         session.trust_env = te
                         session.headers.clear()
                         session.headers.update(headers)
-                        req_proxies = None if te else _REQUESTS_NO_PROXY
+                        req_proxies = None if te else REQUESTS_NO_PROXY
                         out, got_valid = pull_market_ids(
                             lambda p, sess=session, timeout=req_timeout, proxies=req_proxies: (
                                 sess.get(url, timeout=timeout, params=p, proxies=proxies)

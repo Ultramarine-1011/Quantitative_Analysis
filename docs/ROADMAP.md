@@ -1,7 +1,7 @@
 # 产品定位与开发路线图（Roadmap）
 
-> 状态：**规划中（已完成 M0 现状重估）** · 更新：2026-11-14  
-> 本文描述目标架构和未来里程碑；所列 `quant` 新 CLI 命令、结构化 JSON/Parquet 服务接口与独立报告渲染**尚未实现**，现有功能和运行方法以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
+> 状态：**M5（V1.0）已完成** · 更新：2026-11-15  
+> V0.1（M0–M1）、V0.2（M2：`quant fetch` / `analyze`）、V0.3（M3：`quant compare` / `portfolio`）、V0.4（M4：独立报告渲染器 `reporting/` 与按需图表生成）及 V1.0（M5：Streamlit Web UI 全面重构并接入统一服务与渲染层，完成 Web/CLI 统一验收）已全部落地。现有功能与口径细节以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
 >
 > **M0 重估提示**：因近期代码分支（Stages 1–5）已提前落地了多市场日历对齐、FX 换汇、9 项 OHLCV 质量诊断、SLSQP 精确有效前沿、Ledoit-Wolf 收缩、Walk-Forward 样本外回测与 Parquet 共享缓存，以下 M1/M3/M5 中的部分基础工作已具备实现，**后续开发须先对照 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md#2-roadmapmd-实际完成度重估防止-m1m5-重复开发) 避免重复造轮子**。
 
@@ -83,79 +83,89 @@ Human / Browser                  AI Agent / Terminal
 > - **M3 算法核心已先行落地**：`quant_models.py` 已通过 SLSQP 精确有效前沿与 `run_walk_forward_backtest` 实现约束优化、样本内外划分与调仓/费率控制，`charts.py` 已同图区分精确有效前沿与随机组合；M3 重点转为提供 `quant compare`/`quant portfolio` CLI 及对齐 Log/Simple 年化与夏普口径。
 > - **M5 前端基础已优化**：`app.py` 与 `charts.py` 已完成自适应主题与会话结果保存；M5 重点转为调用统一 `AnalysisService` 与补齐单资产基准货币选项。
 
-### M1 · 统一金融数据层（V0.1）
+### M1 · 统一金融数据层（V0.1 — 已完成）
 
 **目标**：让数据不仅格式统一，而且来源明确、经济意义清楚、质量可检查。
 
-**工作内容**
-- 为资产与序列定义元数据：资产类型、符号、市场、币种、序列类别、数据来源、抓取时间、实际覆盖区间、复权/报价单位等。
-- 扩展数据检索、清洗与质量报告：重复值、缺失值、异常范围、市场日历、价格有效性、样本覆盖度。
-- 区分“价格/可投资资产收益”“基金净值”“利率水平”等不同分析语义；为不适用的指标提供显式阻止或语义匹配的替代计算。
-- 跨资产数据对齐和币种转换必须明确策略；不可直接将前向填充、不同计价币种的价格当作无条件可比较的投资收益。
+**工作内容（已在 M1 落地）**
+- [x] 建立强类型统一契约 [contracts.py](../contracts.py)（`SCHEMA_VERSION = "0.1.0"`）：`AnalysisRequest`、`SeriesMetadata`、`QualityReport`、`AnalysisResult`（支持 strict JSON `to_dict()`），统一输出资产/源/口径/质量/诊断原因与告警。
+- [x] 在 [asset_catalog.py](../asset_catalog.py) 统一 `normalize_symbol_alias`、`resolve_return_basis`（覆盖动态复权 `adjusted_price` / `unadjusted_price`）与 `resolve_semantic_series_kind`。
+- [x] 修复金融语义与口径：
+  - `yield_level` 在 `analysis_metrics.get_quant_metrics` 硬阻止 `cumulative_return` / `cagr` / `max_drawdown` / 波动率 / Sharpe / Sortino / Calmar / VaR / CVaR（输出 `NaN` + `metric_reasons="yield_level_not_return"`，保留描述性 `latest_level` / `level_change`），并在 `currency.py` / `asset_loader.py` 禁止基准货币折算。
+  - `fx_rate` 在 `currency.convert_ohlcv_to_base_currency` 与 `asset_loader.align_multi_asset_frames` 禁止非 `LOCAL` 基准货币换汇，并在单资产统计附带无 Carry 警示；有效 FX 折算后去重透传 `fx_warnings` 并在删行时重算 `data_quality`。
+  - 对齐单资产（`return_convention="log" | "simple"`、`periods_per_year`）与 `quant_models.py` 组合简单收益口径；`backtest_portfolio` / `run_walk_forward_backtest` 元数据显式声明 `return_convention="simple"`。
+- [x] 加固 OHLCV 质量与共享缓存：`ohlcv.prepare_ohlcv` / `validate_ohlcv` 保留上游 `missing_policy`；`data_sources/cache.py` 统一别名键、引入 `.locks/` 进程/线程读写锁、按返回切片重算 `data_quality`（`quality_scope="slice" | "full"`）。
+- [x] 模块解耦：抽离 CCXT 至 `data_sources/crypto.py` 切断 `asset_loader <-> currency` 循环依赖；收敛 `convert_ohlcv_to_base_currency` 至 `currency.py`；清理跨模块私有导入并记录 `china_equity.py` 回退降级告警；落地共享分析服务 [services/analysis_service.py](../services/analysis_service.py)（`analyze_single_asset`），由 `main.run_analysis` 单次调用串联（避免双次特征重算）并为 M2 `quant` CLI 奠基。
 
-**验收标准**：加载一项资产可得到标准化序列、元数据、质量结果与警告；不合适的计算能可靠拒绝或显式说明，不静默制造收益记录。
+**验收标准**：加载与分析单资产可得到标准化序列、`SeriesMetadata`、`QualityReport`、`AnalysisResult` 与结构化警告；`yield_level` 与 `fx_rate` 误用可靠拒绝；M1 与离线网络回退全量测试通过。
 
-### M2 · Agent CLI 与统一分析工作流（V0.2，首个核心 MVP）
+### M2 · Agent CLI 与统一分析工作流（V0.2 — 已完成）
 
 **目标**：Agent 用一条命令得到可直接分析的资产数据和指标，无需手写数据抓取与计算脚本。
 
-**工作内容**
-- 建立与 Streamlit 解耦的分析服务，串联解析、加载、质量校验、特征与指标。
-- 首批命令：`quant fetch`（检索/标准化数据）、`quant analyze`（单资产指标）；后续兼容现有 `quantitative-analysis` 入口的迁移策略需明确。
-- 定义版本化的结果 Schema：资产与数据元信息、样本范围、指标数值及单位、计算参数、警告、错误和生成文件位置。
-- 输出 `result.json` 和可供二次分析的标准数据文件（优先 Parquet；必要时 CSV）。stdout 适合机器读取；进度和诊断日志写 stderr；不同错误类别有稳定退出码。
-- 建立离线固定样本的 CLI 端到端与指标回归测试。
+**工作内容（已在 M2 落地）**
+- [x] 在 [services/analysis_service.py](../services/analysis_service.py) 抽取统一预处理骨架 `_prepare_single_asset_frame`，新增 `fetch_single_asset` 并与 `analyze_single_asset` 共享日期窗口裁剪、实际样本边界重算、元信息规范化与基准货币折算，避免重复拉取与重复计算；在 [contracts.py](../contracts.py) 新增 `metric_units`、`data_summary`（显式区分 `requested_*` 与 `actual_*`）、`software_version` 与 `command` 字段。
+- [x] 新增 Agent 专用命令行入口 [quant_cli.py](../quant_cli.py)（在 [pyproject.toml](../pyproject.toml) 注册脚本命令 `quant`），提供 `quant fetch` 与 `quant analyze`，支持全 13 类资产（含 `TYPE:SYMBOL` 简写）、代码、日期区间、复权方式、`LOCAL`/`CNY`/`USD` 基准货币、`--allow-usdt-peg`、`--proxy`、`--refresh` 及全部单资产指标计算参数（`--rf`、`--trading-days`、`--return-convention`、`--sma-short`、`--sma-long`、`--bb-window`、`--include-momentum`），不触发任何图表渲染。
+- [x] 标准化输出与自动化协议：`--output <dir>` 原子落盘 `result.json` 与 `data.parquet`（可选 `--csv` 输出 `data.csv`），重复执行幂等安全覆盖；`stdout` 严格仅输出可解析 JSON（`allow_nan=False`），`stderr` 输出精简进度、告警与结构化 JSON 错误对象，并映射稳定退出码（`0` 正常/降级、`2` 调用参数/校验错误、`3` 空数据、`4` 网络传输错误、`5` 上游协议错误、`1` 内部/I/O 异常）。
+- [x] 保留历史兼容性与加固边界：保留 `quantitative-analysis`（[main.py](../main.py)）与 Streamlit `app.py` 兼容；加固缓存线程/进程跨平台锁（POSIX `fcntl` + Windows `msvcrt` 回退、目录作用域锁键、`clear_ohlcv_cache` 保留 `.lock`、Parquet+Meta 成对回滚），强化 `tests/conftest.py` DNS/Socket/HTTP 客户端离线隔离与异常分类，并建立 `tests/test_m2_agent_cli_and_hardening.py` 端到端及边界回归测试。
 
-**目标接口示意（尚未实现）**
+**接口示例**
 
 ```bash
-quant analyze NVDA --start 2021-01-01 --end 2026-11-13 --output ./results/nvda
+quant fetch ashare:600519 --start 2024-01-01 --end 2026-11-13 -o ./results/600519_raw
+quant analyze -t us_stock -s NVDA --start 2024-01-01 --end 2026-11-13 -o ./results/nvda
 ```
 
-最小产物示例：`result.json`、`data.parquet`。JSON 应提供 `schema_version`、`asset`、`data`、`metrics`、`parameters`、`warnings` 和 `artifacts` 等稳定字段；数值不足或不适用时要保留机器可辨识的缺失原因。
+**验收标准**：编程 Agent 仅凭终端命令 `quant` 与退出码即可无交互完成单资产检索、校验、指标计算与 `result.json` / `data.parquet` 读取；在固定数据和参数下结果稳定可复现。
 
-**验收标准**：编程 Agent 仅凭终端命令和读取输出文件，即可完成单资产数据准备与基本量化分析；在固定数据和参数下结果可复现。
-
-### M3 · 多资产比较、统计与组合分析（V0.3）
+### M3 · 多资产比较、统计与组合分析（V0.3 — 已完成）
 
 **目标**：从单资产诊断扩展到常用金融研究任务。
 
-**工作内容**
-- 增加 `quant compare`：标准化净值/价格比较、同口径收益风险、相对基准、相关性与协方差、滚动统计。
-- 增加 `quant portfolio`：权重组合、收益风险与风险贡献、基准对照、历史回测。
-- 加强收益分布、统计检验、稳健性及参数敏感性分析；按功能适用性逐步引入。
-- 明确有效前沿中“随机权重采样”和“约束优化”是不同算法；区分样本内回放与样本外回测，并明确调仓、交易成本和前视信息约束。
-- 明确多市场对齐、非同步交易和汇率处理逻辑，避免夸大相关性或组合收益结论。
+**工作内容（已在 M3 落地）**
+- [x] 新增 `quant compare` 与 [services/multi_asset_service.py](../services/multi_asset_service.py) `compare_assets`：标准化归一化净值比较（`data.parquet`）、统一基准货币收益风险指标、Pearson/Spearman 相关性与 Ledoit-Wolf/样本/对角协方差、收益分布统计（偏度、超额峰度、Jarque-Bera 正态性检验、自相关）、Memmel (2003) 渐近夏普差异检验、相对基准指标（Tracking Error、Information Ratio、CAPM Beta/Jensen Alpha、R²、Up/Down Capture）及滚动统计。
+- [x] 新增 `quant portfolio` 与 [services/multi_asset_service.py](../services/multi_asset_service.py) `analyze_portfolio`：支持 6 类策略（`max_sharpe`、`min_variance`、`risk_parity`、`inverse_volatility`、`equal_weight`、`custom`），输出权重、Euler 风险贡献（`compute_risk_contributions`、分散化比率、有效资产数）、外部基准对照（严格裁剪至样本外重叠区间）与历史回测。
+- [x] 严格区分优化与验证边界：在 `frontier.parquet` 与 JSON 中通过 `frontier_type` / `algorithm` 明确分离约束优化 `slsqp_exact`（SLSQP 精确有效前沿）与 `dirichlet_random`（Dirichlet 随机采样散点）；默认采用严格无前视偏差的 `train_test` 与 `walk_forward_rolling` / `walk_forward_expanding` 样本外验证（`in_sample` 显式标记 `has_lookahead_bias=True` 并发出警告），明确调仓频次（含 `tradable_mask` 停牌顺延）、双边交易成本（`--tx-bps`）与协方差/费率/再平衡敏感性网格（`--no-sensitivity` 可跳过）。
+- [x] 明确多市场对齐、非同步交易与汇率处理：`mtm_outer` 仅用于连续净值展示与非交易日隔离，相关性/协方差严格采用共同真实报价区间（`correlation_returns_base`）；`LOCAL` 多币种混排显式标注 `mixed_local_currencies=True` 并降级告警；`yield_level`（任何基准货币）与 `fx_rate`（非 `LOCAL` 基准货币）继续在比较/组合前置阶段拦截。
+- [x] 修复 M2 遗留边界：完善 [data_sources/cache.py](../data_sources/cache.py) 覆盖已有缓存时的双文件备份与失败回滚（不留残留 `.tmp`/`.bak`）；升级 [quant_cli.py](../quant_cli.py) 多文件事务性提交（先 staged 全量暂存、同盘备份后原子替换、按 `failed/rolled-back` 回滚且仅清理不再产出的受管文件名，绝不误删用户文件）；收紧 CLI 资产类型解析规则，禁止裸代码静默默认猜为 `etf`，规范 A 股/ETF 交易所前缀/后缀别名防重复腿；扩展 [contracts.py](../contracts.py) `AssetSpec` / `CompareRequest` / `PortfolioRequest` / `MultiAssetResult` 并保留向后兼容（`SOFTWARE_VERSION = "0.3.0"`）。
 
-**验收标准**：可用 CLI 完成典型多资产比较和组合研究，结果有可核对的样本、参数、基准和方法说明；模拟不冒充实际预测或有效策略表现。
+**接口示例**
 
-### M4 · 可阅读报告与可视化生成（V0.4）
+```bash
+quant compare etf:510300 us_stock:SPY --benchmark etf:510500 --start 2024-01-01 --end 2026-11-13 --base-currency CNY -o ./results/compare
+quant portfolio etf:510300 etf:510500 etf:518880 --strategy risk_parity --validation-mode walk_forward_rolling --train-window 60 --tx-bps 10 -o ./results/portfolio
+```
+
+**验收标准**：可用 CLI 完成典型多资产比较和组合研究，结果包含可核对的样本、参数、基准、质量与方法说明；模拟不冒充实际预测或有效策略表现；离线回归测试全量通过。
+
+### M4 · 可阅读报告与可视化生成（V0.4 — 已完成）
 
 **目标**：同一份分析结果既便于 Agent 消费，也便于人类审阅。
 
-**工作内容**
-- 建立独立 Report Renderer：按分析任务生成 Markdown / HTML 报告，包含数据说明、统计结果、方法和假设、质量警告与图表引用。
-- 建立独立 Chart Renderer：按需输出交互式 HTML、PNG 或 SVG，覆盖价格/净值、回撤、滚动统计、多资产对比和组合等适用场景。
-- 支持通过 CLI 控制是否生成报告、生成格式及图表集合；不重复获取数据或重新计算指标。
-- 报告明确区分历史统计、统计推断、模型模拟和回测结果；避免由技术指标直接推出买卖结论。
+**工作内容（已在 M4 落地）**
+- [x] 建立独立 Report Renderer [reporting/report_renderer.py](../reporting/report_renderer.py)：分别针对 `analyze`、`compare`、`portfolio` 设计研究报告结构，按需输出 Markdown（`report.md`）与离线自包含 HTML（`report.html`），完整覆盖标的与数据来源、核心定量指标、分布/正态与 Memmel 夏普假设检验、模型方法与假设、数据质量审计、风险提示及相对路径图表嵌入与跳转链接。
+- [x] 建立独立 Chart Renderer [reporting/chart_renderer.py](../reporting/chart_renderer.py) 与共享口径工具 [reporting/formatting.py](../reporting/formatting.py)：复用 [charts.py](../charts.py) 与 [visualizer.py](../visualizer.py)，支持按需导出自包含交互式 HTML 与 Matplotlib/`mplfinance` 静态 PNG/SVG（位于 `<output>/charts/`），覆盖价格/走势、归一化净值、水下回撤、滚动统计、相关性热力图、组合权重与 Euler 风险贡献、SLSQP vs Dirichlet 有效前沿及回测净值/再平衡权重演化，并暴露 `build_plotly_figures` 供 M5 Streamlit 复用。
+- [x] 完成 CLI 集成 [quant_cli.py](../quant_cli.py)：为 `quant analyze`、`quant compare`、`quant portfolio` 增加 `--report`（`md`/`html`/`all`/`none`）、`--charts`（`html`/`png`/`svg`/`all`/`none`）与 `--chart-types` 参数；将生成的报告与图表纳入同一三阶段事务性原子提交、失败回滚与陈旧受管产物清理契约；未触发图表时不导入 `matplotlib`/`plotly`。
+- [x] 严格遵循计算与渲染分离及金融语义准确性：提供 `load_result_from_artifacts` 从磁盘 `result.json` + Parquet 独立渲染而无二次拉取/重算；明确区隔历史实现表现、统计推断、样本内前视参考（`has_lookahead_bias` 警报）、样本外因果回测（`train_test` / `walk_forward_*`）与随机模拟；统一以非正水下百分比展示回撤，正确处理 `yield_level_not_return`（不乘 100%、阻断收益类指标与图表）、`fx_rate` 与 `mixed_local_currencies` 警告。
 
-**目标接口示意（尚未实现）**
+**接口示例**
 
 ```bash
-quant analyze NVDA --start 2021-01-01 --report md --charts html,png
+quant analyze us_stock:NVDA --start 2021-01-01 -o ./results/nvda --report md --charts html,png
+quant portfolio etf:510300 us_stock:SPY --benchmark etf:510500 --base-currency CNY -o ./results/port --report all --charts html,png --chart-types backtest,weights,frontier
 ```
 
 **验收标准**：一次命令可按需得到 JSON、标准化数据、Markdown/HTML 报告及图表；报告数值与结构化结果一致，图表不改变计算口径。
 
-### M5 · Web UI 重构与统一验收（V1.0）
+### M5 · Web UI 重构与统一验收（V1.0 — 已完成）
 
 **目标**：形成可长期维护的 Web + CLI 双入口金融分析平台。
 
-**工作内容**
-- Streamlit 改为调用统一分析服务，界面围绕**单资产探索、多资产比较、投资组合研究**组织。
-- 数学原理成为指标帮助或独立文档；模型模拟及高级选项按需展开，避免功能横向堆积。
-- 验证 Web 与 CLI 在相同数据快照和参数下输出一致；保留数据导出与交互图表。
-- 完善跨平台安装与运行文档、错误提示、CI、测试、数据源故障与缓存策略；使用真实 Agent 场景进行端到端验收。
+**工作内容（已在 M5 落地）**
+- [x] **Streamlit 架构重构（[app.py](../app.py)）**：全面迁移至 `fetch_single_asset`、`analyze_single_asset`、`compare_assets` 与 `analyze_portfolio` 统一服务，清理重复的数据预处理、指标计算与组合优化/回测逻辑，默认参数与 CLI（包括单资产 `LOCAL` + `log`、Compare/Portfolio `CNY`、`monthly` 调仓与 Ledoit-Wolf 协方差收缩）严格对齐。
+- [x] **界面与信息层次重组**：围绕 **📈 单资产探索**、**⚖️ 多资产比较**、**🎯 投资组合研究** 三个核心工作区组织侧边栏与主面板；数学原理定义、技术参数与多维敏感性矩阵折叠展示，隔离会话状态并保留自适应 `@st.cache_data` 缓存与强刷控制。
+- [x] **共享图表与统一报告导出**：复用 [charts.py](../charts.py) 与 [reporting/](../reporting/)（`build_plotly_figures`、`build_markdown_report`、`build_html_report`、`reporting.formatting`），支持 3 类工作区一致的交互图表、数据质量与语义阻断表、`in_sample` 前视偏差警告及 `.md` / `.html` / strict `.json` / UTF-8 BOM `.csv` 一键预览和导出。
+- [x] **Web / CLI 一致性与统一验收（[test_m5_web_cli_parity_and_ui.py](../tests/test_m5_web_cli_parity_and_ui.py)）**：补充同一数据快照与参数下的单资产、多资产比较与组合回测 Web/CLI 一致性验证、`bond_us_yield` 跨工作区语义拦截、加密自适应交易日 GBM、`custom` 权重校验及离线 `AppTest` / 无可选依赖兼容性验收，并将版本升级至 `1.0.0`。
 
 **验收标准**：Web 和 CLI 共用同一计算口径；能够从资产查询到图表、数据、指标与报告完成全流程；自动化测试与文档能够支持持续维护。
 
@@ -163,13 +173,13 @@ quant analyze NVDA --start 2021-01-01 --report md --charts html,png
 
 | 版本 | 覆盖阶段 | 可验证交付 |
 | --- | --- | --- |
-| **V0.1** | M0 + M1 | 稳定的金融数据契约、质量检查与测试基线 |
-| **V0.2** | M2 | **Agent 可直接使用的单资产 CLI MVP** |
-| **V0.3** | M3 | 多资产比较、组合与严谨统计能力 |
-| **V0.4** | M4 | 按需生成报告与图表 |
-| **V1.0** | M5 | Web/CLI 共享分析核心的完整平台 |
+| **V0.1** | M0 + M1 | **已完成**：统一的 `contracts.py` 数据契约、`AnalysisService` 基础服务、质量诊断、语义拦截与离线测试基线 |
+| **V0.2** | M2 | **已完成**：Agent CLI（`quant fetch` / `quant analyze`）、`result.json` + `data.parquet` 产物、退出码契约与缓存/离线加固 |
+| **V0.3** | M3 | **已完成**：多资产比较（`quant compare`）、组合与无前视偏差回测（`quant portfolio`）、分布/Memmel/风险贡献统计及 M2 事务性落盘与解析加固 |
+| **V0.4** | M4 | **已完成**：独立报告与按需图表渲染包 [reporting/](../reporting/)（Markdown/HTML 报告 + HTML/PNG/SVG 图表、计算与渲染分离及 `--report`/`--charts`/`--chart-types` CLI 集成） |
+| **V1.0** | M5 | **已完成**：[app.py](../app.py) 全面接入 `services/` + `reporting/` 三工作区平台重构、Web/CLI 数值口径与参数默认严格对齐、M5 一致性与 `AppTest` 回归通过 |
 
-**近期开发重心是 V0.2。** 在此之前，优先修复会影响数据准确性、指标解释和 CLI 稳定性的缺陷；暂缓纯粹增加资产种类、装饰性图表和算法演示。
+> M0–M5（V1.0）核心建设已完成；后续演进围绕实盘数据源适应与按实际使用场景评估扩展能力。
 
 ## 6. 成功标准与暂不实施的内容
 

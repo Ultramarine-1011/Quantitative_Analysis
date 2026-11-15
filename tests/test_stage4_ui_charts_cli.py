@@ -213,8 +213,8 @@ def test_app_tab3_walk_forward_extra_charts_and_yield_rejection(monkeypatch, sam
     page.button("tab3_btn_ef").click().run()
     assert not page.exception
     assert not page.error
-    # Expect heatmap + exact frontier + walk-forward + weight history + multi normalize = 5 charts
-    assert len(page.get("plotly_chart")) == 5
+    # Unified M4/M5 portfolio renderer produces 4 core + 3 extra charts = 7 charts.
+    assert len(page.get("plotly_chart")) == 7
 
     # Switching preset template updates legs cleanly.
     page.selectbox("tab3_preset_template").set_value("境内大类股债均衡").run()
