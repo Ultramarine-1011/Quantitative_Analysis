@@ -243,6 +243,137 @@ def _quality_table_rows(q: Any) -> tuple[tuple[str, ...], ...]:
     )
 
 
+def _format_memmel_test_fields(
+    mem: Mapping[str, Any] | None,
+) -> tuple[str, str, str, str, str, str]:
+    """Format Memmel (2003) Sharpe test fields with significance derived from valid p-values."""
+    if not isinstance(mem, Mapping):
+        return "N/A", "N/A", "N/A", "N/A", "N/A", "N/A"
+    sharpe_strategy = mem["sharpe_strategy"] if "sharpe_strategy" in mem else mem.get("sharpe_a")
+    sharpe_benchmark = mem["sharpe_benchmark"] if "sharpe_benchmark" in mem else mem.get("sharpe_b")
+    p_val = mem.get("p_value")
+    if is_valid_number(p_val):
+        sig_str = "显著差异 (p < 0.05)" if float(p_val) < 0.05 else "无显著差异"
+    else:
+        sig_str = "N/A"
+    return (
+        format_ratio(sharpe_strategy),
+        format_ratio(sharpe_benchmark),
+        format_ratio(mem.get("sharpe_diff"), signed=True),
+        format_ratio(mem.get("z_stat"), decimals=3),
+        format_p_value(p_val),
+        sig_str,
+    )
+
+
+def _describe_portfolio_validation(
+    *,
+    val_mode: str,
+    strategy: str,
+    is_oos: bool,
+    has_bias: bool,
+) -> tuple[str, str, _Callout, str, str]:
+    """Return consistent badge text/tone, callout, bias label, and row suffix by validation mode."""
+    mode_label = val_mode or ("in_sample" if not is_oos else "out_of_sample")
+    if val_mode == "in_sample" or not is_oos:
+        if has_bias:
+            return (
+                f"验证: {mode_label} (存在前视偏差)",
+                "danger",
+                _Callout(
+                    tone="danger",
+                    title="前视偏差警告 (Lookahead Bias Warning)",
+                    body="当前运行处于 `in_sample` 模式，最优权重与回测收益共享同一历史全样本区间。所展示绩效仅代表事后样本内拟合参考，不可视为真实可投预期收益。",
+                ),
+                "是（请勿实盘外推）",
+                "In-Sample 样本内 [前视偏差]",
+            )
+        bias_desc = (
+            "否（外生固定权重全样本回测，非样本外评估）"
+            if strategy == "custom"
+            else "否（样本内全样本回测，非样本外评估）"
+        )
+        callout_body = (
+            "当前组合使用 `custom` 外生固定权重在完整历史区间直接回测（`in_sample`），未经过时间切分或滚动样本外隔离，属于全样本评估而非样本外回测；若权重源于事后观察，仍可能存在选择偏差。"
+            if strategy == "custom"
+            else "当前运行处于样本内全样本回测模式（`in_sample`），未经过时间切分或滚动样本外隔离，所展示结果仅作历史全样本对照参考，非样本外回测。"
+        )
+        return (
+            f"验证: {mode_label} (样本内全样本 | 非 OOS)",
+            "warn",
+            _Callout(
+                tone="warn",
+                title="样本内全样本回测提示 (In-Sample Non-OOS Backtest)",
+                body=callout_body,
+            ),
+            bias_desc,
+            "In-Sample 样本内 [非 OOS]",
+        )
+
+    if has_bias:
+        return (
+            f"验证: {mode_label} (含前视偏差风险)",
+            "danger",
+            _Callout(
+                tone="danger",
+                title="前视偏差警告 (Lookahead Bias Warning)",
+                body="当前回测结果标记存在前视偏差，所展示绩效不可视为严格无偏样本外预测。",
+            ),
+            "是（请勿实盘外推）",
+            f"{mode_label} [前视偏差风险]",
+        )
+
+    if val_mode.startswith("walk_forward"):
+        return (
+            f"验证: {mode_label} (严格因果 OOS)",
+            "ok",
+            _Callout(
+                tone="info",
+                title="严格因果 Walk-Forward 验证与后视参考区分",
+                body="`OOS_Portfolio` 每次调仓严格只使用历史因果训练窗口数据；`In_Sample_Portfolio`（若列示）仅作为全样本事后上限对比参照。",
+            ),
+            "否（因果滚动/扩展估计）",
+            "OOS 样本外",
+        )
+
+    if val_mode == "train_test":
+        if strategy == "custom":
+            return (
+                f"验证: {mode_label} (外生权重测试集 OOS)",
+                "ok",
+                _Callout(
+                    tone="info",
+                    title="时间切分测试集验证 (Train-Test OOS)",
+                    body="外生自定义权重在切分日之后的未见测试集样本外开展净值评估，与切分日前训练集统计隔离；若权重源于全样本事后选定，仍需结合训练集对照表审视潜在选择偏差。",
+                ),
+                "否（外生权重测试集评估）",
+                "OOS 样本外",
+            )
+        return (
+            f"验证: {mode_label} (严格因果 OOS)",
+            "ok",
+            _Callout(
+                tone="info",
+                title="严格时间切分样本外验证 (Train-Test OOS)",
+                body="策略权重与协方差矩阵仅在切分日之前的训练样本中估计，并在之后完全未见的测试集样本外开展净值回测。",
+            ),
+            "否（因果估计）",
+            "OOS 样本外",
+        )
+
+    return (
+        f"验证: {mode_label} (样本外评估)",
+        "ok",
+        _Callout(
+            tone="info",
+            title=f"样本外验证 ({mode_label})",
+            body="组合绩效在非样本内区间上评估。",
+        ),
+        "否（样本外区间评估）",
+        "OOS 样本外",
+    )
+
+
 def _build_single_asset_document(
     result: AnalysisResult,
     *,
@@ -896,20 +1027,15 @@ def _build_compare_document(
             )
             mem = rel.get("memmel_sharpe_test")
             if isinstance(mem, Mapping):
-                sig = mem.get("significant_at_5pct")
-                sig_str = (
-                    "显著差异 (p < 0.05)"
-                    if sig is True
-                    else ("无显著差异" if sig is False else "N/A")
-                )
+                s_strat, s_bench, s_diff, z_str, p_str, sig_str = _format_memmel_test_fields(mem)
                 memmel_rows.append(
                     (
                         str(leg),
-                        format_ratio(mem.get("sharpe_a")),
-                        format_ratio(mem.get("sharpe_b")),
-                        format_ratio(mem.get("sharpe_diff"), signed=True),
-                        format_ratio(mem.get("z_stat"), decimals=3),
-                        format_p_value(mem.get("p_value")),
+                        s_strat,
+                        s_bench,
+                        s_diff,
+                        z_str,
+                        p_str,
                         sig_str,
                     )
                 )
@@ -1007,18 +1133,24 @@ def _build_portfolio_document(
     metrics = result.metrics
     strategy = str(meth.get("strategy") or "")
     val_mode = str(meth.get("validation_mode") or "")
-    is_oos = bool(meth.get("is_out_of_sample", val_mode != "in_sample"))
+    is_oos = val_mode != "in_sample" and bool(meth.get("is_out_of_sample", True))
     has_bias = bool(meth.get("has_lookahead_bias", False))
     base_ccy = str(meth.get("base_currency") or "LOCAL")
     mixed_local = bool(meth.get("mixed_local_currencies", False))
 
+    val_badge_label, val_badge_tone, val_callout, bias_row_label, perf_row_suffix = (
+        _describe_portfolio_validation(
+            val_mode=val_mode,
+            strategy=strategy,
+            is_oos=is_oos,
+            has_bias=has_bias,
+        )
+    )
+
     badges: list[_Badge] = [
         _Badge(f"状态: {result.status.upper()}", "warn" if result.status == "degraded" else "ok"),
         _Badge(f"策略: {strategy}", "info"),
-        _Badge(
-            f"验证: {val_mode} ({'存在前视偏差' if has_bias else '严格因果 OOS'})",
-            "danger" if has_bias else "ok",
-        ),
+        _Badge(val_badge_label, val_badge_tone),
         _Badge(f"计价: {base_ccy}", "danger" if mixed_local else "neutral"),
         _Badge(
             f"调仓: {meth.get('rebalance_freq', '')} / {meth.get('transaction_cost_bps', 0)} bps",
@@ -1026,31 +1158,7 @@ def _build_portfolio_document(
         ),
     ]
 
-    callouts: list[_Callout] = []
-    if has_bias:
-        callouts.append(
-            _Callout(
-                tone="danger",
-                title="前视偏差警告 (Lookahead Bias Warning)",
-                body="当前运行处于 `in_sample` 模式，最优权重与回测收益共享同一历史全样本区间。所展示绩效仅代表事后样本内拟合参考，不可视为真实可投预期收益。",
-            )
-        )
-    elif val_mode.startswith("walk_forward"):
-        callouts.append(
-            _Callout(
-                tone="info",
-                title="严格因果 Walk-Forward 验证与后视参考区分",
-                body="`OOS_Portfolio` 每次调仓严格只使用历史因果训练窗口数据；`In_Sample_Portfolio`（若列示）仅作为全样本事后上限对比参照。",
-            )
-        )
-    else:
-        callouts.append(
-            _Callout(
-                tone="info",
-                title="严格时间切分样本外验证 (Train-Test OOS)",
-                body="策略权重与协方差矩阵仅在切分日之前的训练样本中估计，并在之后完全未见的测试集样本外开展净值回测。",
-            )
-        )
+    callouts: list[_Callout] = [val_callout]
     if mixed_local:
         callouts.append(
             _Callout(
@@ -1061,15 +1169,25 @@ def _build_portfolio_document(
         )
 
     bt_metrics = metrics.get("backtest", {})
-    primary_bt_key = "OOS_Portfolio" if "OOS_Portfolio" in bt_metrics else "Optimal_Portfolio"
-    primary_perf = bt_metrics.get(primary_bt_key, {})
-    eq_perf = bt_metrics.get("Equal_Weight_Portfolio", {})
     val_summary = metrics.get("validation", {})
+    primary_bt_key = next(
+        (key for key in ("OOS_Portfolio", "Portfolio", "Optimal_Portfolio") if key in bt_metrics),
+        "Portfolio" if val_mode == "in_sample" else "OOS_Portfolio",
+    )
+    primary_perf = bt_metrics.get(primary_bt_key, {})
+    if (
+        (not isinstance(primary_perf, Mapping) or not primary_perf)
+        and (val_mode == "in_sample" or not is_oos)
+        and isinstance(val_summary, Mapping)
+        and isinstance(val_summary.get("performance"), Mapping)
+    ):
+        primary_perf = val_summary["performance"]
+    eq_perf = bt_metrics.get("Equal_Weight_Portfolio", {})
 
     exec_bullets = [
         f"**组合资产池**：`{', '.join(result.asset_order)}`（策略 `{strategy}`，协方差 `{meth.get('cov_method', '')}`，调仓 `{meth.get('rebalance_freq', '')}`，双边成本 `{meth.get('transaction_cost_bps', 0)} bps`）。",
         f"**数据与回测窗口**：全对齐样本 `{ds.get('effective_start', '')} ~ {ds.get('effective_end', '')}`（`{ds.get('return_periods', 0)}` 期）；回测评估窗口 `{ds.get('backtest_start', '')} ~ {ds.get('backtest_end', '')}`（`{ds.get('backtest_points', 0)}` 点）。",
-        f"**{'样本外 OOS 回测' if is_oos else '样本内拟合参考'}表现 vs 等权基准 (1/N)**："
+        f"**{'样本外 OOS 回测' if is_oos else '样本内全样本回测参考'}表现 vs 等权基准 (1/N)**："
         f"CAGR {format_percent(primary_perf.get('cagr'), signed=True)} vs {format_percent(eq_perf.get('cagr'), signed=True)}，"
         f"年化波动 {format_percent(primary_perf.get('annualized_volatility'))} vs {format_percent(eq_perf.get('annualized_volatility'))}，"
         f"最大回撤 {format_drawdown_percent(primary_perf.get('max_drawdown'))} vs {format_drawdown_percent(eq_perf.get('max_drawdown'))}，"
@@ -1092,10 +1210,7 @@ def _build_portfolio_document(
     val_items: list[tuple[str, str]] = [
         ("验证模式 (validation_mode)", f"`{val_mode}`"),
         ("是否严格样本外 (is_out_of_sample)", _yes_no(is_oos)),
-        (
-            "是否含前视偏差 (has_lookahead_bias)",
-            "是（请勿实盘外推）" if has_bias else "否（因果估计）",
-        ),
+        ("是否含前视偏差 (has_lookahead_bias)", bias_row_label),
         (
             "权重快照估计窗口",
             f"`{meth.get('estimation_window', '')}` ({meth.get('estimation_start', '')} ~ {meth.get('estimation_end', '')})",
@@ -1278,7 +1393,7 @@ def _build_portfolio_document(
     perf_compare_rows: list[tuple[str, ...]] = []
     series_entries: list[tuple[str, Mapping[str, Any]]] = [
         (
-            f"{strategy} ({'OOS 样本外' if is_oos else 'In-Sample 样本内 [前视偏差]'})",
+            f"{strategy} ({perf_row_suffix})",
             primary_perf,
         ),
         ("Equal Weight (1/N 等权基准)", eq_perf),
@@ -1289,15 +1404,17 @@ def _build_portfolio_document(
         series_entries.append(
             ("In-Sample Reference [后视全样本参考-不可实盘]", bt_metrics["In_Sample_Portfolio"])
         )
-    if isinstance(result.benchmark, Mapping) and isinstance(
-        result.benchmark.get("metrics"), Mapping
-    ):
-        series_entries.append(
-            (
-                f"Benchmark ({result.benchmark.get('leg_name', 'Bench')})",
-                result.benchmark["metrics"],
+    if isinstance(result.benchmark, Mapping):
+        bench_perf = result.benchmark.get("performance")
+        if not isinstance(bench_perf, Mapping):
+            bench_perf = result.benchmark.get("metrics")
+        if isinstance(bench_perf, Mapping) and bench_perf:
+            series_entries.append(
+                (
+                    f"Benchmark ({result.benchmark.get('leg_name', 'Bench')})",
+                    bench_perf,
+                )
             )
-        )
 
     for s_label, s_perf in series_entries:
         perf_compare_rows.append(
@@ -1338,7 +1455,10 @@ def _build_portfolio_document(
 
     rel_eq = bt_metrics.get("relative_to_equal_weight")
     if isinstance(rel_eq, Mapping):
-        mem = rel_eq.get("memmel_sharpe_test", {})
+        eq_mem = rel_eq.get("memmel_sharpe_test")
+        es_strat, es_bench, es_diff, ez_str, ep_str, esig_str = _format_memmel_test_fields(
+            eq_mem if isinstance(eq_mem, Mapping) else None
+        )
         bt_blocks.append(
             _SectionBlock(
                 kind="kv",
@@ -1355,23 +1475,40 @@ def _build_portfolio_document(
                     ("跟踪误差 (Tracking Error)", format_percent(rel_eq.get("tracking_error"))),
                     ("信息比率 (Information Ratio)", format_ratio(rel_eq.get("information_ratio"))),
                     (
-                        "Memmel Sharpe Z / p 值",
-                        f"z = {format_ratio(mem.get('z_stat'), decimals=3)}, p = {format_p_value(mem.get('p_value'))}",
+                        "Memmel Sharpe (策略 vs 等权)",
+                        f"{es_strat} vs {es_bench} (差 {es_diff})",
+                    ),
+                    (
+                        "Memmel 检验 (Z / p / 5%显著性)",
+                        f"z = {ez_str}, p = {ep_str} ({esig_str})",
                     ),
                 ),
             )
         )
 
-    if isinstance(result.benchmark, Mapping) and isinstance(
-        result.benchmark.get("relative_comparison"), Mapping
-    ):
-        bench_rel = result.benchmark["relative_comparison"].get("portfolio")
-        if isinstance(bench_rel, Mapping):
-            b_mem = bench_rel.get("memmel_sharpe_test", {})
+    if isinstance(result.benchmark, Mapping):
+        bench_rel = result.benchmark.get("relative_to_strategy")
+        if not isinstance(bench_rel, Mapping) and isinstance(
+            result.benchmark.get("relative_comparison"), Mapping
+        ):
+            bench_rel = result.benchmark["relative_comparison"].get("portfolio")
+        if isinstance(bench_rel, Mapping) and bench_rel:
+            b_mem = bench_rel.get("memmel_sharpe_test")
+            bs_strat, bs_bench, bs_diff, bz_str, bp_str, bsig_str = _format_memmel_test_fields(
+                b_mem if isinstance(b_mem, Mapping) else None
+            )
+            eff_start = result.benchmark.get("effective_start")
+            eff_end = result.benchmark.get("effective_end")
+            eff_pts = result.benchmark.get("valuation_points")
+            span_note = (
+                f"（重叠基准区间 {eff_start} ~ {eff_end}，共 {format_integer(eff_pts)} 点）"
+                if eff_start and eff_end and is_valid_number(eff_pts)
+                else ""
+            )
             bt_blocks.append(
                 _SectionBlock(
                     kind="kv",
-                    title=f"目标策略相对外部基准 `{result.benchmark.get('leg_name', '')}` 归因",
+                    title=f"目标策略相对外部基准 `{result.benchmark.get('leg_name', '')}` 归因{span_note}",
                     items=(
                         (
                             "超额累计收益",
@@ -1386,10 +1523,21 @@ def _build_portfolio_document(
                             f"IR = {format_ratio(bench_rel.get('information_ratio'))}, TE = {format_percent(bench_rel.get('tracking_error'))}",
                         ),
                         (
-                            "Beta / Jensen α",
-                            f"β = {format_ratio(bench_rel.get('beta'))}, α = {format_percent(bench_rel.get('jensen_alpha'), signed=True)}",
+                            "Beta / Jensen α / R²",
+                            f"β = {format_ratio(bench_rel.get('beta'))}, α = {format_percent(bench_rel.get('jensen_alpha'), signed=True)}, R² = {format_ratio(bench_rel.get('r_squared'))}",
                         ),
-                        ("Memmel Sharpe p 值", format_p_value(b_mem.get("p_value"))),
+                        (
+                            "上行 / 下行捕获率",
+                            f"{format_percent(bench_rel.get('up_capture_ratio'))} / {format_percent(bench_rel.get('down_capture_ratio'))}",
+                        ),
+                        (
+                            "Memmel Sharpe (策略 vs 基准)",
+                            f"{bs_strat} vs {bs_bench} (差 {bs_diff})",
+                        ),
+                        (
+                            "Memmel 检验 (Z / p / 5%显著性)",
+                            f"z = {bz_str}, p = {bp_str} ({bsig_str})",
+                        ),
                     ),
                 )
             )

@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +19,11 @@ from contracts import AnalysisResult, MultiAssetResult
 from data_sources import cache as cache_mod
 from ohlcv import compute_ohlcv_quality
 from reporting import (
+    build_html_report,
+    build_markdown_report,
     build_plotly_figures,
     format_drawdown_percent,
+    format_p_value,
     format_percent,
     format_ratio,
     format_yield_percent,
@@ -467,6 +471,28 @@ def test_compare_report_and_charts_benchmark_and_mixed_currency_warnings(
     assert "Memmel (2003)" in md_text
     assert "mtm_outer" in html_text
 
+    # Memmel test must map sharpe_strategy / sharpe_benchmark / p_value & significance accurately
+    spy_mem = payload["metrics"]["benchmark_comparison"]["us_stock:SPY"]["memmel_sharpe_test"]
+    expected_strat_sr = format_ratio(spy_mem["sharpe_strategy"])
+    expected_bench_sr = format_ratio(spy_mem["sharpe_benchmark"])
+    expected_mem_p = format_p_value(spy_mem["p_value"])
+    expected_sig = "显著差异 (p < 0.05)" if float(spy_mem["p_value"]) < 0.05 else "无显著差异"
+    mem_row = next(
+        (
+            line
+            for line in md_text.splitlines()
+            if line.startswith("| us_stock:SPY |") and expected_mem_p in line
+        ),
+        "",
+    )
+    assert mem_row, "Expected Memmel table row for us_stock:SPY in report.md"
+    assert expected_strat_sr in mem_row
+    assert expected_bench_sr in mem_row
+    assert expected_sig in mem_row
+    assert expected_strat_sr in html_text
+    assert expected_bench_sr in html_text
+    assert expected_sig in html_text
+
     # Verify LOCAL mixed-currency run flags danger callout in report
     out_local = tmp_path / "compare_local"
     code2, _ = quant_cli.run_cli_command(
@@ -563,6 +589,32 @@ def test_portfolio_train_test_full_reports_and_charts(
     assert "双边交易成本敏感性" in html_text
     assert format_percent(oos_cagr, signed=True) in html_text
 
+    # External benchmark performance & relative_to_strategy attribution must match M3 JSON contract
+    bench_perf = payload["benchmark"]["performance"]
+    bench_rel = payload["benchmark"]["relative_to_strategy"]
+    bench_row = next(
+        (
+            line
+            for line in md_text.splitlines()
+            if line.startswith("| Benchmark (global_index:000300) |")
+        ),
+        "",
+    )
+    assert bench_row, "Expected Benchmark (global_index:000300) row in portfolio report.md"
+    assert format_percent(bench_perf["cagr"], signed=True) in bench_row
+    assert format_drawdown_percent(bench_perf["max_drawdown"]) in bench_row
+    assert format_ratio(bench_perf["sharpe_ratio"]) in bench_row
+    assert "Benchmark (global_index:000300)" in html_text
+    assert "目标策略相对外部基准 `global_index:000300` 归因" in md_text
+    assert format_percent(bench_rel["excess_cumulative_return"], signed=True) in md_text
+    assert format_ratio(bench_rel["information_ratio"]) in md_text
+    assert format_ratio(bench_rel["beta"]) in md_text
+    bench_mem = bench_rel["memmel_sharpe_test"]
+    assert format_ratio(bench_mem["sharpe_strategy"]) in md_text
+    assert format_ratio(bench_mem["sharpe_benchmark"]) in md_text
+    assert format_p_value(bench_mem["p_value"]) in md_text
+    assert format_ratio(bench_rel["information_ratio"]) in html_text
+
 
 def test_portfolio_walk_forward_and_in_sample_hindsight_callouts(
     tmp_path: Path,
@@ -623,7 +675,7 @@ def test_portfolio_walk_forward_and_in_sample_hindsight_callouts(
     assert "In-Sample Reference [后视全样本参考-不可实盘]" in wf_md
     assert "`frontier`" in wf_md
 
-    # In-sample mode with HTML report & HTML-only charts embeds <iframe>
+    # In-sample mode with HTML report & HTML-only charts embeds <iframe> and maps Portfolio metrics
     out_is = tmp_path / "port_is"
     code_is, _ = quant_cli.run_cli_command(
         [
@@ -648,7 +700,7 @@ def test_portfolio_walk_forward_and_in_sample_hindsight_callouts(
             "-o",
             str(out_is),
             "--report",
-            "html",
+            "all",
             "--charts",
             "html",
             "--chart-types",
@@ -657,11 +709,262 @@ def test_portfolio_walk_forward_and_in_sample_hindsight_callouts(
         loader=loader,
         fx_loader=fx_loader,
     )
-    capsys.readouterr()
-    assert code_is == quant_cli.EXIT_OK
+    cap_is = capsys.readouterr()
+    assert code_is == quant_cli.EXIT_OK, cap_is.err
+    payload_is = json.loads(cap_is.out)
+    is_port_perf = payload_is["metrics"]["backtest"]["Portfolio"]
+    is_md = (out_is / "report.md").read_text(encoding="utf-8")
     is_html = (out_is / "report.html").read_text(encoding="utf-8")
     assert "Lookahead Bias Warning" in is_html
     assert '<iframe src="charts/backtest.html"' in is_html
+    # Portfolio backtest metrics in in_sample mode must not degrade to N/A
+    for expected_val in (
+        format_percent(is_port_perf["cumulative_return"], signed=True),
+        format_percent(is_port_perf["cagr"], signed=True),
+        format_percent(is_port_perf["annualized_volatility"]),
+        format_drawdown_percent(is_port_perf["max_drawdown"]),
+        format_ratio(is_port_perf["sharpe_ratio"]),
+    ):
+        assert expected_val != "N/A"
+        assert expected_val in is_md
+        assert expected_val in is_html
+    port_row = next(
+        (line for line in is_md.splitlines() if line.startswith("| max_sharpe (In-Sample")),
+        "",
+    )
+    assert port_row
+    assert "| N/A |" not in port_row
+    assert "严格因果 OOS" not in is_md
+    assert "严格因果 OOS" not in is_html
+
+
+def test_portfolio_custom_in_sample_and_train_test_validation_labels(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    loader, fx_loader = _make_multi_asset_loader()
+    out_custom_is = tmp_path / "port_custom_is"
+    code, res = quant_cli.run_cli_command(
+        [
+            "portfolio",
+            "etf:510300",
+            "us_stock:SPY",
+            "--benchmark",
+            "global_index:000300",
+            "--strategy",
+            "custom",
+            "--weights",
+            "0.7,0.3",
+            "--validation-mode",
+            "in_sample",
+            "--no-sensitivity",
+            "--frontier-points",
+            "0",
+            "--base-currency",
+            "CNY",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-05-31",
+            "-o",
+            str(out_custom_is),
+            "--report",
+            "all",
+        ],
+        loader=loader,
+        fx_loader=fx_loader,
+    )
+    cap = capsys.readouterr()
+    assert code == quant_cli.EXIT_OK, cap.err
+    assert isinstance(res, MultiAssetResult)
+    payload = json.loads(cap.out)
+    assert payload["methodology"]["validation_mode"] == "in_sample"
+    assert payload["methodology"]["is_out_of_sample"] is False
+    assert payload["methodology"]["has_lookahead_bias"] is False
+
+    md_text = (out_custom_is / "report.md").read_text(encoding="utf-8")
+    html_text = (out_custom_is / "report.html").read_text(encoding="utf-8")
+    for text in (md_text, html_text):
+        assert "严格因果 OOS" not in text
+        assert "Train-Test OOS" not in text
+        assert "非 OOS" in text
+        assert "样本内全样本回测提示" in text
+        assert "外生固定权重全样本回测" in text
+
+    # In-sample Portfolio & Benchmark performance + relative attribution must all populate cleanly
+    p_perf = payload["metrics"]["backtest"]["Portfolio"]
+    b_perf = payload["benchmark"]["performance"]
+    b_rel = payload["benchmark"]["relative_to_strategy"]
+    assert format_percent(p_perf["cagr"], signed=True) in md_text
+    assert format_percent(p_perf["cagr"], signed=True) in html_text
+    assert format_percent(b_perf["cagr"], signed=True) in md_text
+    assert format_ratio(b_rel["beta"]) in md_text
+    assert "Benchmark (global_index:000300)" in html_text
+
+    # custom + train_test cleanly distinguishes post-split OOS evaluation from in_sample
+    out_custom_tt = tmp_path / "port_custom_tt"
+    code_tt, _ = quant_cli.run_cli_command(
+        [
+            "portfolio",
+            "etf:510300",
+            "us_stock:SPY",
+            "--strategy",
+            "custom",
+            "--weights",
+            "0.7,0.3",
+            "--validation-mode",
+            "train_test",
+            "--no-sensitivity",
+            "--frontier-points",
+            "0",
+            "--base-currency",
+            "CNY",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-05-31",
+            "-o",
+            str(out_custom_tt),
+            "--report",
+            "md",
+        ],
+        loader=loader,
+        fx_loader=fx_loader,
+    )
+    cap_tt = capsys.readouterr()
+    assert code_tt == quant_cli.EXIT_OK, cap_tt.err
+    payload_tt = json.loads(cap_tt.out)
+    md_tt = (out_custom_tt / "report.md").read_text(encoding="utf-8")
+    assert "外生权重测试集 OOS" in md_tt
+    assert "Train-Test OOS" in md_tt
+    assert (
+        format_percent(payload_tt["metrics"]["backtest"]["OOS_Portfolio"]["cagr"], signed=True)
+        in md_tt
+    )
+
+
+def test_report_memmel_test_significance_and_missing_pvalue_parity(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    loader, fx_loader = _make_multi_asset_loader()
+    out_cmp = tmp_path / "cmp_memmel"
+    code, res = quant_cli.run_cli_command(
+        [
+            "compare",
+            "etf:510300",
+            "us_stock:SPY",
+            "--benchmark",
+            "global_index:000300",
+            "--base-currency",
+            "CNY",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-05-31",
+            "-o",
+            str(out_cmp),
+            "--report",
+            "none",
+        ],
+        loader=loader,
+        fx_loader=fx_loader,
+    )
+    capsys.readouterr()
+    assert code == quant_cli.EXIT_OK
+    assert isinstance(res, MultiAssetResult)
+
+    # Craft a copy exercising all three p_value regimes (<0.05, >=0.05, missing/NaN) across compare
+    metrics_copy = dict(res.metrics)
+    bc_orig = metrics_copy["benchmark_comparison"]
+    bc_copy = {leg: dict(bc_orig[leg]) for leg in bc_orig}
+    bc_copy["etf:510300"]["memmel_sharpe_test"] = {
+        "sharpe_strategy": 1.68,
+        "sharpe_benchmark": 0.72,
+        "sharpe_diff": 0.96,
+        "z_stat": 2.51,
+        "p_value": 0.0121,
+    }
+    bc_copy["us_stock:SPY"]["memmel_sharpe_test"] = {
+        "sharpe_strategy": 0.94,
+        "sharpe_benchmark": 0.72,
+        "sharpe_diff": 0.22,
+        "z_stat": 0.88,
+        "p_value": 0.3789,
+    }
+    # Add synthetic third/fourth cases with NaN / None p_value while preserving sharpe_strategy & sharpe_benchmark
+    bc_copy["missing_p_leg"] = {
+        **dict(bc_orig["us_stock:SPY"]),
+        "memmel_sharpe_test": {
+            "sharpe_strategy": 0.85,
+            "sharpe_benchmark": 0.85,
+            "sharpe_diff": 0.0,
+            "z_stat": float("nan"),
+            "p_value": float("nan"),
+        },
+    }
+    bc_copy["none_p_leg"] = {
+        **dict(bc_orig["us_stock:SPY"]),
+        "memmel_sharpe_test": {
+            "sharpe_strategy": 1.12,
+            "sharpe_benchmark": 0.85,
+            "sharpe_diff": 0.27,
+            "z_stat": None,
+            "p_value": None,
+        },
+    }
+    metrics_copy["benchmark_comparison"] = bc_copy
+    res_case = replace(res, metrics=metrics_copy)
+
+    md_cmp = build_markdown_report(res_case)
+    html_cmp = build_html_report(res_case)
+    assert "| etf:510300 | 1.68 | 0.72 | +0.96 | 2.510 | 0.0121 | 显著差异 (p < 0.05) |" in md_cmp
+    assert "| us_stock:SPY | 0.94 | 0.72 | +0.22 | 0.880 | 0.3789 | 无显著差异 |" in md_cmp
+    assert "| missing_p_leg | 0.85 | 0.85 | +0.00 | N/A | N/A | N/A |" in md_cmp
+    assert "| none_p_leg | 1.12 | 0.85 | +0.27 | N/A | N/A | N/A |" in md_cmp
+    assert "显著差异 (p &lt; 0.05)" in html_cmp or "显著差异 (p < 0.05)" in html_cmp
+    assert "无显著差异" in html_cmp
+
+    # Live portfolio run with custom equal weights (0.5, 0.5) triggers zero_difference_variance vs 1/N
+    out_eq = tmp_path / "port_custom_eq"
+    code_eq, _ = quant_cli.run_cli_command(
+        [
+            "portfolio",
+            "etf:510300",
+            "us_stock:SPY",
+            "--strategy",
+            "custom",
+            "--weights",
+            "0.5,0.5",
+            "--validation-mode",
+            "in_sample",
+            "--no-sensitivity",
+            "--frontier-points",
+            "0",
+            "--base-currency",
+            "CNY",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-05-31",
+            "-o",
+            str(out_eq),
+            "--report",
+            "md",
+        ],
+        loader=loader,
+        fx_loader=fx_loader,
+    )
+    cap_eq = capsys.readouterr()
+    assert code_eq == quant_cli.EXIT_OK, cap_eq.err
+    payload_eq = json.loads(cap_eq.out)
+    mem_eq = payload_eq["metrics"]["backtest"]["relative_to_equal_weight"]["memmel_sharpe_test"]
+    assert mem_eq["reason"] == "zero_difference_variance"
+    md_eq = (out_eq / "report.md").read_text(encoding="utf-8")
+    sr_str = format_ratio(mem_eq["sharpe_strategy"])
+    sb_str = format_ratio(mem_eq["sharpe_benchmark"])
+    assert f"{sr_str} vs {sb_str}" in md_eq
+    assert "z = N/A, p = N/A (N/A)" in md_eq
 
 
 # ---------------------------------------------------------------------------
