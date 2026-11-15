@@ -31,7 +31,7 @@ def page(monkeypatch, sample_ohlcv):
     monkeypatch.setattr(
         asset_loader,
         "load_global_market_data",
-        lambda route, symbol, start, end: fetch(symbol=symbol),
+        lambda route, symbol, start, end, **kwargs: fetch(symbol=symbol),
     )
     monkeypatch.setattr(asset_loader, "load_fx_data", fake_fx)
     yield AppTest.from_file(app.__file__, default_timeout=20).run()
@@ -42,28 +42,29 @@ def page(monkeypatch, sample_ohlcv):
 def test_dashboard_survives_reruns_and_other_actions(page):
     page.sidebar.button[0].click().run()
     values = [metric.value for metric in page.metric]
-    page.run()  # CSV downloads trigger the same rerun in supported Streamlit versions.
+    page.run()  # Downloads/reruns preserve computed metrics & charts.
     assert [metric.value for metric in page.metric] == values
-    page.button("tab3_btn_normalize").click().run()
+    assert len(page.get("plotly_chart")) == 4  # price, rolling, drawdown, normalized
+    page.button("single_btn_normalize").click().run()
     assert [metric.value for metric in page.metric] == values
-    assert len(page.get("plotly_chart")) == 2
+    assert len(page.get("plotly_chart")) == 5
     assert not page.exception
 
 
 def test_advanced_results_accumulate_and_only_related_edits_invalidate(page):
-    for key in ("tab3_btn_normalize", "tab3_btn_gbm", "tab3_btn_ef"):
+    for key in ("single_btn_normalize", "single_btn_gbm", "compare_run_btn", "tab3_btn_ef"):
         page.button(key).click().run()
         assert not page.error
         assert not page.exception
-    assert len(page.get("plotly_chart")) == 5
+    assert len(page.get("plotly_chart")) == 10  # 1 norm + 1 gbm + 4 compare + 4 portfolio
     page.run()
-    assert len(page.get("plotly_chart")) == 5
+    assert len(page.get("plotly_chart")) == 10
     page.text_area("tab3_ef_legs_input").set_value("etf,510300\netf,159915").run()
-    assert len(page.get("plotly_chart")) == 2  # Single-asset results remain.
+    assert len(page.get("plotly_chart")) == 6  # Single-asset + compare results remain.
     page.button("tab3_btn_ef").click().run()
     page.text_input("symbol_input").set_value("510500").run()
-    assert len(page.get("plotly_chart")) == 3  # Portfolio inputs did not change.
-    assert set(page.session_state["_analysis_results"]) == {"frontier"}
+    assert len(page.get("plotly_chart")) == 8  # Compare + portfolio inputs did not change.
+    assert set(page.session_state["_analysis_results"]) == {"compare", "frontier"}
     page.date_input("start_date_input").set_value(page.date_input("end_date_input").value).run()
     assert not page.get("plotly_chart")
     assert not page.session_state["_analysis_results"]
@@ -86,8 +87,9 @@ def test_invalid_dates_disable_all_network_actions(page):
 def test_blank_symbol_disables_only_single_asset_actions(page):
     page.text_input("symbol_input").set_value("").run()
     assert page.sidebar.button[0].disabled
-    assert page.button("tab3_btn_normalize").disabled
-    assert page.button("tab3_btn_gbm").disabled
+    assert page.button("single_btn_normalize").disabled
+    assert page.button("single_btn_gbm").disabled
+    assert not page.button("compare_run_btn").disabled
     assert not page.button("tab3_btn_ef").disabled
     page.selectbox("asset_type").set_value("bond_us_yield").run()
     page.text_input("symbol_input").set_value("").run()

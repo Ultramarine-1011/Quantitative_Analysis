@@ -8,7 +8,6 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import analysis_metrics
 import app
 import asset_loader
 import main
@@ -20,7 +19,6 @@ from asset_catalog import (
 )
 from data_sources.cache import build_cache_key, load_cached_ohlcv, save_cached_ohlcv
 from data_sources.errors import EmptySymbolDataError
-from feature_engineering import OHLCVFeatureEngineer
 from ohlcv import prepare_ohlcv
 
 
@@ -80,44 +78,31 @@ def test_app_renders_ffill_quality_warning_and_legacy_fallback(
     warnings = [w.value for w in page.warning]
     assert any("数据质量提示" in msg and "前向填补价格 1 行" in msg for msg in warnings)
 
-    # Also verify fallback rendering if upstream caller injects legacy metric quality keys directly.
-    monkeypatch.setattr(
-        analysis_metrics,
-        "get_quant_metrics",
-        lambda df, **kwargs: {
-            "cagr": 0.05,
-            "cagr_label": "CAGR",
-            "max_drawdown": 0.1,
-            "sharpe_ratio": 1.0,
-            "latest_signal": "均值回归中",
-            "cumulative_return": 0.12,
-            "cumulative_return_label": "累计收益率",
-            "annualized_volatility": 0.15,
-            "sortino_ratio": 1.2,
-            "calmar_ratio": 0.5,
-            "var_95": -0.02,
-            "cvar_95": -0.03,
-            "featured_df": OHLCVFeatureEngineer().transform(df),
-            "data_source": "mock",
-            "currency": "CNY",
-            "return_basis": "adjusted_price",
-            "metric_disclaimer": "",
+    # Also verify direct legacy metric dict fallback in app._format_data_quality_warning.
+    legacy_msg = app._format_data_quality_warning(
+        ffilled,
+        {
             "data_quality": {
                 "dropped_rows": 3,
                 "ffilled_cells": 2,
                 "missing_policy": "ffill",
-            },
+            }
         },
     )
-    app.load_asset_data.clear()
-    page_legacy = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
-    page_legacy.sidebar.button[0].click().run()
-    assert not page_legacy.exception
-    legacy_warnings = [w.value for w in page_legacy.warning]
-    assert any(
-        "数据质量提示" in msg and "清理异常/缺失 3 行" in msg and "前向填补价格 2 行" in msg
-        for msg in legacy_warnings
+    assert "数据质量提示" in legacy_msg
+    assert "前向填补价格 1 行" in legacy_msg
+    fallback_msg = app._format_data_quality_warning(
+        {
+            "data_quality": {
+                "dropped_rows": 3,
+                "ffilled_cells": 2,
+                "missing_policy": "ffill",
+            }
+        }
     )
+    assert "数据质量提示" in fallback_msg
+    assert "清理异常/缺失 3 行" in fallback_msg
+    assert "前向填补价格 2 行" in fallback_msg
     app.load_asset_data.clear()
     app.load_multi_leg_close_wide.clear()
 

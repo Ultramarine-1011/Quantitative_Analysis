@@ -221,11 +221,11 @@ def test_streamlit_advanced_algorithms_run_offline(monkeypatch, sample_ohlcv):
     monkeypatch.setattr(
         asset_loader,
         "load_global_market_data",
-        lambda route, symbol, start, end: fetch(symbol=symbol),
+        lambda route, symbol, start, end, **kwargs: fetch(symbol=symbol),
     )
     monkeypatch.setattr(asset_loader, "load_fx_data", fake_fx)
     page = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
-    for key in ("tab3_btn_normalize", "tab3_btn_gbm", "tab3_btn_ef"):
+    for key in ("single_btn_normalize", "single_btn_gbm", "compare_run_btn", "tab3_btn_ef"):
         page.button(key).click().run()
         assert not page.exception
         assert not page.error

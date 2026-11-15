@@ -1,7 +1,7 @@
 # 工程架构、数据口径与兼容边界
 
-> 更新日期：2026-11-15（M4 / V0.4 基线对齐）  
-> 详细技术债清单、V0.1/V0.2/V0.3/V0.4 数据契约与模块拆分方案见 [M0 审计与契约文档](M0_AUDIT_AND_CONTRACTS.md)；长期阶段规划见 [产品定位与开发路线图](ROADMAP.md)。
+> 更新日期：2026-11-15（M5 / V1.0 基线对齐）  
+> 详细技术债清单与历史阶段设计见 [M0 审计与契约文档](M0_AUDIT_AND_CONTRACTS.md)；长期阶段规划与 V0.1–V1.0 交付记录见 [产品定位与开发路线图](ROADMAP.md)。
 
 ---
 
@@ -12,9 +12,9 @@
 - **入口层**：
   - [quant_cli.py](../quant_cli.py)：面向 AI Agent 的命令行入口（已注册 CLI 脚本 `quant`，提供 `quant fetch`、`quant analyze`、`quant compare` 与 `quant portfolio`）。`stdout` 严格输出 JSON，`stderr` 输出诊断日志与结构化 JSON 错误；严格校验资产类型输入（裸代码无 `-t/--asset-type` 及非法/空 `TYPE:` / `TYPE|` 前缀直接以退出码 `2` 失败，不静默猜为 `etf`）；`--output <dir>` 事务性写入 `result.json` 与类型化 Parquet（如 `data.parquet`、`prices.parquet`、`returns.parquet`、`correlation.parquet`、`covariance.parquet`、`rolling_metrics.parquet`、`weights.parquet`、`frontier.parquet`、`backtest.parquet`、`weight_history.parquet`，可选 companion CSV）及分级退出码（`0`/`2`/`3`/`4`/`5`/`1`）；`analyze`/`compare`/`portfolio` 按需通过 `--report`、`--charts`、`--chart-types` 触发报告与图表落盘，未请求图表时绝不导入绘图依赖。
   - [main.py](../main.py)：原有全 13 类资产命令行入口（已注册 CLI 脚本 `quantitative-analysis`），保留交互/无头文本诊断报告、`mplfinance` 图表与 CSV 导出兼容。
-  - [app.py](../app.py)：Streamlit 三标签页 Web 应用（`量化诊断看板`、`数学原理`、`进阶金融算法`），维护会话结果、侧边栏代理状态及 `@st.cache_data` 内存缓存。
+  - [app.py](../app.py)：M5（V1.0）重构后的 Streamlit Web 平台，围绕 **📈 单资产探索**、**⚖️ 多资产比较**、**🎯 投资组合研究** 三个工作区组织交互与展示，全面调用 `fetch_single_asset` / `analyze_single_asset` / `compare_assets` / `analyze_portfolio` 并复用 [reporting/](../reporting/) 与 `build_plotly_figures` 渲染图表及 `.md`/`.html`/`.json`/`.csv` 导出，按工作区隔离 `st.session_state`（含 `@st.cache_data` 直接绑定 `asset_loader` 入口确保 `AppTest` 跨模块缓存清理一致），并与 CLI 对齐默认参数（包括组合默认 `monthly` 调仓）。
 - **契约与分析服务层**：
-  - [contracts.py](../contracts.py)：版本化统一数据契约（`SCHEMA_VERSION = "0.1.0"`、`SOFTWARE_VERSION` 对应 `0.4.0`）：单资产契约 `AnalysisRequest`、`SeriesMetadata`、`QualityReport`、`AnalysisResult`，与多资产契约 `AssetSpec`、`CompareRequest`、`PortfolioRequest`、`MultiAssetResult`（均支持 `to_dict(include_data=...)` 与 strict JSON `allow_nan=False` 序列化）。
+  - [contracts.py](../contracts.py)：版本化统一数据契约（`SCHEMA_VERSION = "0.1.0"`、`SOFTWARE_VERSION` 对应 `1.0.0`）：单资产契约 `AnalysisRequest`、`SeriesMetadata`、`QualityReport`、`AnalysisResult`，与多资产契约 `AssetSpec`、`CompareRequest`、`PortfolioRequest`、`MultiAssetResult`（均支持 `to_dict(include_data=...)` 与 strict JSON `allow_nan=False` 序列化）。
   - [services/analysis_service.py](../services/analysis_service.py)：解耦 UI/CLI 的单资产服务（`fetch_single_asset` 与 `analyze_single_asset` 共用 `_prepare_single_asset_frame` 完成窗口裁剪、元信息补全与 FX 折算）。
   - [services/multi_asset_service.py](../services/multi_asset_service.py)：解耦 UI/CLI 的多资产研究服务（`compare_assets` 与 `analyze_portfolio` 复用 `_fetch_multi_asset_frames`、`align_multi_asset_frames`、`analysis_metrics` 与 `quant_models`），统一输出跨市场可比指标、FX 折算元信息与基准对照。
 - **报告与可视化渲染层（M4）**：
@@ -68,7 +68,7 @@
   - [quant_cli.py](../quant_cli.py) `_write_outputs` 采用三阶段事务提交（全量临时暂存 -> 同文件系统旧文件/陈旧产物备份 -> 原子 `os.replace` 提交并按受管文件名集合清理上一次残留的陈旧产物，覆盖 `weights.parquet`/`frontier.parquet`/`backtest.parquet` 及 `report.md`/`report.html` 与 `charts/<managed_type>.{html,png,svg}`，空受管 `charts/` 目录按需安全回收），任意文件失败时完整回滚并还原覆盖或已删文件，绝不触碰用户非受管文件（包括 `charts/` 下用户自定义文件）。
   - 回撤口径在展现层的跨命令统一：单资产 `analyze` 与组合 `portfolio` 在 `result.json` 底层存储 `max_drawdown >= 0` 的深度值，而 `compare` 存储 `max_drawdown <= 0` 的水下收益值；[reporting/](../reporting/) 与 [charts.py](../charts.py) 在所有报告表格及水下回撤图中统一标准化为非正百分比（`<= 0%`），并在报告方法论部分显式标注 JSON 底层字段约定。
   - [asset_catalog.py](../asset_catalog.py) `normalize_symbol_alias` 在 `hk_stock`、`fx`、`gold` 之外新增 `ashare`/`etf` 交易所前缀/后缀（如 `sh600519` / `600519.SH` -> `600519`）规范化，配合 `quant_cli` 严格前缀校验消除多资产重复腿漏判与裸代码猜错类别风险。
-  - Web Tab 1 `app.py` 在 M0 已对齐 `ohlcv.py` 真实的 `dropped_invalid_rows` / `filled_price_rows` / `missing_volume_rows` / `ohlc_anomaly_rows` / `non_positive_price_rows` 质量字段，确保清洗提示真实可见。
+  - Web 端 [app.py](../app.py) 自 M5 起直接消费统一契约 `QualityReport` 与 `result.warnings`，经 `_format_data_quality_warning` 去重展示；M5 专项回归 [test_m5_web_cli_parity_and_ui.py](../tests/test_m5_web_cli_parity_and_ui.py) 验证同一数据快照、资产语义、基准货币与参数下 Web 与 `quant` CLI 输出严格一致。
   - `data_sources/network.py` 的 `classify_network_exception` 在 M2 支持解析 `ChinaEquityPipelineError.network_related` 与 `DataFetchError` 包裹链，`tests/conftest.py` 的离线隔离门禁覆盖 `socket.connect`/`connect_ex`、`socket.getaddrinfo` 与 `requests`/`urllib3`/`httpx`/`urllib.request` 非回环外连（包括本地环境变量代理路径）。
 
 ---

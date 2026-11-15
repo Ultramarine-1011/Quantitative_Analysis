@@ -1,7 +1,7 @@
 # 产品定位与开发路线图（Roadmap）
 
-> 状态：**M4（V0.4）已完成** · 更新：2026-11-15  
-> V0.1（M0–M1）、V0.2（M2）、V0.3（M3：`quant fetch` / `analyze` / `compare` / `portfolio`）与 V0.4（M4：独立报告渲染器 `reporting/` 与按需图表生成）已落地；M5（Web UI 全面迁移至统一服务层与共享渲染组件）为下一步规划里程碑。现有功能与口径细节以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
+> 状态：**M5（V1.0）已完成** · 更新：2026-11-15  
+> V0.1（M0–M1）、V0.2（M2：`quant fetch` / `analyze`）、V0.3（M3：`quant compare` / `portfolio`）、V0.4（M4：独立报告渲染器 `reporting/` 与按需图表生成）及 V1.0（M5：Streamlit Web UI 全面重构并接入统一服务与渲染层，完成 Web/CLI 统一验收）已全部落地。现有功能与口径细节以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
 >
 > **M0 重估提示**：因近期代码分支（Stages 1–5）已提前落地了多市场日历对齐、FX 换汇、9 项 OHLCV 质量诊断、SLSQP 精确有效前沿、Ledoit-Wolf 收缩、Walk-Forward 样本外回测与 Parquet 共享缓存，以下 M1/M3/M5 中的部分基础工作已具备实现，**后续开发须先对照 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md#2-roadmapmd-实际完成度重估防止-m1m5-重复开发) 避免重复造轮子**。
 
@@ -157,15 +157,15 @@ quant portfolio etf:510300 us_stock:SPY --benchmark etf:510500 --base-currency C
 
 **验收标准**：一次命令可按需得到 JSON、标准化数据、Markdown/HTML 报告及图表；报告数值与结构化结果一致，图表不改变计算口径。
 
-### M5 · Web UI 重构与统一验收（V1.0）
+### M5 · Web UI 重构与统一验收（V1.0 — 已完成）
 
 **目标**：形成可长期维护的 Web + CLI 双入口金融分析平台。
 
-**工作内容**
-- Streamlit 改为调用统一分析服务，界面围绕**单资产探索、多资产比较、投资组合研究**组织。
-- 数学原理成为指标帮助或独立文档；模型模拟及高级选项按需展开，避免功能横向堆积。
-- 验证 Web 与 CLI 在相同数据快照和参数下输出一致；保留数据导出与交互图表。
-- 完善跨平台安装与运行文档、错误提示、CI、测试、数据源故障与缓存策略；使用真实 Agent 场景进行端到端验收。
+**工作内容（已在 M5 落地）**
+- [x] **Streamlit 架构重构（[app.py](../app.py)）**：全面迁移至 `fetch_single_asset`、`analyze_single_asset`、`compare_assets` 与 `analyze_portfolio` 统一服务，清理重复的数据预处理、指标计算与组合优化/回测逻辑，默认参数与 CLI（包括单资产 `LOCAL` + `log`、Compare/Portfolio `CNY`、`monthly` 调仓与 Ledoit-Wolf 协方差收缩）严格对齐。
+- [x] **界面与信息层次重组**：围绕 **📈 单资产探索**、**⚖️ 多资产比较**、**🎯 投资组合研究** 三个核心工作区组织侧边栏与主面板；数学原理定义、技术参数与多维敏感性矩阵折叠展示，隔离会话状态并保留自适应 `@st.cache_data` 缓存与强刷控制。
+- [x] **共享图表与统一报告导出**：复用 [charts.py](../charts.py) 与 [reporting/](../reporting/)（`build_plotly_figures`、`build_markdown_report`、`build_html_report`、`reporting.formatting`），支持 3 类工作区一致的交互图表、数据质量与语义阻断表、`in_sample` 前视偏差警告及 `.md` / `.html` / strict `.json` / UTF-8 BOM `.csv` 一键预览和导出。
+- [x] **Web / CLI 一致性与统一验收（[test_m5_web_cli_parity_and_ui.py](../tests/test_m5_web_cli_parity_and_ui.py)）**：补充同一数据快照与参数下的单资产、多资产比较与组合回测 Web/CLI 一致性验证、`bond_us_yield` 跨工作区语义拦截、加密自适应交易日 GBM、`custom` 权重校验及离线 `AppTest` / 无可选依赖兼容性验收，并将版本升级至 `1.0.0`。
 
 **验收标准**：Web 和 CLI 共用同一计算口径；能够从资产查询到图表、数据、指标与报告完成全流程；自动化测试与文档能够支持持续维护。
 
@@ -177,9 +177,9 @@ quant portfolio etf:510300 us_stock:SPY --benchmark etf:510500 --base-currency C
 | **V0.2** | M2 | **已完成**：Agent CLI（`quant fetch` / `quant analyze`）、`result.json` + `data.parquet` 产物、退出码契约与缓存/离线加固 |
 | **V0.3** | M3 | **已完成**：多资产比较（`quant compare`）、组合与无前视偏差回测（`quant portfolio`）、分布/Memmel/风险贡献统计及 M2 事务性落盘与解析加固 |
 | **V0.4** | M4 | **已完成**：独立报告与按需图表渲染包 [reporting/](../reporting/)（Markdown/HTML 报告 + HTML/PNG/SVG 图表、计算与渲染分离及 `--report`/`--charts`/`--chart-types` CLI 集成） |
-| **V1.0** | M5 | **下一步**：Web/CLI 共享分析核心与渲染组件的完整平台重构及统一验收 |
+| **V1.0** | M5 | **已完成**：[app.py](../app.py) 全面接入 `services/` + `reporting/` 三工作区平台重构、Web/CLI 数值口径与参数默认严格对齐、M5 一致性与 `AppTest` 回归通过 |
 
-**近期开发重心将转向 V1.0（M5 Web UI 重构与统一验收）。** 基于稳定的 M1–M4 服务、契约与渲染组件推进 Streamlit 界面轻量化改造与统一端到端验收。
+> M0–M5（V1.0）核心建设已完成；后续演进围绕实盘数据源适应与按实际使用场景评估扩展能力。
 
 ## 6. 成功标准与暂不实施的内容
 
