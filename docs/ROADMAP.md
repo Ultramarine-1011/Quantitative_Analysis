@@ -1,7 +1,7 @@
 # 产品定位与开发路线图（Roadmap）
 
-> 状态：**M3（V0.3）已完成** · 更新：2026-11-15  
-> V0.1（M0–M1）、V0.2（M2）与 V0.3（M3：`quant fetch` / `analyze` / `compare` / `portfolio`）已落地；M4（按需报告/图表生成）与 M5（Web UI 全面迁移至统一服务层）仍为规划中里程碑。现有功能与口径细节以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
+> 状态：**M4（V0.4）已完成** · 更新：2026-11-15  
+> V0.1（M0–M1）、V0.2（M2）、V0.3（M3：`quant fetch` / `analyze` / `compare` / `portfolio`）与 V0.4（M4：独立报告渲染器 `reporting/` 与按需图表生成）已落地；M5（Web UI 全面迁移至统一服务层与共享渲染组件）为下一步规划里程碑。现有功能与口径细节以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
 >
 > **M0 重估提示**：因近期代码分支（Stages 1–5）已提前落地了多市场日历对齐、FX 换汇、9 项 OHLCV 质量诊断、SLSQP 精确有效前沿、Ledoit-Wolf 收缩、Walk-Forward 样本外回测与 Parquet 共享缓存，以下 M1/M3/M5 中的部分基础工作已具备实现，**后续开发须先对照 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md#2-roadmapmd-实际完成度重估防止-m1m5-重复开发) 避免重复造轮子**。
 
@@ -138,20 +138,21 @@ quant portfolio etf:510300 etf:510500 etf:518880 --strategy risk_parity --valida
 
 **验收标准**：可用 CLI 完成典型多资产比较和组合研究，结果包含可核对的样本、参数、基准、质量与方法说明；模拟不冒充实际预测或有效策略表现；离线回归测试全量通过。
 
-### M4 · 可阅读报告与可视化生成（V0.4）
+### M4 · 可阅读报告与可视化生成（V0.4 — 已完成）
 
 **目标**：同一份分析结果既便于 Agent 消费，也便于人类审阅。
 
-**工作内容**
-- 建立独立 Report Renderer：按分析任务生成 Markdown / HTML 报告，包含数据说明、统计结果、方法和假设、质量警告与图表引用。
-- 建立独立 Chart Renderer：按需输出交互式 HTML、PNG 或 SVG，覆盖价格/净值、回撤、滚动统计、多资产对比和组合等适用场景。
-- 支持通过 CLI 控制是否生成报告、生成格式及图表集合；不重复获取数据或重新计算指标。
-- 报告明确区分历史统计、统计推断、模型模拟和回测结果；避免由技术指标直接推出买卖结论。
+**工作内容（已在 M4 落地）**
+- [x] 建立独立 Report Renderer [reporting/report_renderer.py](../reporting/report_renderer.py)：分别针对 `analyze`、`compare`、`portfolio` 设计研究报告结构，按需输出 Markdown（`report.md`）与离线自包含 HTML（`report.html`），完整覆盖标的与数据来源、核心定量指标、分布/正态与 Memmel 夏普假设检验、模型方法与假设、数据质量审计、风险提示及相对路径图表嵌入与跳转链接。
+- [x] 建立独立 Chart Renderer [reporting/chart_renderer.py](../reporting/chart_renderer.py) 与共享口径工具 [reporting/formatting.py](../reporting/formatting.py)：复用 [charts.py](../charts.py) 与 [visualizer.py](../visualizer.py)，支持按需导出自包含交互式 HTML 与 Matplotlib/`mplfinance` 静态 PNG/SVG（位于 `<output>/charts/`），覆盖价格/走势、归一化净值、水下回撤、滚动统计、相关性热力图、组合权重与 Euler 风险贡献、SLSQP vs Dirichlet 有效前沿及回测净值/再平衡权重演化，并暴露 `build_plotly_figures` 供 M5 Streamlit 复用。
+- [x] 完成 CLI 集成 [quant_cli.py](../quant_cli.py)：为 `quant analyze`、`quant compare`、`quant portfolio` 增加 `--report`（`md`/`html`/`all`/`none`）、`--charts`（`html`/`png`/`svg`/`all`/`none`）与 `--chart-types` 参数；将生成的报告与图表纳入同一三阶段事务性原子提交、失败回滚与陈旧受管产物清理契约；未触发图表时不导入 `matplotlib`/`plotly`。
+- [x] 严格遵循计算与渲染分离及金融语义准确性：提供 `load_result_from_artifacts` 从磁盘 `result.json` + Parquet 独立渲染而无二次拉取/重算；明确区隔历史实现表现、统计推断、样本内前视参考（`has_lookahead_bias` 警报）、样本外因果回测（`train_test` / `walk_forward_*`）与随机模拟；统一以非正水下百分比展示回撤，正确处理 `yield_level_not_return`（不乘 100%、阻断收益类指标与图表）、`fx_rate` 与 `mixed_local_currencies` 警告。
 
-**目标接口示意（尚未实现）**
+**接口示例**
 
 ```bash
-quant analyze NVDA --start 2021-01-01 --report md --charts html,png
+quant analyze us_stock:NVDA --start 2021-01-01 -o ./results/nvda --report md --charts html,png
+quant portfolio etf:510300 us_stock:SPY --benchmark etf:510500 --base-currency CNY -o ./results/port --report all --charts html,png --chart-types backtest,weights,frontier
 ```
 
 **验收标准**：一次命令可按需得到 JSON、标准化数据、Markdown/HTML 报告及图表；报告数值与结构化结果一致，图表不改变计算口径。
@@ -175,10 +176,10 @@ quant analyze NVDA --start 2021-01-01 --report md --charts html,png
 | **V0.1** | M0 + M1 | **已完成**：统一的 `contracts.py` 数据契约、`AnalysisService` 基础服务、质量诊断、语义拦截与离线测试基线 |
 | **V0.2** | M2 | **已完成**：Agent CLI（`quant fetch` / `quant analyze`）、`result.json` + `data.parquet` 产物、退出码契约与缓存/离线加固 |
 | **V0.3** | M3 | **已完成**：多资产比较（`quant compare`）、组合与无前视偏差回测（`quant portfolio`）、分布/Memmel/风险贡献统计及 M2 事务性落盘与解析加固 |
-| **V0.4** | M4 | **下一步**：消费统一 JSON + Parquet 产物的按需 Markdown / HTML 报告与图表渲染 |
-| **V1.0** | M5 | Web/CLI 共享分析核心的完整平台 |
+| **V0.4** | M4 | **已完成**：独立报告与按需图表渲染包 [reporting/](../reporting/)（Markdown/HTML 报告 + HTML/PNG/SVG 图表、计算与渲染分离及 `--report`/`--charts`/`--chart-types` CLI 集成） |
+| **V1.0** | M5 | **下一步**：Web/CLI 共享分析核心与渲染组件的完整平台重构及统一验收 |
 
-**近期开发重心将转向 V0.4（M4 按需报告与图表生成）。** 继续优先保证计算准确性、口径一致性与结构化输出可读性；报告与图表严格仅消费 `result.json` 与 Parquet 产物。
+**近期开发重心将转向 V1.0（M5 Web UI 重构与统一验收）。** 基于稳定的 M1–M4 服务、契约与渲染组件推进 Streamlit 界面轻量化改造与统一端到端验收。
 
 ## 6. 成功标准与暂不实施的内容
 

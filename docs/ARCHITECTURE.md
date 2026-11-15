@@ -1,7 +1,7 @@
 # 工程架构、数据口径与兼容边界
 
-> 更新日期：2026-11-15（M3 / V0.3 基线对齐）  
-> 详细技术债清单、V0.1/V0.2/V0.3 数据契约与模块拆分方案见 [M0 审计与契约文档](M0_AUDIT_AND_CONTRACTS.md)；长期阶段规划见 [产品定位与开发路线图](ROADMAP.md)。
+> 更新日期：2026-11-15（M4 / V0.4 基线对齐）  
+> 详细技术债清单、V0.1/V0.2/V0.3/V0.4 数据契约与模块拆分方案见 [M0 审计与契约文档](M0_AUDIT_AND_CONTRACTS.md)；长期阶段规划见 [产品定位与开发路线图](ROADMAP.md)。
 
 ---
 
@@ -10,13 +10,17 @@
 当前工程由三个面向用户/Agent 的入口、统一服务与契约层、资产目录与路由层、特征/指标/模型计算层、图表可视化层以及数据源与缓存基础设施组成：
 
 - **入口层**：
-  - [quant_cli.py](../quant_cli.py)：面向 AI Agent 的命令行入口（已注册 CLI 脚本 `quant`，提供 `quant fetch`、`quant analyze`、`quant compare` 与 `quant portfolio`）。`stdout` 严格输出 JSON，`stderr` 输出诊断日志与结构化 JSON 错误；严格校验资产类型输入（裸代码无 `-t/--asset-type` 及非法/空 `TYPE:` / `TYPE|` 前缀直接以退出码 `2` 失败，不静默猜为 `etf`）；`--output <dir>` 事务性写入 `result.json` 与类型化 Parquet（如 `data.parquet`、`prices.parquet`、`returns.parquet`、`correlation.parquet`、`covariance.parquet`、`rolling_metrics.parquet`、`weights.parquet`、`frontier.parquet`、`backtest.parquet`、`weight_history.parquet`，可选 companion CSV）及分级退出码（`0`/`2`/`3`/`4`/`5`/`1`），不触发任何图表渲染，为 M4 报告/图表渲染器保留完整文件契约。
+  - [quant_cli.py](../quant_cli.py)：面向 AI Agent 的命令行入口（已注册 CLI 脚本 `quant`，提供 `quant fetch`、`quant analyze`、`quant compare` 与 `quant portfolio`）。`stdout` 严格输出 JSON，`stderr` 输出诊断日志与结构化 JSON 错误；严格校验资产类型输入（裸代码无 `-t/--asset-type` 及非法/空 `TYPE:` / `TYPE|` 前缀直接以退出码 `2` 失败，不静默猜为 `etf`）；`--output <dir>` 事务性写入 `result.json` 与类型化 Parquet（如 `data.parquet`、`prices.parquet`、`returns.parquet`、`correlation.parquet`、`covariance.parquet`、`rolling_metrics.parquet`、`weights.parquet`、`frontier.parquet`、`backtest.parquet`、`weight_history.parquet`，可选 companion CSV）及分级退出码（`0`/`2`/`3`/`4`/`5`/`1`）；`analyze`/`compare`/`portfolio` 按需通过 `--report`、`--charts`、`--chart-types` 触发报告与图表落盘，未请求图表时绝不导入绘图依赖。
   - [main.py](../main.py)：原有全 13 类资产命令行入口（已注册 CLI 脚本 `quantitative-analysis`），保留交互/无头文本诊断报告、`mplfinance` 图表与 CSV 导出兼容。
   - [app.py](../app.py)：Streamlit 三标签页 Web 应用（`量化诊断看板`、`数学原理`、`进阶金融算法`），维护会话结果、侧边栏代理状态及 `@st.cache_data` 内存缓存。
 - **契约与分析服务层**：
-  - [contracts.py](../contracts.py)：版本化统一数据契约（`SCHEMA_VERSION = "0.1.0"`、`SOFTWARE_VERSION` 对应 `0.3.0`）：单资产契约 `AnalysisRequest`、`SeriesMetadata`、`QualityReport`、`AnalysisResult`，与多资产契约 `AssetSpec`、`CompareRequest`、`PortfolioRequest`、`MultiAssetResult`（均支持 `to_dict(include_data=...)` 与 strict JSON `allow_nan=False` 序列化）。
+  - [contracts.py](../contracts.py)：版本化统一数据契约（`SCHEMA_VERSION = "0.1.0"`、`SOFTWARE_VERSION` 对应 `0.4.0`）：单资产契约 `AnalysisRequest`、`SeriesMetadata`、`QualityReport`、`AnalysisResult`，与多资产契约 `AssetSpec`、`CompareRequest`、`PortfolioRequest`、`MultiAssetResult`（均支持 `to_dict(include_data=...)` 与 strict JSON `allow_nan=False` 序列化）。
   - [services/analysis_service.py](../services/analysis_service.py)：解耦 UI/CLI 的单资产服务（`fetch_single_asset` 与 `analyze_single_asset` 共用 `_prepare_single_asset_frame` 完成窗口裁剪、元信息补全与 FX 折算）。
   - [services/multi_asset_service.py](../services/multi_asset_service.py)：解耦 UI/CLI 的多资产研究服务（`compare_assets` 与 `analyze_portfolio` 复用 `_fetch_multi_asset_frames`、`align_multi_asset_frames`、`analysis_metrics` 与 `quant_models`），统一输出跨市场可比指标、FX 折算元信息与基准对照。
+- **报告与可视化渲染层（M4）**：
+  - [reporting/formatting.py](../reporting/formatting.py)：统一金融语义格式化工具（百分比、收益率百分点不误乘 100%、统一非正水下回撤格式化、p 值、阻断原因标签 `METRIC_REASON_LABELS`）及 `load_result_from_artifacts`（严格从磁盘 `result.json` + Parquet 反序列化为契约对象，保障计算与渲染完全分离）。
+  - [reporting/chart_renderer.py](../reporting/chart_renderer.py) 与 [charts.py](../charts.py) / [visualizer.py](../visualizer.py)：按命令支持的图表集（`analyze`: `price`/`normalized`/`drawdown`/`rolling`；`compare`: `normalized`/`drawdown`/`rolling`/`correlation`；`portfolio`: `backtest`/`weights`/`frontier`/`correlation`/`normalized`/`drawdown`/`weight_history`）按需生成离线自包含 Plotly HTML（`full_html` 内联 `plotly.js`）及 Matplotlib/`mplfinance` 静态 PNG/SVG（导出至 `<output>/charts/`，并向后兼容提供 `build_plotly_figures` 供 M5 Web UI 复用）。
+  - [reporting/report_renderer.py](../reporting/report_renderer.py)：零绘图依赖的 `Markdown`（`report.md`）与离线自包含 `HTML`（`report.html`）研究报告渲染器，按命令输出差异化章节并在展现层显式区分历史统计、统计假设检验（Jarque-Bera / Memmel）、样本内前视参考、样本外因果回测及随机模拟，同时自动嵌入并链接对应图表。
 - **资产与数据准备层**：
   - [asset_catalog.py](../asset_catalog.py)：13 类资产稳定 key、标签、默认值、交易日年化因子（`ASSET_TRADING_DAYS`）、默认币种、9 类收益语义 `ASSET_RETURN_BASIS` 及复权支持能力矩阵 `SUPPORTED_ADJUSTMENTS`。
   - [asset_resolver.py](../asset_resolver.py)（[china_equity_entry.py](../china_equity_entry.py) 保留兼容重导出）：分析窗口校验与境内 ETF/A 股统一错误信息格式化。
@@ -60,8 +64,9 @@
 - **服务与缓存边界加固（M2）**：
   - `services/analysis_service.py` 在分析与拉取前置阶段严格按 `[request.start_date, request.end_date]` 裁剪传入样本（空重叠直接抛出 `EmptySymbolDataError`），且 `build_quality_report` 与 `data_summary` 始终以实际交付样本与 FX 对齐后行数推导起止日期与质量范围。
   - 共享 Parquet + JSON 元信息缓存默认写入 `~/.cache/quantitative_analysis/ohlcv`（TTL 3600 秒）；M0 已修复禁止持久化 `proxy_url` 到 `.meta.json` 并在空切片时触发重拉；M1/M2 将进程内线程锁键细化至 `(cache_dir, key)`，在 POSIX `fcntl` 之外增加 Windows `msvcrt` 字节锁回退，`clear_ohlcv_cache()` 按 key 加锁且保留 `.locks/` 句柄避免破坏 POSIX inode 锁；M3 进一步加固 `save_cached_ohlcv` 覆盖已有缓存时的旧文件同盘备份（`_backup_existing_file`）与按替换标志精准回滚（`_restore_or_unlink_file`），确保中途失败时原有有效 `(parquet, meta.json)` 成对保留且不残余 `.tmp`/`.bak` 文件。
-- **Agent CLI 事务性落盘与严格标的解析（M3）**：
-  - [quant_cli.py](../quant_cli.py) `_write_outputs` 采用三阶段事务提交（全量临时暂存 -> 同文件系统旧文件/陈旧产物备份 -> 原子 `os.replace` 提交并按受管文件名集合清理上一次残留的陈旧产物，如从 `portfolio` 切换为 `compare` 时删除 `weights.parquet`/`frontier.parquet`/`backtest.parquet`），任意文件失败时完整回滚并还原覆盖或已删文件，绝不触碰用户非受管文件。
+- **Agent CLI 事务性落盘与严格标的解析（M3–M4）**：
+  - [quant_cli.py](../quant_cli.py) `_write_outputs` 采用三阶段事务提交（全量临时暂存 -> 同文件系统旧文件/陈旧产物备份 -> 原子 `os.replace` 提交并按受管文件名集合清理上一次残留的陈旧产物，覆盖 `weights.parquet`/`frontier.parquet`/`backtest.parquet` 及 `report.md`/`report.html` 与 `charts/<managed_type>.{html,png,svg}`，空受管 `charts/` 目录按需安全回收），任意文件失败时完整回滚并还原覆盖或已删文件，绝不触碰用户非受管文件（包括 `charts/` 下用户自定义文件）。
+  - 回撤口径在展现层的跨命令统一：单资产 `analyze` 与组合 `portfolio` 在 `result.json` 底层存储 `max_drawdown >= 0` 的深度值，而 `compare` 存储 `max_drawdown <= 0` 的水下收益值；[reporting/](../reporting/) 与 [charts.py](../charts.py) 在所有报告表格及水下回撤图中统一标准化为非正百分比（`<= 0%`），并在报告方法论部分显式标注 JSON 底层字段约定。
   - [asset_catalog.py](../asset_catalog.py) `normalize_symbol_alias` 在 `hk_stock`、`fx`、`gold` 之外新增 `ashare`/`etf` 交易所前缀/后缀（如 `sh600519` / `600519.SH` -> `600519`）规范化，配合 `quant_cli` 严格前缀校验消除多资产重复腿漏判与裸代码猜错类别风险。
   - Web Tab 1 `app.py` 在 M0 已对齐 `ohlcv.py` 真实的 `dropped_invalid_rows` / `filled_price_rows` / `missing_volume_rows` / `ohlc_anomaly_rows` / `non_positive_price_rows` 质量字段，确保清洗提示真实可见。
   - `data_sources/network.py` 的 `classify_network_exception` 在 M2 支持解析 `ChinaEquityPipelineError.network_related` 与 `DataFetchError` 包裹链，`tests/conftest.py` 的离线隔离门禁覆盖 `socket.connect`/`connect_ex`、`socket.getaddrinfo` 与 `requests`/`urllib3`/`httpx`/`urllib.request` 非回环外连（包括本地环境变量代理路径）。

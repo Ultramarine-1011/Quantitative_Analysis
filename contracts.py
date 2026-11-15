@@ -59,7 +59,7 @@ def get_software_version() -> str:
     try:
         return importlib_metadata.version("quantitative-analysis")
     except importlib_metadata.PackageNotFoundError:
-        return "0.3.0"
+        return "0.4.0"
 
 
 SOFTWARE_VERSION = get_software_version()

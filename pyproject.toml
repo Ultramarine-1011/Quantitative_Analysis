@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quantitative-analysis"
-version = "0.3.0"
-description = "Multi-asset OHLCV diagnostics with Agent CLI, Streamlit UI, and legacy CLI"
+version = "0.4.0"
+description = "Multi-asset OHLCV diagnostics, reports/charts, Agent CLI, and Streamlit UI"
 readme = "README.md"
 requires-python = ">=3.11"
 dynamic = ["dependencies"]
@@ -26,7 +26,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["data_sources*", "services*"]
+include = ["data_sources*", "services*", "reporting*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

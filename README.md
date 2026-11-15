@@ -14,7 +14,8 @@
 - **OHLCV 清洗、校验与特征工程**：标准化六列 OHLCV 契约（无时区升序唯一日期索引），输出 9 项质量诊断计数，并计算 SMA、EMA、布林带、RSI(14)、MACD、对数收益滚动波动率及回撤序列。
 - **风险收益统计与组合模型**：计算累计收益、CAGR、年化波动率、最大回撤、Sharpe / Sortino / Calmar 与 95% 日 VaR / CVaR；支持相关性热图、Ledoit-Wolf 协方差收缩、SciPy SLSQP 精确有效前沿（GMV 与切点最大夏普）、GBM 蒙特卡洛模拟及 Train/Test 与 Walk-Forward 样本外回测。
 - **交互式图表与数据导出**：Streamlit 三标签页界面集成自适应亮暗主题的 Plotly 多面板图表及清洗后 OHLCV CSV（UTF-8 BOM）导出；命令行支持控制台诊断报告、`mplfinance` 多面板静态图与 CSV 导出。
-- **Agent CLI 与标准化输出（`quant`）**：提供面向 AI Agent 自动化调用的 `quant fetch`、`quant analyze`、`quant compare` 与 `quant portfolio` 命令，支持全 13 类资产检索、跨市场日历与汇率对齐、多资产统计比较、组合优化（SLSQP 精确有效前沿、`min_variance`/`max_sharpe`/`risk_parity`/`inverse_volatility`/`equal_weight`/`custom`）与严格无前视偏差样本外回测，事务性原子输出版本化 `result.json`（含指标、权重、风险贡献、模型假设、数据质量与警告）及类型化 Parquet 产物；`stdout` 严格输出 JSON，`stderr` 输出日志与结构化错误，附稳定退出码（`0`/`2`/`3`/`4`/`5`/`1`），不依赖图表渲染。
+- **Agent CLI 与标准化输出（`quant`）**：提供面向 AI Agent 自动化调用的 `quant fetch`、`quant analyze`、`quant compare` 与 `quant portfolio` 命令，支持全 13 类资产检索、跨市场日历与汇率对齐、多资产统计比较、组合优化（SLSQP 精确有效前沿、`min_variance`/`max_sharpe`/`risk_parity`/`inverse_volatility`/`equal_weight`/`custom`）与严格无前视偏差样本外回测，事务性原子输出版本化 `result.json`（含指标、权重、风险贡献、模型假设、数据质量与警告）及类型化 Parquet 产物；`stdout` 严格输出 JSON，`stderr` 输出日志与结构化错误，附稳定退出码（`0`/`2`/`3`/`4`/`5`/`1`）；默认不加载绘图库，按需通过 `--report` / `--charts` / `--chart-types` 生成可阅读报告与图表。
+- **独立报告与图表渲染（M4 `reporting/`）**：支持按需生成结构化 `Markdown`（`report.md`）与离线自包含 `HTML`（`report.html`）研究报告及多格式图表（交互式自包含 Plotly `html` 与 Matplotlib/`mplfinance` 静态 `png`/`svg`，输出至 `<output>/charts/`），严格遵循计算与渲染分离契约（仅消费 `AnalysisResult`/`MultiAssetResult` 或磁盘 `result.json` + Parquet，不重复抓取数据或重算指标），并在展示层显式区分历史实现统计、统计假设检验、样本内前视参考、样本外因果回测与蒙特卡洛/Dirichlet 模拟，统一以非正百分比（`<= 0%`）展示水下回撤并正确处理 `yield_level_not_return` 等阻断指标。
 - **既有终端与 Web 入口兼容**：保留 `python main.py` / `quantitative-analysis` 终端报告、`mplfinance` 静态图表导出与 Streamlit Web 看板完整可用。
 
 ---
@@ -88,6 +89,10 @@ quant compare etf:510300 us_stock:SPY gold:GC --benchmark etf:510500 --start 202
 
 # 示例 5：投资组合优化、风险贡献、SLSQP 有效前沿与无前视偏差样本外回测（Train/Test 或 Walk-Forward）
 quant portfolio etf:510300 etf:510500 etf:511010 etf:518880 --start 2023-01-01 --end 2026-11-13 --strategy risk_parity --validation-mode walk_forward_rolling --train-window 60 --rebalance-freq monthly --tx-bps 10 -o outputs/portfolio --csv
+
+# 示例 6：按需生成 Markdown / HTML 研究报告与可视化图表（写入 <output>/report.* 与 <output>/charts/*.html|png|svg）
+quant analyze us_stock:NVDA --start 2024-01-01 --end 2026-11-13 --include-momentum -o outputs/nvda_report --report all --charts html,png
+quant portfolio etf:510300 us_stock:SPY --benchmark etf:510500 --start 2023-01-01 --end 2026-11-13 --base-currency CNY --strategy max_sharpe --validation-mode train_test -o outputs/port_report --report html --charts all --chart-types backtest,weights,frontier
 ```
 
 > 注：为避免跨市场标的静默猜错，Agent CLI 对裸代码强制要求配合 `-t/--asset-type` 或显式 `TYPE:SYMBOL`（如 `ashare:600519`、`us_stock:AAPL`）。
@@ -185,13 +190,16 @@ flowchart TB
     Contract["统一 OHLCV 契约与语义/汇率对齐 (ohlcv.py · asset_catalog.py · asset_resolver.py · currency.py)"]
     Features["特征工程 (feature_engineering.py)"]
     Analytics["单/多资产指标与组合回测模型 (analysis_metrics.py · quant_models.py · services/)"]
+    Reporting["独立报告与按需图表渲染器 (reporting/ · charts.py · visualizer.py)"]
     WebUI["Streamlit Web 交互看板 (charts.py · app.py)"]
-    CLI["Agent CLI 与静态图终端 (quant_cli.py · visualizer.py · main.py)"]
+    CLI["Agent CLI 与静态图终端 (quant_cli.py · main.py)"]
 
     Sources --> Contract
     Contract --> Features
     Features --> Analytics
+    Analytics --> Reporting
     Analytics --> WebUI
+    Reporting --> CLI
     Analytics --> CLI
 ```
 
@@ -202,8 +210,9 @@ flowchart TB
 
 | 模块 | 职责 |
 | --- | --- |
-| `app.py` / `charts.py` | Streamlit 三标签页 Web 入口与会话状态管理；主题自适应 Plotly 图表构建器 |
-| `quant_cli.py` | V0.3 Agent CLI 入口（`quant fetch` / `quant analyze` / `quant compare` / `quant portfolio`），事务性多文件原子输出 `result.json` + 类型化 Parquet 与分级退出码 |
+| `app.py` / `charts.py` | Streamlit 三标签页 Web 入口与会话状态管理；主题自适应 Plotly 图表构建器（供 Web 与 `reporting` 共用） |
+| `quant_cli.py` | V0.4 Agent CLI 入口（`quant fetch` / `quant analyze` / `quant compare` / `quant portfolio`），事务性多文件原子输出 `result.json` + Parquet + 按需报告/图表，附分级退出码 |
+| `reporting/` | M4 独立渲染包（`report_renderer.py`、`chart_renderer.py`、`formatting.py`）：消费内存结果或磁盘 `result.json` + Parquet 生成 Markdown/HTML 报告及 HTML/PNG/SVG 图表，延迟加载绘图依赖 |
 | `main.py` / `visualizer.py` | 原全 13 类资产命令行入口（`quantitative-analysis`）；基于 `mplfinance` 的静态多面板/纯折线图表渲染 |
 | `asset_catalog.py` | 13 类资产 key、中文标签、默认标的、代码别名归一化、交易日年化因子、收益语义与复权支持矩阵 |
 | `asset_loader.py` | 13 类资产统一入口 `load_asset_data`、并发加载与多市场交易日历对齐引擎 |
@@ -242,6 +251,10 @@ Quantitative_Analysis/
 ├── quant_models.py         # 组合优化、Euler 风险贡献、SLSQP 前沿、GBM 与样本外回测
 ├── charts.py               # Plotly 交互图表
 ├── visualizer.py           # mplfinance 静态图表
+├── reporting/              # M4 独立报告与图表渲染层
+│   ├── formatting.py           # 金融口径格式化、阻断原因标签与磁盘契约反序列化
+│   ├── chart_renderer.py       # 延迟导入的 Plotly HTML 与 Matplotlib/mplfinance PNG/SVG 渲染器
+│   └── report_renderer.py      # 零绘图依赖的 Markdown / 自包含 HTML 研究报告渲染器
 ├── pyproject.toml          # 安装配置、CLI 注册与 Ruff / Mypy 配置
 ├── requirements.txt        # 运行依赖
 ├── streamlit.bat           # Windows Streamlit 启动包装脚本
@@ -267,8 +280,8 @@ Quantitative_Analysis/
 
 | 能力状态 | 具体内容 |
 | --- | --- |
-| **当前已实现（M0–M3）** | 13 类资产适配、别名归一化与带覆盖回滚/锁保护的共享 Parquet 缓存；强类型契约 [contracts.py](contracts.py) 与无 UI 依赖服务 [services/analysis_service.py](services/analysis_service.py) / [services/multi_asset_service.py](services/multi_asset_service.py)；Agent CLI 完整提供 `quant fetch`、`quant analyze`、`quant compare`、`quant portfolio`（严格资产类型解析、多文件事务性落盘与陈旧受管产物清理）；跨市场日历对齐（`common_trading_dates`/`weekly_friday`/`mtm_outer`）与 FX 折算；高阶矩/JB 正态与 Memmel 夏普检验、相对基准、滚动统计、Euler 风险贡献、Ledoit-Wolf + SLSQP 精确有效前沿与 Dirichlet 随机点明确区分、严格无前视偏差 Train/Test 与 Walk-Forward 样本外回测及参数敏感性网格；Streamlit 三标签页看板与 `main.py` / `quantitative-analysis` CLI |
-| **规划中（M4–M5）** | 独立的 Markdown / HTML 自动报告与按需图表渲染器；Web UI 调用统一服务层的轻量化改造（对应 M4–M5 阶段） |
+| **当前已实现（M0–M4）** | 13 类资产适配、别名归一化与带覆盖回滚/锁保护的共享 Parquet 缓存；强类型契约 [contracts.py](contracts.py) 与无 UI 依赖服务 [services/analysis_service.py](services/analysis_service.py) / [services/multi_asset_service.py](services/multi_asset_service.py)；Agent CLI 完整提供 `quant fetch`、`quant analyze`、`quant compare`、`quant portfolio`（严格资产类型解析、多文件事务性落盘与陈旧受管产物清理）；跨市场日历对齐与 FX 折算；高阶矩/JB 正态与 Memmel 夏普检验、相对基准、滚动统计、Euler 风险贡献、Ledoit-Wolf + SLSQP 精确有效前沿与样本外回测；**M4 独立报告与图表渲染器 [reporting/](reporting/)**（按需 `--report md|html|all`、`--charts html|png|svg|all` 与 `--chart-types`，消费契约结果生成结构化报告及多格式图表、统一水下回撤符号与前视偏差/语义阻断警示，未开启时零绘图依赖）；Streamlit 三标签页看板与 `main.py` CLI |
+| **规划中（M5）** | Web UI 调用统一分析服务与共享 `reporting` 渲染组件的轻量化改造及 V1.0 统一验收（对应 M5 阶段） |
 
 详细设计原则、M0–M5 阶段验收标准与 V0.1–V1.0 迭代计划，请参阅 **[产品定位与开发路线图 (docs/ROADMAP.md)](docs/ROADMAP.md)**。
 

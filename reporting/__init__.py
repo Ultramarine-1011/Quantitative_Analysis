@@ -1,0 +1,71 @@
+"""Independent report and visualization rendering package for Quantitative Analysis."""
+
+from __future__ import annotations
+
+from reporting.chart_renderer import (
+    COMMAND_CHART_TYPES,
+    SUPPORTED_CHART_FORMATS,
+    ChartArtifact,
+    ChartRenderOutput,
+    build_plotly_figures,
+    parse_chart_formats,
+    parse_chart_types,
+    render_charts,
+)
+from reporting.formatting import (
+    METRIC_REASON_LABELS,
+    describe_unit,
+    format_asset_type_label,
+    format_drawdown_percent,
+    format_integer,
+    format_metric_value,
+    format_p_value,
+    format_percent,
+    format_price_with_unit,
+    format_ratio,
+    format_reason_label,
+    format_yield_percent,
+    is_valid_number,
+    load_result_from_artifacts,
+)
+from reporting.report_renderer import (
+    SUPPORTED_REPORT_FORMATS,
+    ReportArtifact,
+    ReportRenderOutput,
+    build_html_report,
+    build_markdown_report,
+    parse_report_formats,
+    render_report,
+)
+
+__all__ = [
+    "COMMAND_CHART_TYPES",
+    "METRIC_REASON_LABELS",
+    "SUPPORTED_CHART_FORMATS",
+    "SUPPORTED_REPORT_FORMATS",
+    "ChartArtifact",
+    "ChartRenderOutput",
+    "ReportArtifact",
+    "ReportRenderOutput",
+    "build_html_report",
+    "build_markdown_report",
+    "build_plotly_figures",
+    "describe_unit",
+    "format_asset_type_label",
+    "format_drawdown_percent",
+    "format_integer",
+    "format_metric_value",
+    "format_p_value",
+    "format_percent",
+    "format_price_with_unit",
+    "format_ratio",
+    "format_reason_label",
+    "format_yield_percent",
+    "is_valid_number",
+    "load_result_from_artifacts",
+    "parse_chart_formats",
+    "parse_chart_types",
+    "parse_report_formats",
+    "render_charts",
+    "render_report",
+]

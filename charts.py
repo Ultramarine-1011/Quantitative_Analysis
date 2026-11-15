@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import math
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -781,8 +782,12 @@ def build_tab3_portfolio_backtest_figure(
 
 def _nav_to_underwater(nav: pd.Series) -> pd.Series:
     s = pd.to_numeric(nav, errors="coerce").astype(float)
-    peak = s.cummax()
-    return (s / peak) - 1.0
+    valid = s.dropna()
+    if valid.empty:
+        return s * np.nan
+    peak = valid.cummax()
+    underwater = (valid / peak) - 1.0
+    return underwater.reindex(s.index)
 
 
 def build_tab3_walk_forward_figure(
@@ -907,8 +912,528 @@ def build_tab3_weight_history_figure(weight_history: pd.DataFrame) -> Any:
     )
 
 
+def build_drawdown_figure(
+    drawdown_or_nav: pd.DataFrame | pd.Series,
+    *,
+    title: str = "历史水下回撤",
+    from_nav: bool = False,
+) -> Any:
+    """绘制单资产或多资产水下回撤曲线（统一以非正百分比 ``<= 0%`` 展示）。"""
+    go, _ = _load_plotly_modules()
+    if isinstance(drawdown_or_nav, pd.Series):
+        df = drawdown_or_nav.to_frame(name=str(drawdown_or_nav.name or "Series"))
+    else:
+        df = drawdown_or_nav
+
+    figure = go.Figure()
+    col_names = [str(c) for c in df.columns]
+    use_fill = len(col_names) == 1
+    for idx, col in enumerate(df.columns):
+        series = pd.to_numeric(df[col], errors="coerce").astype(float)
+        underwater = _nav_to_underwater(series) if from_nav else -series.abs()
+        color = _SERIES_PALETTE[idx % len(_SERIES_PALETTE)] if len(col_names) > 1 else "#dc2626"
+        trace_kwargs: dict[str, Any] = {
+            "x": df.index,
+            "y": underwater,
+            "mode": "lines",
+            "name": str(col),
+            "line": {"width": 1.8, "color": color},
+            "hovertemplate": "%{x|%Y-%m-%d}<br>%{fullData.name}: %{y:.2%}<extra></extra>",
+        }
+        if use_fill:
+            trace_kwargs["fill"] = "tozeroy"
+            trace_kwargs["fillcolor"] = "rgba(220, 38, 38, 0.20)"
+        figure.add_trace(go.Scatter(**trace_kwargs))
+
+    return apply_theme_layout(
+        figure,
+        height=440,
+        margin={"l": 56, "r": 24, "t": 58, "b": 40},
+        hovermode="x unified",
+        title=title,
+        extra_layout={
+            "xaxis_title": "日期",
+            "yaxis_title": "水下回撤",
+            "yaxis_tickformat": ".1%",
+        },
+    )
+
+
+def build_compare_rolling_figure(
+    rolling_df: pd.DataFrame,
+    *,
+    rolling_window: int | None = None,
+    benchmark_col: str | None = None,
+) -> Any:
+    """多资产对比滚动统计多面板图（年化收益、年化波动、Sharpe 及可选滚动相关性）。"""
+    go, subplots = _load_plotly_modules()
+    cols = [str(c) for c in rolling_df.columns]
+    ret_cols = [c for c in cols if c.endswith("__rolling_return_ann")]
+    vol_cols = [c for c in cols if c.endswith("__rolling_vol_ann")]
+    sharpe_cols = [c for c in cols if c.endswith("__rolling_sharpe")]
+    corr_bench_cols = [c for c in cols if c.endswith("__rolling_corr_vs_benchmark")]
+    corr_pair_cols = [c for c in cols if c.endswith("__rolling_corr")]
+    corr_cols = corr_bench_cols if corr_bench_cols else corr_pair_cols
+
+    has_corr = len(corr_cols) > 0
+    n_rows = 4 if has_corr else 3
+    win_tag = f" ({rolling_window}D)" if rolling_window is not None else ""
+    subplot_titles = [
+        f"滚动年化收益率{win_tag}",
+        f"滚动年化波动率{win_tag}",
+        f"滚动 Sharpe Ratio{win_tag}",
+    ]
+    if has_corr:
+        corr_title = (
+            f"相对基准滚动相关性{win_tag}" if corr_bench_cols else f"资产两两滚动相关性{win_tag}"
+        )
+        subplot_titles.append(corr_title)
+
+    figure = subplots.make_subplots(
+        rows=n_rows,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        subplot_titles=subplot_titles,
+    )
+
+    color_map: dict[str, str] = {}
+
+    def _color_for(label: str) -> str:
+        if benchmark_col and label == benchmark_col:
+            return "#64748b"
+        if label not in color_map:
+            color_map[label] = _SERIES_PALETTE[len(color_map) % len(_SERIES_PALETTE)]
+        return color_map[label]
+
+    panel_specs: list[tuple[int, list[str], str, str, str]] = [
+        (1, ret_cols, "__rolling_return_ann", "年化收益", ".1%"),
+        (2, vol_cols, "__rolling_vol_ann", "年化波动", ".1%"),
+        (3, sharpe_cols, "__rolling_sharpe", "Sharpe", ".2f"),
+    ]
+    if has_corr:
+        corr_suffix = "__rolling_corr_vs_benchmark" if corr_bench_cols else "__rolling_corr"
+        panel_specs.append((4, corr_cols, corr_suffix, "相关系数 ρ", ".2f"))
+
+    for row_idx, panel_cols, suffix, y_title, tickfmt in panel_specs:
+        has_valid_data = False
+        for idx, col in enumerate(panel_cols):
+            raw_label = col[: -len(suffix)]
+            display_label = raw_label.replace("__vs__", " vs ")
+            series = pd.to_numeric(rolling_df[col], errors="coerce")
+            if series.notna().any():
+                has_valid_data = True
+            line_style: dict[str, Any] = {
+                "width": 1.8 if row_idx != 4 else 1.5,
+                "color": _color_for(display_label)
+                if row_idx < 4
+                else _SERIES_PALETTE[idx % len(_SERIES_PALETTE)],
+            }
+            if benchmark_col and raw_label == benchmark_col:
+                line_style["dash"] = "dash"
+            figure.add_trace(
+                go.Scatter(
+                    x=rolling_df.index,
+                    y=series,
+                    mode="lines",
+                    name=display_label,
+                    legendgroup=display_label if row_idx < 4 else f"corr:{display_label}",
+                    showlegend=(row_idx == 1 or row_idx == 4),
+                    line=line_style,
+                ),
+                row=row_idx,
+                col=1,
+            )
+        figure.update_yaxes(title_text=y_title, tickformat=tickfmt, row=row_idx, col=1)
+        if not has_valid_data:
+            figure.add_annotation(
+                text="有效样本不足，滚动序列全为 NaN",
+                xref="x domain",
+                yref="y domain",
+                x=0.5,
+                y=0.5,
+                showarrow=False,
+                row=row_idx,
+                col=1,
+            )
+
+    return apply_theme_layout(
+        figure,
+        height=760 if has_corr else 620,
+        margin={"l": 58, "r": 24, "t": 62, "b": 44},
+        hovermode="x unified",
+        title=f"多资产滚动风险收益统计{win_tag}",
+    )
+
+
+def build_portfolio_weights_risk_figure(
+    weights_df: pd.DataFrame,
+    *,
+    strategy: str | None = None,
+    diversification_ratio: float | None = None,
+    portfolio_volatility: float | None = None,
+) -> Any:
+    """绘制组合目标权重与参考权重对比，以及 Euler 风险贡献拆解图。"""
+    go, subplots = _load_plotly_modules()
+    assets = [str(idx) for idx in weights_df.index]
+
+    figure = subplots.make_subplots(
+        rows=1,
+        cols=2,
+        horizontal_spacing=0.10,
+        subplot_titles=("策略权重 vs 参考组合权重", "权重占比 vs Euler 风险贡献占比"),
+    )
+
+    ref_specs = [
+        ("weight", "当前策略权重", "#2563eb"),
+        ("equal_weight", "等权重", "#64748b"),
+        ("min_variance_weight", "最小方差 (GMV)", "#10b981"),
+        ("max_sharpe_weight", "最大夏普", "#dc2626"),
+    ]
+    for col_name, label, color in ref_specs:
+        if col_name in weights_df.columns:
+            figure.add_trace(
+                go.Bar(
+                    x=assets,
+                    y=pd.to_numeric(weights_df[col_name], errors="coerce"),
+                    name=label,
+                    marker={"color": color},
+                ),
+                row=1,
+                col=1,
+            )
+
+    if "weight" in weights_df.columns:
+        figure.add_trace(
+            go.Bar(
+                x=assets,
+                y=pd.to_numeric(weights_df["weight"], errors="coerce"),
+                name="资金权重占比",
+                marker={"color": "#2563eb", "opacity": 0.85},
+                showlegend=True,
+            ),
+            row=1,
+            col=2,
+        )
+    if "pct_risk_contribution" in weights_df.columns:
+        figure.add_trace(
+            go.Bar(
+                x=assets,
+                y=pd.to_numeric(weights_df["pct_risk_contribution"], errors="coerce"),
+                name="Euler 风险贡献占比",
+                marker={"color": "#d97706", "opacity": 0.90},
+                showlegend=True,
+            ),
+            row=1,
+            col=2,
+        )
+
+    title_parts = ["组合权重配置与风险贡献拆解"]
+    if strategy:
+        title_parts.append(f"({strategy})")
+    stat_parts: list[str] = []
+    if portfolio_volatility is not None and math.isfinite(portfolio_volatility):
+        stat_parts.append(f"年化波动={portfolio_volatility * 100:.2f}%")
+    if diversification_ratio is not None and math.isfinite(diversification_ratio):
+        stat_parts.append(f"分散比率 DR={diversification_ratio:.2f}")
+    if stat_parts:
+        title_parts.append(" | " + ", ".join(stat_parts))
+
+    figure.update_yaxes(title_text="权重占比", tickformat=".1%", row=1, col=1)
+    figure.update_yaxes(title_text="占比", tickformat=".1%", row=1, col=2)
+    return apply_theme_layout(
+        figure,
+        height=460,
+        margin={"l": 56, "r": 24, "t": 72, "b": 60},
+        hovermode="x unified",
+        title=" ".join(title_parts),
+        extra_layout={"barmode": "group"},
+    )
+
+
+def build_portfolio_backtest_with_drawdown_figure(
+    backtest_df: pd.DataFrame,
+    *,
+    strategy: str = "",
+    validation_mode: str = "",
+    has_lookahead_bias: bool = False,
+    base_currency: str = "",
+    benchmark_label: str | None = None,
+) -> Any:
+    """绘制组合回测净值与水下回撤双面板（覆盖 OOS、等权、可选 Benchmark 与样本内参考）。"""
+    go, subplots = _load_plotly_modules()
+    is_oos = "OOS_Portfolio" in backtest_df.columns
+    primary_col = "OOS_Portfolio" if is_oos else "Optimal_Portfolio"
+    primary_name = (
+        f"样本外策略净值 ({strategy})"
+        if is_oos and strategy
+        else ("样本外策略净值" if is_oos else f"样本内最优净值 ({strategy or 'Optimal'})")
+    )
+
+    bias_note = " [存在后视偏差，非因果可投]" if has_lookahead_bias else ""
+    ccy_note = f" | 计价: {base_currency}" if base_currency else ""
+    mode_tag = validation_mode or ("样本外回测" if is_oos else "样本内拟合")
+
+    figure = subplots.make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.07,
+        row_heights=[0.64, 0.36],
+        subplot_titles=(
+            f"组合净值表现 ({mode_tag}{ccy_note}){bias_note}",
+            "策略与基准水下回撤",
+        ),
+    )
+
+    if primary_col in backtest_df.columns:
+        primary_nav = pd.to_numeric(backtest_df[primary_col], errors="coerce")
+        figure.add_trace(
+            go.Scatter(
+                x=backtest_df.index,
+                y=primary_nav,
+                mode="lines",
+                name=primary_name,
+                line={"width": 2.4, "color": "#dc2626"},
+            ),
+            row=1,
+            col=1,
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=backtest_df.index,
+                y=_nav_to_underwater(primary_nav),
+                mode="lines",
+                name=f"{primary_name} 回撤",
+                line={"width": 1.8, "color": "#dc2626"},
+                fill="tozeroy",
+                fillcolor="rgba(220, 38, 38, 0.18)",
+            ),
+            row=2,
+            col=1,
+        )
+
+    if "Equal_Weight_Portfolio" in backtest_df.columns:
+        eq_nav = pd.to_numeric(backtest_df["Equal_Weight_Portfolio"], errors="coerce")
+        figure.add_trace(
+            go.Scatter(
+                x=backtest_df.index,
+                y=eq_nav,
+                mode="lines",
+                name="等权基准 (1/N)",
+                line={"width": 1.9, "color": "#64748b"},
+            ),
+            row=1,
+            col=1,
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=backtest_df.index,
+                y=_nav_to_underwater(eq_nav),
+                mode="lines",
+                name="等权基准 回撤",
+                line={"width": 1.4, "color": "#64748b", "dash": "dot"},
+            ),
+            row=2,
+            col=1,
+        )
+
+    if "Benchmark" in backtest_df.columns and backtest_df["Benchmark"].notna().any():
+        bench_nav = pd.to_numeric(backtest_df["Benchmark"], errors="coerce")
+        bench_name = benchmark_label or "Benchmark"
+        figure.add_trace(
+            go.Scatter(
+                x=backtest_df.index,
+                y=bench_nav,
+                mode="lines",
+                name=f"基准 ({bench_name})",
+                line={"width": 1.9, "color": "#d97706"},
+                connectgaps=False,
+            ),
+            row=1,
+            col=1,
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=backtest_df.index,
+                y=_nav_to_underwater(bench_nav),
+                mode="lines",
+                name=f"基准 ({bench_name}) 回撤",
+                line={"width": 1.4, "color": "#d97706", "dash": "dashdot"},
+                connectgaps=False,
+            ),
+            row=2,
+            col=1,
+        )
+
+    if "In_Sample_Portfolio" in backtest_df.columns:
+        figure.add_trace(
+            go.Scatter(
+                x=backtest_df.index,
+                y=pd.to_numeric(backtest_df["In_Sample_Portfolio"], errors="coerce"),
+                mode="lines",
+                name="全样本后视参考 [存在前视偏差-不可实盘]",
+                line={"width": 1.6, "color": "#2563eb", "dash": "dash"},
+            ),
+            row=1,
+            col=1,
+        )
+
+    figure.update_yaxes(title_text="归一化净值 (期初=1.0)", row=1, col=1)
+    figure.update_yaxes(title_text="水下回撤", tickformat=".1%", row=2, col=1)
+    return apply_theme_layout(
+        figure,
+        height=620,
+        margin={"l": 58, "r": 24, "t": 68, "b": 44},
+        hovermode="x unified",
+    )
+
+
+def build_efficient_frontier_from_frame(
+    frontier_df: pd.DataFrame,
+    *,
+    cov_method: str | None = None,
+    frontier_summary: Mapping[str, Any] | None = None,
+    portfolio_point: tuple[float, float] | None = None,
+    portfolio_label: str = "当前目标组合",
+) -> Any:
+    """从序列化的 ``frontier.parquet`` 绘制精确 SLSQP 前沿与可选 Dirichlet 随机云。"""
+    go, _ = _load_plotly_modules()
+    figure = go.Figure()
+
+    exact_df = frontier_df
+    rand_df = frontier_df.iloc[0:0]
+    if "frontier_type" in frontier_df.columns:
+        exact_df = frontier_df[frontier_df["frontier_type"] == "slsqp_exact"]
+        rand_df = frontier_df[frontier_df["frontier_type"] == "dirichlet_random"]
+
+    if not rand_df.empty:
+        figure.add_trace(
+            go.Scatter(
+                x=pd.to_numeric(rand_df["volatility"], errors="coerce"),
+                y=pd.to_numeric(rand_df["expected_return"], errors="coerce"),
+                mode="markers",
+                name="Dirichlet 随机可行组合（模拟参考）",
+                marker={
+                    "size": 5,
+                    "color": pd.to_numeric(rand_df["sharpe"], errors="coerce"),
+                    "colorscale": "Viridis",
+                    "showscale": True,
+                    "colorbar": {"title": "夏普"},
+                    "opacity": 0.55,
+                },
+            )
+        )
+
+    if not exact_df.empty:
+        ordered = exact_df.sort_values("volatility")
+        figure.add_trace(
+            go.Scatter(
+                x=pd.to_numeric(ordered["volatility"], errors="coerce"),
+                y=pd.to_numeric(ordered["expected_return"], errors="coerce"),
+                mode="lines+markers",
+                name="精确有效前沿 (SLSQP)",
+                line={"width": 3.0, "color": "#2563eb"},
+                marker={"size": 6, "color": "#2563eb"},
+            )
+        )
+
+    exact_summary = (
+        frontier_summary.get("exact_slsqp", {}) if isinstance(frontier_summary, Mapping) else {}
+    )
+    gmv = (
+        exact_summary.get("min_variance") or exact_summary.get("global_min_variance")
+        if isinstance(exact_summary, Mapping)
+        else None
+    )
+    if isinstance(gmv, Mapping) and {"volatility", "expected_return"} <= set(gmv.keys()):
+        figure.add_trace(
+            go.Scatter(
+                x=[float(gmv["volatility"])],
+                y=[float(gmv["expected_return"])],
+                mode="markers",
+                name="最小方差组合 (GMV)",
+                marker={
+                    "size": 15,
+                    "symbol": "diamond",
+                    "color": "#10b981",
+                    "line": {"width": 1.5, "color": "#ffffff"},
+                },
+            )
+        )
+
+    tangency = (
+        exact_summary.get("max_sharpe") or exact_summary.get("max_sharpe_tangency")
+        if isinstance(exact_summary, Mapping)
+        else None
+    )
+    if isinstance(tangency, Mapping) and {"volatility", "expected_return"} <= set(tangency.keys()):
+        figure.add_trace(
+            go.Scatter(
+                x=[float(tangency["volatility"])],
+                y=[float(tangency["expected_return"])],
+                mode="markers",
+                name="最大夏普切点组合 (Tangency)",
+                marker={
+                    "size": 19,
+                    "symbol": "star",
+                    "color": "#ff2a2a",
+                    "line": {"width": 1.4, "color": "#ffffff"},
+                },
+            )
+        )
+
+    if (
+        portfolio_point is not None
+        and len(portfolio_point) == 2
+        and math.isfinite(portfolio_point[0])
+        and math.isfinite(portfolio_point[1])
+    ):
+        figure.add_trace(
+            go.Scatter(
+                x=[float(portfolio_point[0])],
+                y=[float(portfolio_point[1])],
+                mode="markers",
+                name=portfolio_label,
+                marker={
+                    "size": 13,
+                    "symbol": "circle",
+                    "color": "#d97706",
+                    "line": {"width": 2.0, "color": "#111827"},
+                },
+            )
+        )
+
+    est_tag = f" ({cov_method})" if cov_method else ""
+    hindsight_tag = (
+        " [全样本后视参考]"
+        if isinstance(frontier_summary, Mapping) and frontier_summary.get("hindsight_only")
+        else ""
+    )
+    return apply_theme_layout(
+        figure,
+        height=520,
+        margin={"l": 56, "r": 24, "t": 62, "b": 44},
+        hovermode="closest",
+        title=f"均值-方差有效前沿{est_tag}{hindsight_tag}",
+        extra_layout={
+            "xaxis_title": "年化波动率",
+            "yaxis_title": "年化预期收益",
+            "xaxis_tickformat": ".1%",
+            "yaxis_tickformat": ".1%",
+            "xaxis_hoverformat": ".2%",
+            "yaxis_hoverformat": ".2%",
+        },
+    )
+
+
 __all__ = [
     "apply_theme_layout",
+    "build_compare_rolling_figure",
+    "build_drawdown_figure",
+    "build_efficient_frontier_from_frame",
+    "build_portfolio_backtest_with_drawdown_figure",
+    "build_portfolio_weights_risk_figure",
     "build_price_volume_figure",
     "build_tab1_risk_figure",
     "build_tab3_correlation_heatmap",

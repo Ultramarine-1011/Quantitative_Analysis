@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -92,10 +93,28 @@ _MANAGED_OUTPUT_FILENAMES: frozenset[str] = frozenset(
         "result.json",
         "data.parquet",
         "data.csv",
+        "report.md",
+        "report.html",
         *(f"{name}.parquet" for name in _MANAGED_FRAME_BASENAMES),
         *(f"{name}.csv" for name in _MANAGED_FRAME_BASENAMES),
     }
 )
+
+_MANAGED_CHART_TYPES: frozenset[str] = frozenset(
+    {
+        "price",
+        "normalized",
+        "drawdown",
+        "rolling",
+        "correlation",
+        "backtest",
+        "weights",
+        "frontier",
+        "weight_history",
+    }
+)
+
+_MANAGED_CHART_SUFFIXES: frozenset[str] = frozenset({".html", ".png", ".svg"})
 
 
 class _CliUsageError(ValueError):
@@ -204,6 +223,28 @@ def _add_shared_runtime_arguments(
         "--quiet",
         action="store_true",
         help="Suppress non-error progress and warning lines on stderr",
+    )
+
+
+def _add_reporting_arguments(parser: argparse.ArgumentParser, *, command: str) -> None:
+    """Register on-demand report and chart rendering flags on an analysis subcommand."""
+    parser.add_argument(
+        "--report",
+        default=None,
+        metavar="FORMATS",
+        help="Generate readable report(s): md, html, all, none (requires -o/--output)",
+    )
+    parser.add_argument(
+        "--charts",
+        default=None,
+        metavar="FORMATS",
+        help="Generate charts under <output>/charts: html, png, svg, all, none (requires -o/--output)",
+    )
+    parser.add_argument(
+        "--chart-types",
+        default=None,
+        metavar="TYPES",
+        help=f"Comma-separated chart types for {command} (default: auto; e.g. price,drawdown)",
     )
 
 
@@ -345,6 +386,7 @@ def _build_parser() -> _QuantArgumentParser:
         action="store_true",
         help="Include RSI-14 and MACD momentum indicator columns in output frame",
     )
+    _add_reporting_arguments(analyze_parser, command="analyze")
 
     compare_parser = subparsers.add_parser(
         "compare",
@@ -364,6 +406,7 @@ def _build_parser() -> _QuantArgumentParser:
         default=20,
         help="Rolling window length in aligned observations >= 2 (default: 20)",
     )
+    _add_reporting_arguments(compare_parser, command="compare")
 
     portfolio_parser = subparsers.add_parser(
         "portfolio",
@@ -468,6 +511,7 @@ def _build_parser() -> _QuantArgumentParser:
         action="store_false",
         help="Skip sensitivity table sweeps for faster single-pass execution",
     )
+    _add_reporting_arguments(portfolio_parser, command="portfolio")
 
     return parser
 
@@ -723,12 +767,22 @@ def _collect_stale_managed_artifacts(
     if not out_dir.exists() or not out_dir.is_dir():
         return []
     resolved_dir = out_dir.resolve()
+    resolved_charts_dir = (resolved_dir / "charts").resolve()
     candidates: set[Path] = set()
 
     for name in _MANAGED_OUTPUT_FILENAMES:
         p = resolved_dir / name
         if p.is_file():
             candidates.add(p.resolve())
+
+    if resolved_charts_dir.is_dir():
+        for p in resolved_charts_dir.iterdir():
+            if (
+                p.is_file()
+                and p.stem in _MANAGED_CHART_TYPES
+                and p.suffix.lower() in _MANAGED_CHART_SUFFIXES
+            ):
+                candidates.add(p.resolve())
 
     prior_result = resolved_dir / "result.json"
     if prior_result.is_file():
@@ -744,7 +798,10 @@ def _collect_stale_managed_artifacts(
                         resolved_art = art_path.resolve()
                     except OSError:
                         continue
-                    if resolved_art.parent == resolved_dir and resolved_art.is_file():
+                    if (
+                        resolved_art.parent in {resolved_dir, resolved_charts_dir}
+                        and resolved_art.is_file()
+                    ):
                         candidates.add(resolved_art)
         except Exception:
             pass
@@ -760,7 +817,11 @@ def _write_outputs(
     export_csv: Path | None,
     include_data: bool,
     compact: bool,
+    report_formats: Sequence[str] = (),
+    chart_formats: Sequence[str] = (),
+    chart_types: Sequence[str] | None = None,
 ) -> AnalysisResult | MultiAssetResult:
+    working_result: AnalysisResult | MultiAssetResult = result
     artifacts: dict[str, str] = {}
     write_tasks: list[tuple[Path, Callable[[Path], None]]] = []
     seen_targets: set[Path] = set()
@@ -771,6 +832,9 @@ def _write_outputs(
             seen_targets.add(resolved)
             write_tasks.append((target, writer))
         return resolved
+
+    def _enqueue_bytes(target: Path, content: bytes) -> Path:
+        return _enqueue(target, lambda tmp, data=content: tmp.write_bytes(data))
 
     def _parquet_writer(df: pd.DataFrame) -> Callable[[Path], None]:
         write_idx = not isinstance(df.index, pd.RangeIndex)
@@ -784,7 +848,7 @@ def _write_outputs(
         out_dir_resolved = out_dir.resolve()
         result_target = out_dir / "result.json"
         parquet_target = out_dir / "data.parquet"
-        primary_df = _prepare_export_frame(result.data_frame)
+        primary_df = _prepare_export_frame(working_result.data_frame)
 
         artifacts["output_dir"] = str(out_dir_resolved)
         artifacts["result_json"] = str(result_target.resolve())
@@ -794,8 +858,8 @@ def _write_outputs(
             csv_target = out_dir / "data.csv"
             artifacts["data_csv"] = str(_enqueue(csv_target, _csv_writer(primary_df)))
 
-        if isinstance(result, MultiAssetResult):
-            for frame_name, raw_frame in result.frames.items():
+        if isinstance(working_result, MultiAssetResult):
+            for frame_name, raw_frame in working_result.frames.items():
                 prep = _prepare_export_frame(raw_frame)
                 pq_path = out_dir / f"{frame_name}.parquet"
                 artifacts[f"{frame_name}_parquet"] = str(_enqueue(pq_path, _parquet_writer(prep)))
@@ -803,11 +867,48 @@ def _write_outputs(
                     cs_path = out_dir / f"{frame_name}.csv"
                     artifacts[f"{frame_name}_csv"] = str(_enqueue(cs_path, _csv_writer(prep)))
 
+        chart_artifacts: tuple[Any, ...] = ()
+        skipped_charts: dict[str, str] = {}
+        if chart_formats:
+            from reporting.chart_renderer import render_charts
+
+            chart_out = render_charts(
+                working_result,
+                out_dir,
+                formats=chart_formats,
+                chart_types=chart_types,
+                file_writer=_enqueue_bytes,
+            )
+            chart_artifacts = chart_out.charts
+            skipped_charts = dict(chart_out.skipped)
+            for ch in chart_artifacts:
+                artifacts[ch.artifact_key] = str(ch.path)
+            if chart_out.warnings:
+                merged_warns = list(working_result.warnings)
+                for warn_msg in chart_out.warnings:
+                    if warn_msg not in merged_warns:
+                        merged_warns.append(warn_msg)
+                working_result = replace(working_result, warnings=tuple(merged_warns))
+
+        if report_formats:
+            from reporting.report_renderer import render_report
+
+            rep_out = render_report(
+                working_result,
+                out_dir,
+                formats=report_formats,
+                charts=chart_artifacts,
+                skipped_charts=skipped_charts,
+                file_writer=_enqueue_bytes,
+            )
+            for rep in rep_out.reports:
+                artifacts[rep.artifact_key] = str(rep.path)
+
     if export_csv is not None:
-        primary_csv_df = _prepare_export_frame(result.data_frame)
+        primary_csv_df = _prepare_export_frame(working_result.data_frame)
         artifacts["export_csv"] = str(_enqueue(export_csv, _csv_writer(primary_csv_df)))
 
-    final_result = result.with_artifacts(artifacts)
+    final_result = working_result.with_artifacts(artifacts)
 
     if out_dir is not None:
         result_target = out_dir / "result.json"
@@ -873,6 +974,15 @@ def _write_outputs(
             if stale.exists():
                 stale.unlink()
                 removed_stale.append(stale)
+
+        if out_dir is not None:
+            charts_dir = out_dir / "charts"
+            if charts_dir.is_dir():
+                try:
+                    if not any(charts_dir.iterdir()):
+                        charts_dir.rmdir()
+                except OSError:
+                    pass
 
         return final_result
     except _ArtifactIOError:
@@ -1033,6 +1143,28 @@ def run_cli_command(
             write_csv=bool(args.csv),
             export_csv=args.export_csv,
         )
+
+        report_formats: tuple[str, ...] = ()
+        chart_formats: tuple[str, ...] = ()
+        chart_types: tuple[str, ...] | None = None
+        if args.command in {"analyze", "compare", "portfolio"}:
+            raw_report = getattr(args, "report", None)
+            raw_charts = getattr(args, "charts", None)
+            raw_chart_types = getattr(args, "chart_types", None)
+            if raw_report is not None:
+                from reporting.report_renderer import parse_report_formats
+
+                report_formats = parse_report_formats(raw_report)
+            if raw_charts is not None:
+                from reporting.chart_renderer import parse_chart_formats
+
+                chart_formats = parse_chart_formats(raw_charts)
+            if raw_chart_types is not None:
+                from reporting.chart_renderer import parse_chart_types
+
+                chart_types = parse_chart_types(str(args.command), raw_chart_types)
+            if (report_formats or chart_formats) and out_dir is None:
+                raise ValueError("--report and --charts require --output <dir>.")
 
         start_str = start_ts.strftime("%Y-%m-%d")
         end_str = end_ts.strftime("%Y-%m-%d")
@@ -1206,6 +1338,9 @@ def run_cli_command(
             export_csv=csv_export_path,
             include_data=include_data,
             compact=bool(args.compact),
+            report_formats=report_formats,
+            chart_formats=chart_formats,
+            chart_types=chart_types,
         )
 
         for warning in final_result.warnings:
