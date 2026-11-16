@@ -25,6 +25,7 @@ from .network import (
     RequestBudget,
     classify_network_exception,
     configure_windows_proxy_behavior,
+    resolve_akshare_callable,
     without_http_proxy_env,
 )
 
@@ -48,7 +49,8 @@ class AKShareChinaPrimarySource:
         adjust: str,
     ) -> pd.DataFrame:
         ak = self._ak_loader()
-        return ak.stock_zh_a_hist(
+        _, fn = resolve_akshare_callable(ak, "stock_zh_a_hist_em", "stock_zh_a_hist")
+        return fn(
             symbol=str(symbol).strip(),
             period="daily",
             start_date=start_ts.strftime("%Y%m%d"),
@@ -64,7 +66,8 @@ class AKShareChinaPrimarySource:
         adjust: str,
     ) -> pd.DataFrame:
         ak = self._ak_loader()
-        return ak.fund_etf_hist_em(
+        _, fn = resolve_akshare_callable(ak, "fund_etf_hist_em")
+        return fn(
             symbol=str(symbol).strip(),
             period="daily",
             start_date=start_ts.strftime("%Y%m%d"),
@@ -149,39 +152,76 @@ class AKShareFetcher(BaseDataFetcher):
             mask = (out["日期"] >= lo) & (out["日期"] <= hi)
             return out.loc[mask].copy()
 
+        ak = self._load_akshare()
+        if equity_route == "etf" and adjust == "":
+            # Sina ETF history is unadjusted; never use it for qfq/hfq.
+            try:
+                sina_fn = getattr(ak, "fund_etf_hist_sina", None)
+                if not callable(sina_fn):
+                    raise AttributeError("akshare has no callable 'fund_etf_hist_sina'")
+                raw_s = sina_fn(symbol=qq)
+                if isinstance(raw_s, pd.DataFrame) and not raw_s.empty and "volume" in raw_s.columns:
+                    conv = _to_em_style(raw_s, "volume")
+                    if not conv.empty:
+                        conv.attrs["data_source"] = "akshare.fund_etf_hist_sina"
+                        return conv
+            except Exception as exc:  # noqa: BLE001
+                msg = f"akshare.fund_etf_hist_sina({qq}) failed: {exc!r}"
+                _LOGGER.warning("%s", msg)
+                self._last_alt_warnings.append(msg)
+
         try:
-            if equity_route == "etf" and adjust == "":
-                # Sina ETF history is unadjusted; never use it for qfq/hfq.
-                try:
-                    # ETF 先尝试新浪源，避免东方财富域名不可达时整个链路失败。
-                    sina = importlib.import_module("akshare.fund.fund_etf_sina")
-                    raw_s = sina.fund_etf_hist_sina(symbol=qq)
-                    if not raw_s.empty and "volume" in raw_s.columns:
-                        conv = _to_em_style(raw_s, "volume")
-                        if not conv.empty:
-                            conv.attrs["data_source"] = "akshare.fund_etf_hist_sina"
-                            return conv
-                except Exception as exc:  # noqa: BLE001
-                    msg = f"akshare.fund_etf_hist_sina({qq}) failed: {exc!r}"
-                    _LOGGER.warning("%s", msg)
-                    self._last_alt_warnings.append(msg)
-            mod_tx = importlib.import_module("akshare.stock_feature.stock_hist_tx")
-            # 腾讯源覆盖股票/部分 ETF，作为进入 AKShare 东财主源前的轻量备用路径。
-            raw_tx = mod_tx.stock_zh_a_hist_tx(
+            tx_fn = getattr(ak, "stock_zh_a_hist_tx", None)
+            if not callable(tx_fn):
+                raise AttributeError("akshare has no callable 'stock_zh_a_hist_tx'")
+            # 腾讯源覆盖股票/ETF，优先使用公开接口 ak.stock_zh_a_hist_tx。
+            raw_tx = tx_fn(
                 symbol=qq,
                 start_date=start_s,
                 end_date=end_s,
                 adjust=adj,
             )
-            conv_tx = _to_em_style(raw_tx, "amount")
-            if not conv_tx.empty:
-                conv_tx.attrs["data_source"] = "akshare.stock_zh_a_hist_tx"
-            return conv_tx
+            if isinstance(raw_tx, pd.DataFrame) and not raw_tx.empty:
+                vol_col = "volume" if "volume" in raw_tx.columns else "amount"
+                if vol_col in raw_tx.columns:
+                    conv_tx = _to_em_style(raw_tx, vol_col)
+                    if not conv_tx.empty:
+                        conv_tx.attrs["data_source"] = "akshare.stock_zh_a_hist_tx"
+                        return conv_tx
+            self._last_alt_warnings.append(f"akshare.stock_zh_a_hist_tx({qq}) returned empty data")
         except Exception as exc:  # noqa: BLE001
             msg = f"akshare.stock_zh_a_hist_tx({qq}) failed: {exc!r}"
             _LOGGER.warning("%s", msg)
             self._last_alt_warnings.append(msg)
-            return pd.DataFrame()
+
+        if equity_route == "stock":
+            for sina_name in ("stock_zh_a_daily_sina", "stock_zh_a_daily"):
+                sina_stock_fn = getattr(ak, sina_name, None)
+                if not callable(sina_stock_fn):
+                    continue
+                try:
+                    raw_sina = sina_stock_fn(
+                        symbol=qq,
+                        start_date=start_s,
+                        end_date=end_s,
+                        adjust=adj,
+                    )
+                    if (
+                        isinstance(raw_sina, pd.DataFrame)
+                        and not raw_sina.empty
+                        and "volume" in raw_sina.columns
+                    ):
+                        conv_sina = _to_em_style(raw_sina, "volume")
+                        if not conv_sina.empty:
+                            conv_sina.attrs["data_source"] = f"akshare.{sina_name}"
+                            return conv_sina
+                except Exception as exc:  # noqa: BLE001
+                    msg = f"akshare.{sina_name}({qq}) failed: {exc!r}"
+                    _LOGGER.warning("%s", msg)
+                    self._last_alt_warnings.append(msg)
+                    break
+
+        return pd.DataFrame()
 
     def _fetch_via_primary_then_eastmoney(
         self,
@@ -359,12 +399,15 @@ class AKShareFetcher(BaseDataFetcher):
         raw = fetch_raw(symbol=symbol, start_date=start, end_date=end, adjust=selected_adjust)
         src = raw.attrs.get("data_source")
         host = raw.attrs.get("eastmoney_host")
+        fallback_warnings = list(raw.attrs.get("fallback_warnings") or ())
         normalized = self._normalize_ohlcv(raw, A_SHARE_COLUMN_MAPPING)
         out = filter_by_date_range(normalized, start, end)
         if src:
             out.attrs["data_source"] = src
         if host:
             out.attrs["eastmoney_host"] = host
+        if fallback_warnings:
+            out.attrs["fallback_warnings"] = fallback_warnings
         out.attrs["adjust"] = selected_adjust
         out.attrs["return_basis"] = (
             "unadjusted_price" if selected_adjust == "" else "adjusted_price"

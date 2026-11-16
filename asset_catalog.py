@@ -123,7 +123,7 @@ def normalize_symbol_alias(asset_type: str, symbol: object) -> str:
         ):
             return "10Y"
         return raw
-    if asset_key in {"ashare", "etf"}:
+    if asset_key in {"ashare", "etf", "creit"}:
         upper = raw.upper()
         for prefix in ("SH", "SZ", "BJ"):
             if upper.startswith(prefix) and len(upper) == 8 and upper[2:].isdigit():
@@ -277,7 +277,7 @@ DEFAULT_SYMBOLS: dict[str, str] = {
     "us_stock": "AAPL",
     "hk_stock": "00700",
     "global_index": ".INX",
-    "bond_cn": "sh010107",
+    "bond_cn": "sh019547",
     "bond_us_yield": "10Y",
     "commodity": "CL",
     "creit": "508097",
@@ -334,10 +334,10 @@ ASSET_TYPE_GUIDES: dict[str, dict[str, str]] = {
         "examples": "`.INX`（标普500新浪）、`HSI`（恒生）、`SPX`（标普500东财）、`DXY`（美元指数）",
     },
     "bond_cn": {
-        "kind": "在沪深挂牌交易的**国债或债券**日 K（新浪源），代码形如 `sh010107`。",
+        "kind": "在沪深挂牌交易的**国债或债券**日 K（新浪源），代码形如 `sh019547`。",
         "social": "无风险利率与债市情绪的表征，影响全市场贴现率；机构配置与货币政策预期会体现在价格波动中。",
         "math": "标准 OHLCV；部分行情源无成交量字段时已补 0；久期与凸性等债项指标**未**在本应用中计算。",
-        "examples": "`sh010107`、`sh019547`（示例，以数据源实际可交易代码为准）",
+        "examples": "`sh019547`（16国债19，持续交易中；历史示例 `sh010107` 已于 2021-07 到期）",
     },
     "bond_us_yield": {
         "kind": "中债登口径的**美国国债收益率曲线**日度数据（`bond_zh_us_rate`），`Close` 为**收益率水平（%）**，非债券价格。",
@@ -409,7 +409,7 @@ PRESET_PORTFOLIOS: dict[str, tuple[str, ...]] = {
     "自定义（默认跨市示例）": ("etf,510300", "etf,510500", "us_stock,AAPL"),
     "境内大类股债均衡": ("etf,510300", "etf,510500", "etf,511010", "etf,518880"),
     "中美权益核心资产": ("etf,510300", "us_stock,AAPL", "us_stock,MSFT", "hk_stock,00700"),
-    "全天候跨市场多资产": ("etf,510300", "us_stock,SPY", "gold,GC", "bond_cn,sh010107"),
+    "全天候跨市场多资产": ("etf,510300", "us_stock,SPY", "gold,GC", "bond_cn,sh019547"),
     "高波动数字与科技": ("us_stock,NVDA", "us_stock,AAPL", "gold,GC", "crypto,BTC/USDT"),
 }
 

@@ -157,6 +157,7 @@ class EastMoneyDailyKlineClient:
         ):
             req_session.headers.clear()
             req_session.headers.update(self._headers)
+            remote_disconnect_count = 0
             for api_url in _EASTMONEY_KLINE_APIS:
                 if (
                     active_budget.remaining_seconds() <= 0.2
@@ -185,6 +186,15 @@ class EastMoneyDailyKlineClient:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
+                    msg_lower = repr(exc).lower()
+                    if (
+                        "remoteprotocolerror" in type(exc).__name__.lower()
+                        or "disconnected" in msg_lower
+                        or "server disconnected" in msg_lower
+                    ):
+                        remote_disconnect_count += 1
+                        if remote_disconnect_count >= 2:
+                            break
 
         if last_exc is not None:
             raise last_exc

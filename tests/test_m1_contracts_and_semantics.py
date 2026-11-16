@@ -560,29 +560,29 @@ def test_analysis_service_single_pass_parameters_and_china_fallback_warning(
     assert df_fallback.attrs.get("data_source") == "akshare.stock_zh_a_hist_tx"
 
     # Also test real _fetch_sina_tencent_china_equity_raw warning emission on sina -> tx fallback
-    import importlib
     import types
 
-    def _fake_import(name: str):
-        if name == "akshare.fund.fund_etf_sina":
-            raise RuntimeError("sina down")
-        if name == "akshare.stock_feature.stock_hist_tx":
-            return types.SimpleNamespace(
-                stock_zh_a_hist_tx=lambda **kw: pd.DataFrame(
-                    {
-                        "date": ["2024-01-02", "2024-01-03"],
-                        "open": [1.0, 1.1],
-                        "high": [1.2, 1.2],
-                        "low": [0.9, 1.0],
-                        "close": [1.1, 1.15],
-                        "amount": [100.0, 120.0],
-                    }
-                )
-            )
-        raise ImportError(name)
+    def _boom_sina(**kw):
+        raise RuntimeError("sina down")
 
-    monkeypatch.setattr(importlib, "import_module", _fake_import)
+    def _ok_tx(**kw):
+        return pd.DataFrame(
+            {
+                "date": ["2024-01-02", "2024-01-03"],
+                "open": [1.0, 1.1],
+                "high": [1.2, 1.2],
+                "low": [0.9, 1.0],
+                "close": [1.1, 1.15],
+                "volume": [100.0, 120.0],
+            }
+        )
+
     real_alt_fetcher = AKShareFetcher(max_retries=1, retry_delay=0.0)
+    monkeypatch.setattr(
+        real_alt_fetcher,
+        "_load_akshare",
+        lambda: types.SimpleNamespace(fund_etf_hist_sina=_boom_sina, stock_zh_a_hist_tx=_ok_tx),
+    )
     with caplog.at_level(logging.WARNING, logger="data_sources.china_equity"):
         alt_df = real_alt_fetcher._fetch_sina_tencent_china_equity_raw(
             "etf",
