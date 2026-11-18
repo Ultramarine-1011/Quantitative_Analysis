@@ -302,16 +302,12 @@ def _fetch_forex_hist_em_robust(
         fallback_warnings.append(f"eastmoney_forex_direct({pair}) failed: {last_error!r}")
 
     ak = _import_akshare()
-    ak_fx_name: str | None = None
-    ak_fx_fn: Any = None
-    for candidate in ("fx_hist_em", "forex_hist_em"):
-        fn = getattr(ak, candidate, None)
-        if callable(fn):
-            ak_fx_name = candidate
-            ak_fx_fn = fn
-            break
-
-    if ak_fx_fn is not None and ak_fx_name is not None:
+    any_ak_fx_callable = False
+    for ak_fx_name in ("fx_hist_em", "forex_hist_em"):
+        ak_fx_fn = getattr(ak, ak_fx_name, None)
+        if not callable(ak_fx_fn):
+            continue
+        any_ak_fx_callable = True
         try:
             frame = _call_akshare(
                 f"{ak_fx_name}({pair!r}) fallback",
@@ -320,7 +316,11 @@ def _fetch_forex_hist_em_robust(
                 max_retries=1,
                 budget=active_budget,
             )
-            if isinstance(frame, pd.DataFrame) and not frame.empty:
+            if not isinstance(frame, pd.DataFrame):
+                raise TypeError(
+                    f"{ak_fx_name}({pair}) returned non-DataFrame payload: {type(frame).__name__}"
+                )
+            if not frame.empty:
                 frame.attrs["data_source"] = f"akshare.{ak_fx_name}"
                 if fallback_warnings:
                     frame.attrs["fallback_warnings"] = fallback_warnings
@@ -329,7 +329,8 @@ def _fetch_forex_hist_em_robust(
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             fallback_warnings.append(f"akshare.{ak_fx_name}({pair}) failed: {exc!r}")
-    else:
+
+    if not any_ak_fx_callable:
         fallback_warnings.append("akshare missing fx_hist_em/forex_hist_em")
 
     sina_symbol = f"fx_s{pair.lower()}"
@@ -356,7 +357,9 @@ def _fetch_forex_hist_em_robust(
     detail = "; ".join(fallback_warnings) if fallback_warnings else repr(last_error)
     if isinstance(last_error, EmptySymbolDataError) and saw_empty_payload:
         raise last_error
-    raise DataFetchError(f"外汇历史行情抓取失败（已尝试东财直连、AKShare 与新浪外汇回退）: {detail}")
+    raise DataFetchError(
+        f"外汇历史行情抓取失败（已尝试东财直连、AKShare 与新浪外汇回退）: {detail}"
+    )
 
 
 forex_kline_json_to_dataframe = _forex_kline_json_to_dataframe

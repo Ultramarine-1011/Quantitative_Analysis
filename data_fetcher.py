@@ -195,6 +195,49 @@ def _resolve_global_sina_index_name(ak: Any, display_sym: str, em_name: str) -> 
     return None
 
 
+_US_INDEX_SINA_CANDIDATES: tuple[str, ...] = ("index_us_daily_sina", "index_us_stock_sina")
+
+
+def _try_us_index_sina_candidates(
+    ak: Any,
+    idx_sym: str,
+    warnings_list: list[str],
+    *,
+    max_retries: int = 1,
+) -> tuple[pd.DataFrame | None, str, bool, bool, BaseException | None]:
+    """Try compatible US index Sina AKShare APIs until valid OHLCV data is obtained."""
+    any_callable = False
+    saw_empty = False
+    last_error: BaseException | None = None
+    for fn_name in _US_INDEX_SINA_CANDIDATES:
+        us_fn = getattr(ak, fn_name, None)
+        if not callable(us_fn):
+            continue
+        any_callable = True
+        try:
+            raw = _call_akshare(
+                f"{fn_name}({idx_sym!r})", us_fn, symbol=idx_sym, max_retries=max_retries
+            )
+            if not isinstance(raw, pd.DataFrame):
+                raise TypeError(
+                    f"{fn_name}({idx_sym}) returned non-DataFrame payload: {type(raw).__name__}"
+                )
+            if raw.empty:
+                saw_empty = True
+                warnings_list.append(f"akshare.{fn_name}({idx_sym}) returned empty data")
+                continue
+            out = _sina_ohlcv_with_optional_volume(raw)
+            return out, f"akshare.{fn_name}", any_callable, saw_empty, None
+        except EmptySymbolDataError as exc:
+            saw_empty = True
+            last_error = exc
+            warnings_list.append(f"akshare.{fn_name}({idx_sym}) returned empty data: {exc!r}")
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            warnings_list.append(f"akshare.{fn_name}({idx_sym}) failed: {exc!r}")
+    return None, "", any_callable, saw_empty, last_error
+
+
 def _load_non_dot_global_index(
     ak: Any, display_sym: str
 ) -> tuple[pd.DataFrame, str, str, list[str]]:
@@ -207,18 +250,13 @@ def _load_non_dot_global_index(
         em_name
     )
     if us_sina_sym:
-        for fn_name in ("index_us_daily_sina", "index_us_stock_sina"):
-            us_fn = getattr(ak, fn_name, None)
-            if callable(us_fn):
-                try:
-                    raw = _call_akshare(
-                        f"{fn_name}({us_sina_sym!r})", us_fn, symbol=us_sina_sym, max_retries=1
-                    )
-                    out = _sina_ohlcv_with_optional_volume(raw)
-                    return out, us_sina_sym, f"akshare.{fn_name}", warnings_list
-                except Exception as exc:  # noqa: BLE001
-                    warnings_list.append(f"akshare.{fn_name}({us_sina_sym}) failed: {exc!r}")
-                break
+        out, data_source, any_us_callable, _, _ = _try_us_index_sina_candidates(
+            ak, us_sina_sym, warnings_list, max_retries=1
+        )
+        if out is not None:
+            return out, us_sina_sym, data_source, warnings_list
+        if not any_us_callable:
+            warnings_list.append("akshare missing index_us_daily_sina/index_us_stock_sina")
 
     hk_sina_sym = _GLOBAL_INDEX_HK_SINA_ALIASES.get(upper) or _GLOBAL_INDEX_HK_SINA_ALIASES.get(
         em_name
@@ -228,7 +266,10 @@ def _load_non_dot_global_index(
         if callable(hk_fn):
             try:
                 raw = _call_akshare(
-                    f"index_hk_daily_sina({hk_sina_sym!r})", hk_fn, symbol=hk_sina_sym, max_retries=1
+                    f"index_hk_daily_sina({hk_sina_sym!r})",
+                    hk_fn,
+                    symbol=hk_sina_sym,
+                    max_retries=1,
                 )
                 out = _sina_ohlcv_with_optional_volume(raw)
                 return out, hk_sina_sym, "akshare.index_hk_daily_sina", warnings_list
@@ -378,18 +419,25 @@ def load_global_market_data(
         display_sym = sym.strip()
         if display_sym.startswith("."):
             idx_sym = display_sym.upper()
-            fn_name, fn = resolve_akshare_callable(
-                ak, "index_us_daily_sina", "index_us_stock_sina"
+            out_us, data_source, any_us_callable, saw_empty, last_error = (
+                _try_us_index_sina_candidates(ak, idx_sym, fallback_warnings, max_retries=1)
             )
-            raw = _call_akshare(
-                f"{fn_name}({idx_sym!r})",
-                fn,
-                symbol=idx_sym,
-            )
-            out = _sina_ohlcv_with_optional_volume(raw)
+            if out_us is None:
+                if not any_us_callable:
+                    tried = ", ".join(_US_INDEX_SINA_CANDIDATES)
+                    raise VendorUpstreamError(
+                        f"当前 AKShare 版本缺少可用接口（已尝试: {tried}），"
+                        "请检查 AKShare 版本或数据路由配置。"
+                    )
+                detail = "; ".join(fallback_warnings)
+                if saw_empty and not any("failed:" in w for w in fallback_warnings):
+                    raise EmptySymbolDataError(
+                        f"美股指数 ({idx_sym}) 未返回有效 K 线数据: {detail}"
+                    )
+                raise DataFetchError(f"美股指数 ({idx_sym}) 行情抓取失败: {detail}") from last_error
+            out = out_us
             resolved_symbol = idx_sym
             atype = "global_index"
-            data_source = f"akshare.{fn_name}"
             caption = "美股指数（新浪）· 点"
         else:
             out, resolved_symbol, data_source, fallback_warnings = _load_non_dot_global_index(
@@ -505,6 +553,77 @@ def load_commodity_data(symbol: str, start_date: DateLike, end_date: DateLike) -
     )
 
 
+def _parse_tencent_reit_kline(
+    raw_tx: Any,
+    qq: str,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None, bool, str | None]:
+    """Validate Tencent kline frame without ever mapping turnover ``amount`` to ``Volume``.
+
+    Returns ``(valid_real_vol_df, missing_vol_fallback_df, saw_empty, warning)``.
+    """
+    if not isinstance(raw_tx, pd.DataFrame):
+        raise TypeError(
+            f"stock_zh_a_hist_tx({qq}) returned non-DataFrame payload: {type(raw_tx).__name__}"
+        )
+    if raw_tx.empty:
+        return None, None, True, f"akshare.stock_zh_a_hist_tx({qq}) returned empty data"
+
+    col_lookup: dict[str, str] = {}
+    for target, candidates in (
+        ("Date", ("date", "Date", "日期")),
+        ("Open", ("open", "Open", "开盘")),
+        ("High", ("high", "High", "最高")),
+        ("Low", ("low", "Low", "最低")),
+        ("Close", ("close", "Close", "收盘")),
+    ):
+        matched = next((c for c in candidates if c in raw_tx.columns), None)
+        if matched is None:
+            raise ValueError(f"Tencent kline DataFrame missing required {target} column.")
+        col_lookup[target] = matched
+
+    vol_col = next((c for c in ("volume", "Volume", "成交量") if c in raw_tx.columns), None)
+    base_frame = pd.DataFrame(
+        {target: raw_tx[src] for target, src in col_lookup.items()},
+        index=raw_tx.index,
+    )
+
+    if vol_col is not None:
+        vol_series = pd.to_numeric(raw_tx[vol_col], errors="coerce")
+        if vol_series.notna().any():
+            base_frame["Volume"] = vol_series
+            return normalize_ohlcv(base_frame, {}), None, False, None
+        warn = f"akshare.stock_zh_a_hist_tx({qq}) returned no valid 'volume' values"
+    else:
+        # 腾讯接口的 amount 为成交金额（元），禁止在缺少 volume 时将其映射为 Volume。
+        has_amount = "amount" in raw_tx.columns or "成交额" in raw_tx.columns
+        detail = (
+            "missing 'volume' column (found 'amount', refusing to map turnover amount to Volume)"
+            if has_amount
+            else "missing 'volume' column"
+        )
+        warn = f"akshare.stock_zh_a_hist_tx({qq}) {detail}"
+
+    # C-REITs 允许缺失成交量：先规范化请求窗口内的价格序列作为显式缺失兜底，
+    # 但仍返回 out=None，以便调用方优先尝试其他具备真实成交量的数据源。
+    dates = pd.to_datetime(base_frame["Date"], errors="coerce")
+    lo = start_ts.normalize()
+    hi = end_ts.normalize()
+    in_range = base_frame.loc[
+        dates.notna() & (dates.dt.normalize() >= lo) & (dates.dt.normalize() <= hi)
+    ].copy()
+    if in_range.empty:
+        return None, None, True, warn
+
+    in_range["Volume"] = float("nan")
+    try:
+        missing_vol_norm = normalize_ohlcv(in_range, {})
+    except EmptySymbolDataError:
+        return None, None, True, warn
+    return None, missing_vol_norm, False, warn
+
+
 def load_reit_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.DataFrame:
     """沪深 C-REITs 日线（腾讯前复权 -> AKShare 东财 -> 东财直连 -> 新浪不复权）。"""
     code = normalize_symbol_alias("creit", symbol)
@@ -519,6 +638,7 @@ def load_reit_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.
         tx_prefix = "sh" if eastmoney_sec_market_id(code) == 1 else "sz"
 
     out: pd.DataFrame | None = None
+    tx_missing_vol_fallback: pd.DataFrame | None = None
     data_source = ""
 
     # 1) 腾讯日线（前复权 qfq 与东财 fqt=1 口径一致，且不依赖 push2）
@@ -535,36 +655,51 @@ def load_reit_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.
                 adjust="qfq",
                 max_retries=1,
             )
-            if isinstance(raw_tx, pd.DataFrame) and not raw_tx.empty:
-                vol_col = "volume" if "volume" in raw_tx.columns else "amount"
-                work_tx = raw_tx.rename(columns={"date": "Date", "open": "Open", "high": "High", "low": "Low", "close": "Close", vol_col: "Volume"})
-                out = normalize_ohlcv(work_tx, {})
+            out, tx_missing_vol_fallback, tx_empty, tx_warn = _parse_tencent_reit_kline(
+                raw_tx, qq, start_ts, end_ts
+            )
+            if out is not None:
                 data_source = "akshare.stock_zh_a_hist_tx"
-            else:
+            if tx_empty:
                 saw_empty = True
-                fallback_warnings.append(f"akshare.stock_zh_a_hist_tx({qq}) returned empty data")
+            if tx_warn:
+                fallback_warnings.append(tx_warn)
         except Exception as exc:  # noqa: BLE001
             fallback_warnings.append(f"akshare.stock_zh_a_hist_tx({qq}) failed: {exc!r}")
 
     # 2) AKShare 东财 REITs 接口（1.20.46 为 fund_reits_hist_em，兼容旧版 reits_hist_em）
     if out is None:
+        any_reit_callable = False
         for reit_name in ("fund_reits_hist_em", "reits_hist_em"):
             reit_fn = getattr(ak, reit_name, None)
             if not callable(reit_fn):
                 continue
+            any_reit_callable = True
             try:
-                raw_em = _call_akshare(f"{reit_name}({code!r})", reit_fn, symbol=code, max_retries=1)
-                if isinstance(raw_em, pd.DataFrame) and not raw_em.empty:
-                    raw2 = _em_kline_frame_to_ohlcv_raw(raw_em)
-                    out = normalize_ohlcv(raw2, {**A_SHARE_COLUMN_MAPPING, **_EM_KLINE_OHLCV_MAPPING})
-                    data_source = f"akshare.{reit_name}"
-                else:
+                raw_em = _call_akshare(
+                    f"{reit_name}({code!r})", reit_fn, symbol=code, max_retries=1
+                )
+                if not isinstance(raw_em, pd.DataFrame):
+                    raise TypeError(
+                        f"{reit_name}({code}) returned non-DataFrame payload: "
+                        f"{type(raw_em).__name__}"
+                    )
+                if raw_em.empty:
                     saw_empty = True
                     fallback_warnings.append(f"akshare.{reit_name}({code}) returned empty data")
+                    continue
+                raw2 = _em_kline_frame_to_ohlcv_raw(raw_em)
+                out = normalize_ohlcv(raw2, {**A_SHARE_COLUMN_MAPPING, **_EM_KLINE_OHLCV_MAPPING})
+                data_source = f"akshare.{reit_name}"
+                break
+            except EmptySymbolDataError as exc:
+                saw_empty = True
+                fallback_warnings.append(
+                    f"akshare.{reit_name}({code}) returned empty data: {exc!r}"
+                )
             except Exception as exc:  # noqa: BLE001
                 fallback_warnings.append(f"akshare.{reit_name}({code}) failed: {exc!r}")
-            break
-        else:
+        if not any_reit_callable:
             fallback_warnings.append("akshare missing fund_reits_hist_em/reits_hist_em")
 
     # 3) 东方财富直连 K 线兜底
@@ -573,7 +708,12 @@ def load_reit_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.
             direct_df = EastMoneyDailyKlineClient().fetch_daily_klines(
                 code, start_ts, end_ts, "qfq", trust_env=False
             )
-            if isinstance(direct_df, pd.DataFrame) and not direct_df.empty:
+            if not isinstance(direct_df, pd.DataFrame):
+                raise TypeError(
+                    f"eastmoney_direct({code}) returned non-DataFrame payload: "
+                    f"{type(direct_df).__name__}"
+                )
+            if not direct_df.empty:
                 out = normalize_ohlcv(direct_df, A_SHARE_COLUMN_MAPPING)
                 data_source = "eastmoney_direct"
             else:
@@ -591,7 +731,12 @@ def load_reit_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.
                 raw_s = _call_akshare(
                     f"fund_etf_hist_sina({qq!r})", sina_fn, symbol=qq, max_retries=1
                 )
-                if isinstance(raw_s, pd.DataFrame) and not raw_s.empty:
+                if not isinstance(raw_s, pd.DataFrame):
+                    raise TypeError(
+                        f"fund_etf_hist_sina({qq}) returned non-DataFrame payload: "
+                        f"{type(raw_s).__name__}"
+                    )
+                if not raw_s.empty:
                     out = normalize_ohlcv(raw_s, FOREIGN_FUTURES_COLUMN_MAPPING)
                     data_source = "akshare.fund_etf_hist_sina"
                     fallback_warnings.append(
@@ -599,9 +744,19 @@ def load_reit_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.
                     )
                 else:
                     saw_empty = True
-                    fallback_warnings.append(f"akshare.fund_etf_hist_sina({qq}) returned empty data")
+                    fallback_warnings.append(
+                        f"akshare.fund_etf_hist_sina({qq}) returned empty data"
+                    )
             except Exception as exc:  # noqa: BLE001
                 fallback_warnings.append(f"akshare.fund_etf_hist_sina({qq}) failed: {exc!r}")
+
+    if out is None and tx_missing_vol_fallback is not None:
+        out = tx_missing_vol_fallback
+        data_source = "akshare.stock_zh_a_hist_tx"
+        fallback_warnings.append(
+            "未能从其他数据源获取真实成交量，已沿用 akshare.stock_zh_a_hist_tx "
+            "价格序列并按 OHLCV 契约显式处理缺失成交量。"
+        )
 
     if out is None:
         detail = "; ".join(fallback_warnings)

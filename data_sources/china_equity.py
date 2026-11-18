@@ -152,6 +152,44 @@ class AKShareFetcher(BaseDataFetcher):
             mask = (out["日期"] >= lo) & (out["日期"] <= hi)
             return out.loc[mask].copy()
 
+        def _adapt_alt_frame(raw_df: Any, source_name: str) -> pd.DataFrame | None:
+            if not isinstance(raw_df, pd.DataFrame) or raw_df.empty:
+                self._last_alt_warnings.append(f"{source_name}({qq}) returned empty data")
+                return None
+            vol_col = next(
+                (col for col in ("volume", "Volume", "成交量") if col in raw_df.columns),
+                None,
+            )
+            if vol_col is None:
+                # 腾讯等接口的 amount 为成交金额（元），禁止在缺少真实成交量时误映射为 Volume。
+                has_amount = "amount" in raw_df.columns or "成交额" in raw_df.columns
+                detail = (
+                    "missing 'volume' column "
+                    "(found 'amount', refusing to map turnover amount to Volume)"
+                    if has_amount
+                    else "missing 'volume' column"
+                )
+                msg = f"{source_name}({qq}) {detail}"
+                _LOGGER.warning("%s", msg)
+                self._last_alt_warnings.append(msg)
+                return None
+            conv = _to_em_style(raw_df, vol_col)
+            if conv.empty:
+                self._last_alt_warnings.append(f"{source_name}({qq}) returned empty data")
+                return None
+            if not conv[["开盘", "收盘", "最高", "最低"]].notna().all(axis=1).any():
+                msg = f"{source_name}({qq}) returned no valid OHLC price rows"
+                _LOGGER.warning("%s", msg)
+                self._last_alt_warnings.append(msg)
+                return None
+            if not conv["成交量"].notna().any():
+                msg = f"{source_name}({qq}) returned no valid 'volume' values"
+                _LOGGER.warning("%s", msg)
+                self._last_alt_warnings.append(msg)
+                return None
+            conv.attrs["data_source"] = source_name
+            return conv
+
         ak = self._load_akshare()
         if equity_route == "etf" and adjust == "":
             # Sina ETF history is unadjusted; never use it for qfq/hfq.
@@ -160,11 +198,9 @@ class AKShareFetcher(BaseDataFetcher):
                 if not callable(sina_fn):
                     raise AttributeError("akshare has no callable 'fund_etf_hist_sina'")
                 raw_s = sina_fn(symbol=qq)
-                if isinstance(raw_s, pd.DataFrame) and not raw_s.empty and "volume" in raw_s.columns:
-                    conv = _to_em_style(raw_s, "volume")
-                    if not conv.empty:
-                        conv.attrs["data_source"] = "akshare.fund_etf_hist_sina"
-                        return conv
+                conv = _adapt_alt_frame(raw_s, "akshare.fund_etf_hist_sina")
+                if conv is not None:
+                    return conv
             except Exception as exc:  # noqa: BLE001
                 msg = f"akshare.fund_etf_hist_sina({qq}) failed: {exc!r}"
                 _LOGGER.warning("%s", msg)
@@ -181,24 +217,21 @@ class AKShareFetcher(BaseDataFetcher):
                 end_date=end_s,
                 adjust=adj,
             )
-            if isinstance(raw_tx, pd.DataFrame) and not raw_tx.empty:
-                vol_col = "volume" if "volume" in raw_tx.columns else "amount"
-                if vol_col in raw_tx.columns:
-                    conv_tx = _to_em_style(raw_tx, vol_col)
-                    if not conv_tx.empty:
-                        conv_tx.attrs["data_source"] = "akshare.stock_zh_a_hist_tx"
-                        return conv_tx
-            self._last_alt_warnings.append(f"akshare.stock_zh_a_hist_tx({qq}) returned empty data")
+            conv_tx = _adapt_alt_frame(raw_tx, "akshare.stock_zh_a_hist_tx")
+            if conv_tx is not None:
+                return conv_tx
         except Exception as exc:  # noqa: BLE001
             msg = f"akshare.stock_zh_a_hist_tx({qq}) failed: {exc!r}"
             _LOGGER.warning("%s", msg)
             self._last_alt_warnings.append(msg)
 
         if equity_route == "stock":
+            any_sina_callable = False
             for sina_name in ("stock_zh_a_daily_sina", "stock_zh_a_daily"):
                 sina_stock_fn = getattr(ak, sina_name, None)
                 if not callable(sina_stock_fn):
                     continue
+                any_sina_callable = True
                 try:
                     raw_sina = sina_stock_fn(
                         symbol=qq,
@@ -206,20 +239,17 @@ class AKShareFetcher(BaseDataFetcher):
                         end_date=end_s,
                         adjust=adj,
                     )
-                    if (
-                        isinstance(raw_sina, pd.DataFrame)
-                        and not raw_sina.empty
-                        and "volume" in raw_sina.columns
-                    ):
-                        conv_sina = _to_em_style(raw_sina, "volume")
-                        if not conv_sina.empty:
-                            conv_sina.attrs["data_source"] = f"akshare.{sina_name}"
-                            return conv_sina
+                    conv_sina = _adapt_alt_frame(raw_sina, f"akshare.{sina_name}")
+                    if conv_sina is not None:
+                        return conv_sina
                 except Exception as exc:  # noqa: BLE001
                     msg = f"akshare.{sina_name}({qq}) failed: {exc!r}"
                     _LOGGER.warning("%s", msg)
                     self._last_alt_warnings.append(msg)
-                    break
+            if not any_sina_callable:
+                self._last_alt_warnings.append(
+                    "akshare missing stock_zh_a_daily_sina/stock_zh_a_daily"
+                )
 
         return pd.DataFrame()
 
