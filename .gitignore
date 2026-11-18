@@ -31,3 +31,6 @@ Thumbs.db
 
 # Editor (optional local overrides)
 .idea/
+
+# Live market data audit outputs (raw market data kept local)
+data/
