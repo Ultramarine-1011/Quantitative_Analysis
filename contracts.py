@@ -23,8 +23,9 @@ from asset_catalog import (
 )
 from ohlcv import compute_ohlcv_quality, validate_analysis_date_range
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "0.2.0"
 LEGACY_SCHEMA_VERSIONS: tuple[str, ...] = ("0.1.0",)
+SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = ("0.1.0", "0.2.0")
 VALID_RESULT_STATUSES: frozenset[str] = frozenset({"ok", "degraded", "error"})
 VALID_SERIES_KINDS: frozenset[str] = frozenset(
     {
@@ -1919,15 +1920,20 @@ def validate_result_invariants(result: AnalysisResult | MultiAssetResult) -> Non
     if cmd == "portfolio":
         bt = metrics.get("backtest")
         if isinstance(bt, Mapping):
-            for entry in bt.values():
-                if isinstance(entry, Mapping) and "cumulative_return" in entry:
+            for bt_key, entry in bt.items():
+                if bt_key != "relative_to_equal_weight" and isinstance(entry, Mapping):
                     _validate_metric_mapping(entry, schema_version=schema_ver, command="portfolio")
         rc = metrics.get("risk_contributions")
         if isinstance(rc, Mapping):
             _validate_metric_mapping(rc, schema_version=schema_ver, command="portfolio")
         val = metrics.get("validation")
         if isinstance(val, Mapping):
-            for sub_key in ("in_sample_performance", "out_of_sample_performance", "performance"):
+            for sub_key in (
+                "in_sample_performance",
+                "out_of_sample_performance",
+                "performance",
+                "in_sample_hindsight_reference",
+            ):
                 sub = val.get(sub_key)
                 if isinstance(sub, Mapping):
                     _validate_metric_mapping(sub, schema_version=schema_ver, command="portfolio")
@@ -1964,6 +1970,7 @@ __all__ = [
     "SUPPORTED_PORTFOLIO_STRATEGIES",
     "SUPPORTED_REBALANCE_FREQS",
     "SUPPORTED_RETURN_CONVENTIONS",
+    "SUPPORTED_SCHEMA_VERSIONS",
     "SUPPORTED_VALIDATION_MODES",
     "SeriesMetadata",
     "VALID_RESULT_STATUSES",

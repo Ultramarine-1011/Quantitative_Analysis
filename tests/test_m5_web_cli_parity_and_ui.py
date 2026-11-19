@@ -15,7 +15,7 @@ from streamlit.testing.v1 import AppTest
 import app
 import asset_loader
 import quant_cli
-from contracts import SOFTWARE_VERSION
+from contracts import SCHEMA_VERSION, SOFTWARE_VERSION
 from ohlcv import compute_ohlcv_quality
 
 
@@ -637,7 +637,7 @@ def test_cache_reuse_force_refresh_custom_weight_errors_and_exports_integrity(
     exports = page.session_state["_workspace_single"]["exports"]
     parsed_json = json.loads(exports["json"])
     assert parsed_json["software_version"] == SOFTWARE_VERSION
-    assert parsed_json["schema_version"] == "0.1.0"
+    assert parsed_json["schema_version"] == SCHEMA_VERSION
     assert exports["csv"].startswith(b"\xef\xbb\xbf")
     assert "<!DOCTYPE html>" in exports["html"]
     assert "510300" in exports["md"]

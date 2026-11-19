@@ -9,6 +9,7 @@ import pytest
 from contracts import (
     METRIC_DEFINITIONS,
     SCHEMA_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
     AnalysisRequest,
     AnalysisResult,
     MultiAssetResult,
@@ -21,8 +22,12 @@ from contracts import (
     sync_metadata_to_frame,
     validate_frame_metadata_consistency,
     validate_metric_value,
+    validate_result_invariants,
 )
+from feature_engineering import OHLCVFeatureEngineer
+from main import build_diagnostic_report
 from ohlcv import compute_ohlcv_quality
+from reporting.formatting import format_drawdown_percent
 from services.analysis_service import analyze_single_asset
 
 
@@ -269,3 +274,138 @@ def test_quality_report_and_result_invariants() -> None:
         validate_metric_value("correlation", 1.25)
     with pytest.raises(ValueError, match="R-squared"):
         validate_metric_value("r_squared", 1.1)
+
+
+def test_format_drawdown_percent_rejects_sign_mismatch_and_masks_tiny_noise() -> None:
+    assert SCHEMA_VERSION == "0.2.0"
+    assert SUPPORTED_SCHEMA_VERSIONS == ("0.1.0", "0.2.0")
+
+    assert format_drawdown_percent(0.25) == "-25.00%"
+    assert format_drawdown_percent(0.0) == "0.00%"
+    assert format_drawdown_percent(-1e-15) == "0.00%"
+    assert format_drawdown_percent(float("nan")) == "N/A"
+
+    # Negative drawdown must be rejected when expecting non-negative depth (no -abs() masking)
+    with pytest.raises(ValueError, match="non-negative"):
+        format_drawdown_percent(-0.25)
+
+    # Underwater convention explicitly accepts <= 0 and rejects positive depth
+    assert format_drawdown_percent(-0.25, input_convention="underwater") == "-25.00%"
+    assert format_drawdown_percent(0.0, input_convention="underwater") == "0.00%"
+    with pytest.raises(ValueError, match="non-positive"):
+        format_drawdown_percent(0.25, input_convention="underwater")
+
+
+def test_schema_v020_invariants_reject_legacy_compare_and_negative_portfolio_drawdown() -> None:
+    with pytest.raises(ValueError, match="0.2.0"):
+        validate_metric_value("max_drawdown", -0.1, schema_version="0.2.0", command="compare")
+    with pytest.raises(ValueError, match="Legacy schema v0.1.0 compare"):
+        validate_metric_value("max_drawdown", 0.1, schema_version="0.1.0", command="compare")
+
+    meta_a = _valid_meta()
+    meta_b = _valid_meta(symbol="510500", canonical_symbol="510500")
+    qual = {"etf:510300": _valid_quality(), "etf:510500": _valid_quality()}
+
+    with pytest.raises(ValueError, match="0.2.0"):
+        MultiAssetResult(
+            schema_version="0.2.0",
+            command="compare",
+            status="ok",
+            asset_order=("etf:510300", "etf:510500"),
+            assets={"etf:510300": meta_a, "etf:510500": meta_b},
+            quality=qual,
+            data_summary={},
+            parameters={},
+            methodology={},
+            metrics={
+                "per_asset": {
+                    "etf:510300": {"max_drawdown": -0.15},
+                    "etf:510500": {"max_drawdown": 0.10},
+                }
+            },
+        )
+
+    good_compare = MultiAssetResult(
+        schema_version="0.2.0",
+        command="compare",
+        status="ok",
+        asset_order=("etf:510300", "etf:510500"),
+        assets={"etf:510300": meta_a, "etf:510500": meta_b},
+        quality=qual,
+        data_summary={},
+        parameters={},
+        methodology={"max_drawdown_convention": "non_negative_depth"},
+        metrics={
+            "per_asset": {
+                "etf:510300": {"max_drawdown": 0.15},
+                "etf:510500": {"max_drawdown": 0.0},
+            }
+        },
+    )
+    validate_result_invariants(good_compare)
+
+    with pytest.raises(ValueError, match="0.2.0"):
+        MultiAssetResult(
+            schema_version="0.2.0",
+            command="portfolio",
+            status="ok",
+            asset_order=("etf:510300", "etf:510500"),
+            assets={"etf:510300": meta_a, "etf:510500": meta_b},
+            quality=qual,
+            data_summary={},
+            parameters={},
+            methodology={},
+            metrics={
+                "backtest": {
+                    "In_Sample_Portfolio": {"max_drawdown": -0.08},
+                },
+            },
+        )
+
+    with pytest.raises(ValueError, match="0.2.0"):
+        MultiAssetResult(
+            schema_version="0.2.0",
+            command="portfolio",
+            status="ok",
+            asset_order=("etf:510300", "etf:510500"),
+            assets={"etf:510300": meta_a, "etf:510500": meta_b},
+            quality=qual,
+            data_summary={},
+            parameters={},
+            methodology={},
+            metrics={
+                "validation": {
+                    "in_sample_hindsight_reference": {"max_drawdown": -0.08},
+                },
+            },
+        )
+
+
+def test_main_diagnostic_report_uses_strict_drawdown_formatter() -> None:
+    df = _sample_df()
+    eng = OHLCVFeatureEngineer()
+    metrics = {
+        "cumulative_return": 0.12,
+        "cagr": 0.15,
+        "annualized_volatility": 0.18,
+        "max_drawdown": 0.20,
+        "sharpe_ratio": 0.7,
+        "sortino_ratio": 1.0,
+        "calmar_ratio": 0.75,
+        "var_95": -0.02,
+        "cvar_95": -0.03,
+        "latest_signal": "中性持有",
+        "series_kind": "price",
+        "currency": "CNY",
+        "data_source": "mock",
+        "return_basis": "total_return",
+        "return_convention": "log",
+        "trading_days": 252,
+        "data_quality": {},
+    }
+    report_text = build_diagnostic_report("510300", df, eng, metrics=metrics)
+    assert "最大回撤: -20.00%" in report_text
+
+    bad_metrics = dict(metrics, max_drawdown=-0.20)
+    with pytest.raises(ValueError, match="non-negative"):
+        build_diagnostic_report("510300", df, eng, metrics=bad_metrics)

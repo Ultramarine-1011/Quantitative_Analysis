@@ -6,7 +6,7 @@ import json
 import math
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -140,16 +140,34 @@ def format_drawdown_percent(
     *,
     decimals: int = 2,
     na_text: str = "N/A",
+    input_convention: Literal["depth", "underwater"] = "depth",
 ) -> str:
-    """Format drawdown consistently as non-positive underwater percentage (``<= 0%``).
+    """Format drawdown as non-positive underwater percentage (``<= 0%``) with explicit sign checks.
 
-    ``analyze`` and ``portfolio`` store ``max_drawdown`` as non-negative depth (e.g. ``0.25``),
-    whereas ``compare`` stores it as non-positive underwater return (``-0.25``). Both render as
-    ``-25.00%``, and exact zero renders as ``0.00%``.
+    All schema v0.2.0 commands store ``max_drawdown`` as non-negative depth (``>= 0``,
+    ``input_convention="depth"``). Time-series underwater drawdown values (``<= 0``) must opt in
+    explicitly via ``input_convention="underwater"`` rather than relying on silent ``-abs()``.
     """
     if not is_valid_number(value):
         return na_text
-    pct = -abs(float(value) * 100.0)
+    num = float(value)
+    tol = 1e-12
+    if input_convention == "depth":
+        if num < -tol:
+            raise ValueError(
+                f"format_drawdown_percent(input_convention='depth') expects non-negative drawdown >= 0; got {num!r}."
+            )
+        pct = -max(0.0, num) * 100.0
+    elif input_convention == "underwater":
+        if num > tol:
+            raise ValueError(
+                f"format_drawdown_percent(input_convention='underwater') expects non-positive drawdown <= 0; got {num!r}."
+            )
+        pct = min(0.0, num) * 100.0
+    else:
+        raise ValueError(
+            f"Unsupported input_convention {input_convention!r}; expected 'depth' or 'underwater'."
+        )
     if abs(pct) < 10 ** (-(decimals + 2)):
         return f"{0.0:.{decimals}f}%"
     return f"{pct:.{decimals}f}%"

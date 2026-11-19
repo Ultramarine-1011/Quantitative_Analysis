@@ -37,6 +37,7 @@ from currency import convert_ohlcv_to_base_currency
 from data_fetcher import DataFetchError, apply_default_network_proxy_policy
 from feature_engineering import OHLCVFeatureEngineer
 from ohlcv import REQUIRED_OHLCV_COLUMNS
+from reporting.formatting import format_drawdown_percent as _format_drawdown_percent
 from services.analysis_service import analyze_single_asset
 from visualizer import MplfinanceVisualizer
 
@@ -119,12 +120,7 @@ def build_diagnostic_report(
             ),
             "年化收益率 (CAGR): %s" % _format_percent(metrics["cagr"]),
             "年化波动率: %s" % _format_percent(metrics["annualized_volatility"]),
-            "最大回撤: %s"
-            % (
-                _format_percent(-abs(float(metrics["max_drawdown"])))
-                if pd.notna(metrics["max_drawdown"])
-                else "N/A"
-            ),
+            "最大回撤: %s" % _format_drawdown_percent(metrics["max_drawdown"]),
             "夏普比率 (Rf=%.1f%%): %s"
             % (risk_free_rate * 100.0, _format_ratio(metrics["sharpe_ratio"])),
             "索提诺比率 (Sortino): %s" % _format_ratio(metrics["sortino_ratio"]),

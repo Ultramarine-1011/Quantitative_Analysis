@@ -802,10 +802,6 @@ def test_module_dependency_direction_audit() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A1 baseline defect: compare stores max_drawdown <= 0 while analyze and portfolio store >= 0.",
-)
 def test_p0_a1_cross_command_max_drawdown_sign_consistency() -> None:
     dates = pd.bdate_range("2024-01-02", periods=25)
     # Deterministic path with peak=125 and trough=100 => 20% drawdown depth (+0.20)

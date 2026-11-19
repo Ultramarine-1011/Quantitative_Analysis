@@ -356,7 +356,8 @@ def _compute_aligned_asset_metrics(
 
     if len(clean_p) >= 2 and (clean_p > 0.0).all():
         running_max = clean_p.cummax()
-        max_dd = float((clean_p / running_max - 1.0).min())
+        raw_mdd = float((1.0 - clean_p / running_max).max())
+        max_dd = 0.0 if abs(raw_mdd) <= 1e-15 else max(0.0, raw_mdd)
     else:
         max_dd = float("nan")
         reasons["max_drawdown"] = "insufficient_observations"
@@ -635,6 +636,7 @@ def compare_assets(
         "effective_periods_per_year": float(periods_per_year),
         "backtest_periods_per_year": float(aligned.backtest_periods_per_year),
         "mtm_correlation_uses_concurrent_quotes": bool(aligned.calendar_mode == "mtm_outer"),
+        "max_drawdown_convention": "non_negative_depth",
         "normalized_base": 1.0,
     }
     data_summary = {
@@ -1786,6 +1788,7 @@ def analyze_portfolio(
         "estimation_window": est_window_label,
         "estimation_start": est_returns.index[0].strftime("%Y-%m-%d"),
         "estimation_end": est_returns.index[-1].strftime("%Y-%m-%d"),
+        "max_drawdown_convention": "non_negative_depth",
         "non_tradable_rebalance_skipped": True,
     }
     data_summary = {

@@ -438,7 +438,7 @@ def test_single_asset_simple_convention_matches_portfolio_backtest_math() -> Non
     )
     assert single_simple["sharpe_ratio"] == pytest.approx(bt["sharpe_ratio"], rel=1e-10)
     assert single_simple["sortino_ratio"] == pytest.approx(bt["sortino_ratio"], rel=1e-10)
-    assert abs(single_simple["max_drawdown"]) == pytest.approx(bt["max_drawdown"], rel=1e-10)
+    assert single_simple["max_drawdown"] == pytest.approx(bt["max_drawdown"], rel=1e-10)
 
     # Log convention stays the single-asset default and differs slightly under volatility
     eng = OHLCVFeatureEngineer()
@@ -482,7 +482,7 @@ def test_single_asset_simple_convention_matches_portfolio_backtest_math() -> Non
 def test_fresh_import_order_has_no_circular_import() -> None:
     code = (
         "import currency, asset_loader, data_sources.crypto, contracts, services.analysis_service; "
-        "assert contracts.SCHEMA_VERSION == '0.1.0'"
+        "assert contracts.SCHEMA_VERSION == '0.2.0'"
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr or proc.stdout

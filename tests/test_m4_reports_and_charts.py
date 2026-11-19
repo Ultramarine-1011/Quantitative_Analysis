@@ -463,9 +463,9 @@ def test_compare_report_and_charts_benchmark_and_mixed_currency_warnings(
     md_text = Path(artifacts["report_md"]).read_text(encoding="utf-8")
     html_text = Path(artifacts["report_html"]).read_text(encoding="utf-8")
 
-    # Verify compare drawdown (stored <=0 in JSON) displays cleanly as non-positive underwater %
+    # Verify compare drawdown (stored >=0 non-negative depth in v0.2.0 JSON) displays cleanly as non-positive underwater %
     spy_dd = payload["metrics"]["per_asset"]["us_stock:SPY"]["max_drawdown"]
-    assert float(spy_dd) <= 0.0
+    assert float(spy_dd) >= 0.0
     assert format_drawdown_percent(spy_dd) in md_text
     assert "Jarque-Bera" in md_text
     assert "Memmel (2003)" in md_text
