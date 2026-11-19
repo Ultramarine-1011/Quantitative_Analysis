@@ -872,10 +872,6 @@ def test_p0_a1_cross_command_max_drawdown_sign_consistency() -> None:
     assert mdd_compare == pytest.approx(0.20, rel=1e-10)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A2 baseline defect: build_series_metadata silently emits adjust='' with return_basis='adjusted_price' when attrs['adjust'] is absent.",
-)
 def test_p0_a2_series_metadata_rejects_missing_adjust_contradiction() -> None:
     dates = pd.bdate_range("2024-01-02", periods=10)
     raw = _make_ohlcv(

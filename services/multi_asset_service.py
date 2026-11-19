@@ -22,6 +22,7 @@ from analysis_metrics import (
 from asset_catalog import (
     SUPPORTED_ADJUSTMENTS,
     normalize_symbol_alias,
+    resolve_adjustment,
     resolve_return_basis,
     resolve_semantic_series_kind,
 )
@@ -38,8 +39,11 @@ from contracts import (
     PortfolioRequest,
     QualityReport,
     SeriesMetadata,
+    build_multi_asset_metric_units,
     build_quality_report,
     build_series_metadata,
+    sync_metadata_to_frame,
+    validate_frame_metadata_consistency,
 )
 from currency import convert_ohlcv_to_base_currency, infer_asset_currency
 from data_sources.errors import EmptySymbolDataError
@@ -65,33 +69,7 @@ from services.analysis_service import AssetLoaderFn, _slice_to_requested_window
 
 DateLike = Any
 
-_COMPARE_METRIC_UNITS: dict[str, str] = {
-    "cumulative_return": "ratio_decimal",
-    "total_return": "ratio_decimal",
-    "cagr": "ratio_decimal_per_year",
-    "max_drawdown": "ratio_decimal",
-    "annualized_volatility": "ratio_decimal_per_year",
-    "sharpe_ratio": "dimensionless_ratio",
-    "sortino_ratio": "dimensionless_ratio",
-    "calmar_ratio": "dimensionless_ratio",
-    "var_95": "ratio_decimal",
-    "cvar_95": "ratio_decimal",
-    "tracking_error": "ratio_decimal_per_year",
-    "information_ratio": "dimensionless_ratio",
-    "beta": "dimensionless_ratio",
-    "jensen_alpha": "ratio_decimal_per_year",
-    "correlation": "dimensionless_ratio",
-    "r_squared": "dimensionless_ratio",
-    "up_capture_ratio": "dimensionless_ratio",
-    "down_capture_ratio": "dimensionless_ratio",
-    "portfolio_volatility": "ratio_decimal_per_year",
-    "expected_return": "ratio_decimal_per_year",
-    "diversification_ratio": "dimensionless_ratio",
-    "effective_n_weights": "effective_asset_count",
-    "effective_n_risk": "effective_asset_count",
-    "total_turnover": "ratio_decimal",
-    "total_cost_ratio": "ratio_decimal",
-}
+_COMPARE_METRIC_UNITS: dict[str, str] = build_multi_asset_metric_units()
 
 
 def _dedupe_messages(*groups: Sequence[str]) -> tuple[str, ...]:
@@ -166,27 +144,40 @@ def _load_and_slice_spec(
         sliced = loaded.copy()
         sliced.attrs = dict(loaded.attrs)
 
-    sliced.attrs.setdefault("asset_type", spec.asset_type)
-    sliced.attrs.setdefault("symbol", spec.symbol)
-    if spec.asset_type in SUPPORTED_ADJUSTMENTS:
-        sliced.attrs.setdefault("adjust", spec.adjust)
-    resolved_sym = str(sliced.attrs.get("symbol", spec.symbol) or spec.symbol).strip()
+    sliced.attrs["asset_type"] = spec.asset_type
+    requested_canonical = normalize_symbol_alias(spec.asset_type, spec.symbol)
+    raw_attr_symbol = str(sliced.attrs.get("symbol") or "").strip()
+    if raw_attr_symbol and (
+        normalize_symbol_alias(spec.asset_type, raw_attr_symbol) == requested_canonical
+    ):
+        resolved_sym = raw_attr_symbol
+    else:
+        resolved_sym = spec.symbol
+    sliced.attrs["symbol"] = resolved_sym
+    has_attr_adjust = "adjust" in sliced.attrs and sliced.attrs.get("adjust") is not None
+    raw_attr_adjust = str(sliced.attrs.get("adjust") or "").strip() if has_attr_adjust else None
+    if raw_attr_adjust is not None:
+        if spec.asset_type not in SUPPORTED_ADJUSTMENTS and raw_attr_adjust == "none":
+            effective_adjust = ""
+        elif spec.asset_type in SUPPORTED_ADJUSTMENTS:
+            effective_adjust = resolve_adjustment(spec.asset_type, raw_attr_adjust)
+        else:
+            effective_adjust = raw_attr_adjust
+    else:
+        effective_adjust = spec.adjust
+    sliced.attrs["adjust"] = effective_adjust
     basis = resolve_return_basis(
         spec.asset_type,
-        adjust=spec.adjust if spec.asset_type in SUPPORTED_ADJUSTMENTS else None,
+        adjust=effective_adjust if spec.asset_type in SUPPORTED_ADJUSTMENTS else None,
         attrs=sliced.attrs,
     )
     sliced.attrs["return_basis"] = basis
-    sliced.attrs.setdefault(
-        "series_kind",
-        resolve_semantic_series_kind(spec.asset_type, return_basis=basis, attrs=sliced.attrs),
+    sliced.attrs["series_kind"] = resolve_semantic_series_kind(
+        spec.asset_type, return_basis=basis, attrs=sliced.attrs
     )
-    sliced.attrs.setdefault(
-        "canonical_symbol", normalize_symbol_alias(spec.asset_type, resolved_sym)
-    )
-    sliced.attrs.setdefault(
-        "currency", infer_asset_currency(spec.asset_type, spec.symbol, sliced.attrs)
-    )
+    sliced.attrs["canonical_symbol"] = normalize_symbol_alias(spec.asset_type, resolved_sym)
+    if not sliced.attrs.get("currency"):
+        sliced.attrs["currency"] = infer_asset_currency(spec.asset_type, spec.symbol, sliced.attrs)
     return sliced
 
 
@@ -253,8 +244,15 @@ def _collect_metadata_and_quality(
             frame,
             asset_type=spec.asset_type,
             symbol=spec.symbol,
+            adjust=str(frame.attrs.get("adjust", spec.adjust) or ""),
+            return_basis=str(frame.attrs.get("return_basis") or ""),
+            series_kind=str(frame.attrs.get("series_kind") or ""),
+            output_currency=frame.attrs.get("currency"),
             trading_days=trading_days,
+            strict=True,
         )
+        sync_metadata_to_frame(frame, base_meta, q)
+        validate_frame_metadata_consistency(frame, base_meta)
         leg_ccy_meta = dict(fx_pairs_meta.get(leg, {}))
         native_ccy = (
             str(
@@ -907,8 +905,15 @@ def _align_benchmark_to_oos_nav(
         converted_bench,
         asset_type=bench_spec.asset_type,
         symbol=bench_spec.symbol,
+        adjust=str(converted_bench.attrs.get("adjust", bench_spec.adjust) or ""),
+        return_basis=str(converted_bench.attrs.get("return_basis") or ""),
+        series_kind=str(converted_bench.attrs.get("series_kind") or ""),
+        output_currency=converted_bench.attrs.get("currency"),
+        strict=True,
     )
     b_quality = build_quality_report(converted_bench)
+    sync_metadata_to_frame(converted_bench, b_meta, b_quality)
+    validate_frame_metadata_consistency(converted_bench, b_meta)
 
     bench_summary = {
         "leg_name": bench_spec.leg_name,
