@@ -1,6 +1,6 @@
 # M6 后端架构收敛与契约稳定化：Agent 执行计划
 
-> 状态：**M6-0 已完成，M6-1 进行中（仅计划与基线状态更新，详见 [M6_BASELINE.md](M6_BASELINE.md)）**
+> 状态：**M6-0 与 M6-1 已完成（M6-2～M6-5 待实施；基线与契约规范见 [M6_BASELINE.md](M6_BASELINE.md) 与 [CONTRACTS.md](CONTRACTS.md)）**
 > 计划基线：`codex/frontend-qa` @ `826d0a8caaacbbabb198ba99b397cd546f84bdb3`（2026-11-18，65 标的审计后的最新开发基线）
 > 工作分支：`refactor/m6-backend`（由上述分支创建）
 > 适用环境：Python >=3.11；CI 矩阵（[tests.yml](../.github/workflows/tests.yml)）覆盖 `3.11` / `3.12` / `3.14`，本机实测运行时为 `3.14.5`（3.11 / 3.12 本机无可用测试环境，`NOT RUN`）
@@ -69,16 +69,16 @@
 
 ### M6-1：契约与产物闭环（P0，先于大规模拆分）
 
-- [ ] 建立**统一的领域金融指标定义**：明确 `max_drawdown` 始终是非负深度（`>=0`），水下曲线另以负数表达；显式指定单位（比例、百分比点、价格、指数点）、年化口径、收益率 convention、`yield_level` 适用性。
-- [ ] 先写跨命令测试：相同定义的字段语义一致；单资产/比较/组合转换后的结果不依赖呈现层的 `-abs()` 纠错。处理旧版本时依据 `schema_version + command` 显式迁移，不盲目取绝对值覆盖全部语义。
-- [ ] **任何破坏对外 JSON 语义的改动必须提升 `SCHEMA_VERSION`（例如 `0.1.0 → 0.2.0`）并提供 v0.1 读取兼容与迁移测试**。必要时保留旧字段的别名和弃用说明，不能无版本变更静默改值。
-- [ ] 强化 `SeriesMetadata` / 结果构建过程：尽可能将关键元信息变为显式结构，逐步消除 `DataFrame.attrs` 作为跨层唯一事实来源的做法。过渡期可双写，但须验证两者一致，禁止偷偷推断缺失复权或币种。
-- [ ] 抽出独立 `artifacts` 序列化/反序列化：新产物 `result.json` 使用**相对路径**关联同目录 Parquet、CSV 等文件；可选 SHA-256 manifest 校验。对 `../` 越界、路径替换、丢失文件、错误版本、哈希不符分别有测试。
-- [ ] 兼容旧目录的 `result.json`：优先加载**用户指定目录内**的匹配文件；对旧绝对路径只能作受限的安全迁移，不能因为别处旧文件仍存在而默默读取它。
-- [ ] 增加 `encode → decode → encode` 的语义一致性往返测试，覆盖新旧 schema、跨设备目录复制、报告离线重放、缺文件/损坏文件的明确报错。
-- [ ] 同步报告、`quant` CLI 及最小 Web 兼容桥（仅使现有前端测试可用，**不得重写 UI**）。
+- [x] 建立**统一的领域金融指标定义**：明确 `max_drawdown` 始终是非负深度（`>=0`），水下曲线另以负数表达；显式指定单位（比例、百分比点、价格、指数点）、年化口径、收益率 convention、`yield_level` 适用性（见 [contracts.py](../contracts.py) `METRIC_DEFINITIONS` 与 [CONTRACTS.md](CONTRACTS.md)）。
+- [x] 先写跨命令测试：相同定义的字段语义一致；单资产/比较/组合转换后的结果不依赖呈现层的 `-abs()` 纠错（[reporting/formatting.py](../reporting/formatting.py) 已移除 `-abs()` 并按 `input_convention` 强校验）。处理旧版本时依据 `schema_version + command` 显式迁移（[artifacts/migration.py](../artifacts/migration.py)），拒绝盲目绝对值覆盖，相关测试见 [test_m6_0_baseline_golden.py](../tests/test_m6_0_baseline_golden.py) 与 [test_m6_1_contracts.py](../tests/test_m6_1_contracts.py)。
+- [x] **任何破坏对外 JSON 语义的改动必须提升 `SCHEMA_VERSION`（`0.1.0 → 0.2.0`）并提供 v0.1 读取兼容与迁移测试**：已升级至 `SCHEMA_VERSION = "0.2.0"`（`SUPPORTED_SCHEMA_VERSIONS = ("0.1.0", "0.2.0")`），并在 [artifacts/migration.py](../artifacts/migration.py) 与 [tests/test_m6_1_artifacts_and_migration.py](../tests/test_m6_1_artifacts_and_migration.py) 提供 v0.1 迁移与违规拒绝回归。
+- [x] 强化 `SeriesMetadata` / 结果构建过程：在 [contracts.py](../contracts.py) 新增 `SeriesMetadata.__post_init__`、`QualityReport.__post_init__`、`validate_result_invariants`、严格 `build_series_metadata` 与 `sync_metadata_to_frame` / `validate_frame_metadata_consistency` 双向检验，修复 [services/analysis_service.py](../services/analysis_service.py) 与 [services/multi_asset_service.py](../services/multi_asset_service.py) 的 `adjust` vs `return_basis` 覆盖与 frame 元数据绑定，禁止偷偷推断缺失复权或币种。
+- [x] 抽出独立 `artifacts` 序列化/反序列化：[artifacts/store.py](../artifacts/store.py) 与 [quant_cli.py](../quant_cli.py) 新产物 `result.json` 全面使用**相对 POSIX 路径**并附带 SHA-256 `artifact_manifest`；[tests/test_m6_1_artifacts_and_migration.py](../tests/test_m6_1_artifacts_and_migration.py) 覆盖 `../` 越界、路径替换、丢失文件、错误版本、损坏数据、符号链接逃逸与哈希不符测试。
+- [x] 兼容旧目录的 `result.json`：优先并严格在**用户指定目录内**解析匹配文件；[artifacts/store.py](../artifacts/store.py) `resolve_safe_artifact_path` 对 v0.1.0 旧绝对路径仅抽取本地相对文件名（支持 POSIX 与 Windows 路径）映射至指定目录内部，绝不读取原路径残留文件，并已在 `test_p0_a3_copied_artifact_dir_reads_local_parquet_and_uses_relative_paths` 及 `test_copied_and_relocated_bundle_ignores_deleted_source_and_replays_offline` 通过。
+- [x] 增加 `encode → decode → encode` 的语义一致性往返测试，覆盖 v0.2.0 全命令与 `v0.1.0 → v0.2.0` 迁移不动点、跨目录复制、报告离线重放及缺文件/损坏文件明确报错（见 [test_encode_decode_encode_semantic_roundtrip_and_offline_reports](../tests/test_m6_1_artifacts_and_migration.py)）。
+- [x] 同步报告、[quant_cli.py](../quant_cli.py)、[main.py](../main.py) 及最小 Web 兼容校验：更新 [reporting/report_renderer.py](../reporting/report_renderer.py) 方法论口径、[reporting/formatting.py](../reporting/formatting.py) 薄委托至 `artifacts`、`pyproject.toml` 注册 `artifacts*`；`app.py` 零修改并通过原有 Streamlit `AppTest` 回归。
 
-**产物：** 领域契约文档 `docs/CONTRACTS.md`（或等价明确说明）、artifact 序列化/读取实现、迁移与往返测试。**通过条件：** 新旧产物在清晰迁移策略下可读、跨命令指标符号一致、复制研究目录可独立重放、现有 CLI/Web 回归可通过。
+**产物：** [docs/CONTRACTS.md](CONTRACTS.md)、[artifacts/](../artifacts/)、契约/迁移/往返与安全测试（[tests/test_m6_1_contracts.py](../tests/test_m6_1_contracts.py)、[tests/test_m6_1_artifacts_and_migration.py](../tests/test_m6_1_artifacts_and_migration.py)）。**通过条件：** 已验证达标（离线测试全量通过且 `0` xfailed）。
 
 ### M6-2：业务编排与解析统一（P1）
 

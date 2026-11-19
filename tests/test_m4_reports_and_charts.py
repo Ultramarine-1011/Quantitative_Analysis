@@ -131,10 +131,13 @@ def _make_multi_asset_loader() -> tuple[Any, Any]:
     return loader, fx_loader
 
 
-def _assert_valid_chart_files(artifacts: dict[str, str], keys: list[str]) -> None:
+def _assert_valid_chart_files(out_dir: Path, artifacts: dict[str, str], keys: list[str]) -> None:
     for key in keys:
         assert key in artifacts, f"Missing artifact key {key}"
-        path = Path(artifacts[key])
+        assert not Path(artifacts[key]).is_absolute(), (
+            f"Expected relative path for {key}, got {artifacts[key]!r}"
+        )
+        path = out_dir / artifacts[key]
         assert path.is_file(), f"Artifact file missing on disk: {path}"
         raw = path.read_bytes()
         assert len(raw) > 100
@@ -265,19 +268,21 @@ def test_analyze_report_and_all_chart_formats_numerical_parity(
 
     payload = json.loads(captured.out)
     artifacts = payload["artifacts"]
-    assert "report_md" in artifacts and Path(artifacts["report_md"]).is_file()
-    assert "report_html" in artifacts and Path(artifacts["report_html"]).is_file()
-    assert "result.json" in Path(artifacts["result_json"]).name
+    assert "report_md" in artifacts and artifacts["report_md"] == "report.md"
+    assert (out_dir / artifacts["report_md"]).is_file()
+    assert "report_html" in artifacts and artifacts["report_html"] == "report.html"
+    assert (out_dir / artifacts["report_html"]).is_file()
+    assert artifacts["result_json"] == "result.json"
 
     expected_chart_keys = [
         f"chart_{ct}_{ext}"
         for ct in ("price", "normalized", "drawdown", "rolling")
         for ext in ("html", "png", "svg")
     ]
-    _assert_valid_chart_files(artifacts, expected_chart_keys)
+    _assert_valid_chart_files(out_dir, artifacts, expected_chart_keys)
 
-    md_text = Path(artifacts["report_md"]).read_text(encoding="utf-8")
-    html_text = Path(artifacts["report_html"]).read_text(encoding="utf-8")
+    md_text = (out_dir / artifacts["report_md"]).read_text(encoding="utf-8")
+    html_text = (out_dir / artifacts["report_html"]).read_text(encoding="utf-8")
 
     # Numerical parity with result.json (including underwater non-positive drawdown display)
     m = payload["metrics"]
@@ -344,14 +349,14 @@ def test_analyze_yield_level_blocks_return_charts_and_avoids_percent_scaling(
     payload = json.loads(captured.out)
     artifacts = payload["artifacts"]
 
-    _assert_valid_chart_files(artifacts, ["chart_price_html", "chart_price_png"])
+    _assert_valid_chart_files(out_dir, artifacts, ["chart_price_html", "chart_price_png"])
     for blocked_ct in ("normalized", "drawdown", "rolling"):
         assert f"chart_{blocked_ct}_html" not in artifacts
         assert f"chart_{blocked_ct}_png" not in artifacts
     assert any("yield_level_not_return" in w for w in payload["warnings"])
 
-    md_text = Path(artifacts["report_md"]).read_text(encoding="utf-8")
-    html_text = Path(artifacts["report_html"]).read_text(encoding="utf-8")
+    md_text = (out_dir / artifacts["report_md"]).read_text(encoding="utf-8")
+    html_text = (out_dir / artifacts["report_html"]).read_text(encoding="utf-8")
     latest_lvl_str = format_yield_percent(payload["metrics"]["latest_level"])
     assert latest_lvl_str in md_text
     assert latest_lvl_str in html_text
@@ -401,9 +406,9 @@ def test_analyze_short_window_and_degraded_quality_renders_cleanly(
     assert res is not None and res.status == "degraded"
     artifacts = json.loads(captured.out)["artifacts"]
     _assert_valid_chart_files(
-        artifacts, ["chart_price_png", "chart_rolling_png", "chart_rolling_svg"]
+        out_dir, artifacts, ["chart_price_png", "chart_rolling_png", "chart_rolling_svg"]
     )
-    html_text = Path(artifacts["report_html"]).read_text(encoding="utf-8")
+    html_text = (out_dir / artifacts["report_html"]).read_text(encoding="utf-8")
     assert "Degraded Result" in html_text
     assert "fx_rate" in html_text
 
@@ -458,10 +463,10 @@ def test_compare_report_and_charts_benchmark_and_mixed_currency_warnings(
         for ct in ("normalized", "drawdown", "rolling", "correlation")
         for ext in ("html", "png")
     ]
-    _assert_valid_chart_files(artifacts, expected_charts)
+    _assert_valid_chart_files(out_cny, artifacts, expected_charts)
 
-    md_text = Path(artifacts["report_md"]).read_text(encoding="utf-8")
-    html_text = Path(artifacts["report_html"]).read_text(encoding="utf-8")
+    md_text = (out_cny / artifacts["report_md"]).read_text(encoding="utf-8")
+    html_text = (out_cny / artifacts["report_html"]).read_text(encoding="utf-8")
 
     # Verify compare drawdown (stored >=0 non-negative depth in v0.2.0 JSON) displays cleanly as non-positive underwater %
     spy_dd = payload["metrics"]["per_asset"]["us_stock:SPY"]["max_drawdown"]
@@ -574,12 +579,12 @@ def test_portfolio_train_test_full_reports_and_charts(
         for ct in ("backtest", "weights", "frontier", "correlation", "normalized", "drawdown")
         for ext in ("html", "png", "svg")
     ]
-    _assert_valid_chart_files(artifacts, expected)
+    _assert_valid_chart_files(out_dir, artifacts, expected)
     # In train_test mode, weight_history is not present and should not clutter warnings unless asked
     assert "chart_weight_history_html" not in artifacts
 
-    md_text = Path(artifacts["report_md"]).read_text(encoding="utf-8")
-    html_text = Path(artifacts["report_html"]).read_text(encoding="utf-8")
+    md_text = (out_dir / artifacts["report_md"]).read_text(encoding="utf-8")
+    html_text = (out_dir / artifacts["report_html"]).read_text(encoding="utf-8")
     oos_cagr = payload["metrics"]["backtest"]["OOS_Portfolio"]["cagr"]
     oos_mdd = payload["metrics"]["backtest"]["OOS_Portfolio"]["max_drawdown"]
     assert format_percent(oos_cagr, signed=True) in md_text
@@ -662,6 +667,7 @@ def test_portfolio_walk_forward_and_in_sample_hindsight_callouts(
     assert isinstance(res_wf, MultiAssetResult)
     artifacts = json.loads(captured.out)["artifacts"]
     _assert_valid_chart_files(
+        out_wf,
         artifacts,
         [
             "chart_backtest_html",
@@ -1297,7 +1303,9 @@ def test_subprocess_lazy_imports_and_out_of_tree_cli_report_generation(
     assert proc.returncode == 0, proc.stderr
     parsed = json.loads(proc.stdout)
     _assert_valid_chart_files(
+        out_dir / "with_charts",
         parsed["artifacts"],
         ["chart_price_html", "chart_price_png", "chart_drawdown_html", "chart_drawdown_png"],
     )
-    assert Path(parsed["artifacts"]["report_md"]).is_file()
+    assert parsed["artifacts"]["report_md"] == "report.md"
+    assert (out_dir / "with_charts" / parsed["artifacts"]["report_md"]).is_file()

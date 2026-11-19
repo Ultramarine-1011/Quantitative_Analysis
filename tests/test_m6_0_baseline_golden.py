@@ -882,10 +882,6 @@ def test_p0_a2_series_metadata_rejects_missing_adjust_contradiction() -> None:
         build_series_metadata(raw)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A3 baseline defect: result.json emits absolute artifact paths and copied directory reads mutated original directory.",
-)
 def test_p0_a3_copied_artifact_dir_reads_local_parquet_and_uses_relative_paths(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
