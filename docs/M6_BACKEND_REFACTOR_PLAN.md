@@ -1,9 +1,9 @@
 # M6 后端架构收敛与契约稳定化：Agent 执行计划
 
-> 状态：**待实施（仅计划文档，不代表已修改任何业务代码）**  
-> 计划基线：`codex/frontend-qa` @ `826d0a8caaacbbabb198ba99b397cd546f84bdb3`（2026-11-18，65 标的审计后的最新开发基线）  
-> 工作分支：`refactor/m6-backend`（由上述分支创建）  
-> 适用环境：Python >=3.11；当前验证环境覆盖 3.11 / 3.12 / 3.14  
+> 状态：**M6-0 已完成，M6-1 进行中（仅计划与基线状态更新，详见 [M6_BASELINE.md](M6_BASELINE.md)）**
+> 计划基线：`codex/frontend-qa` @ `826d0a8caaacbbabb198ba99b397cd546f84bdb3`（2026-11-18，65 标的审计后的最新开发基线）
+> 工作分支：`refactor/m6-backend`（由上述分支创建）
+> 适用环境：Python >=3.11；CI 矩阵（[tests.yml](../.github/workflows/tests.yml)）覆盖 `3.11` / `3.12` / `3.14`，本机实测运行时为 `3.14.5`（3.11 / 3.12 本机无可用测试环境，`NOT RUN`）
 > 产品方向：稳定的金融分析内核 + 可复用的 Agent CLI；**Streamlit 前端重写放在最后，M6 禁止主动进行前端视觉/交互重构**。
 
 ## 0. 决策与非目标
@@ -58,14 +58,14 @@
 
 ### M6-0：冻结可比较的行为基线（首先执行）
 
-- [ ] 从 `refactor/m6-backend` 检查 `git status`、分支 HEAD、Python 与依赖版本；核对 `docs/ARCHITECTURE.md`、`docs/ROADMAP.md` 和相关测试。基线与此计划有冲突时以当前代码为准，并更新本文证据。
-- [ ] 运行 `python -m pytest -q`、`ruff check .`、`ruff format --check .`、`python -m pip check`；记录命令、测试数量、耗时与失败（如环境缺包需说明，不准虚报 PASS）。
-- [ ] 增加**纯离线**的确定性回归样本及黄金测试：单资产、比较、组合（含 OOS / 自定义权重）、收益率水平语义阻断、跨币种/跨日历、报告/Parquet 离线重放。固定随机种子，记录关键数值、NaN/None 行为和 JSON 字段约定。
-- [ ] 对 `max_drawdown` 的三种现状及旧产物绝对路径问题分别添加**当前行为刻画/预期失败测试**；设计修复后再将其转为通过测试。
-- [ ] 写明数学容差和兼容策略（默认沿用既有数值/测试要求），明确哪些字段允许在新 schema 中语义迁移。
-- [ ] 做最小依赖方向审计；不要先迁文件再找回归。
+- [x] 从 `refactor/m6-backend` 检查 `git status`、分支 HEAD、Python 与依赖版本；核对 `docs/ARCHITECTURE.md`、`docs/ROADMAP.md` 和相关测试。基线与此计划有冲突时以当前代码为准，并更新本文证据（见 [M6_BASELINE.md](M6_BASELINE.md#1-运行环境与验证矩阵)）。
+- [x] 运行 `python -m pytest -q`、`ruff check .`、`ruff format --check .`、`python -m pip check`；记录命令、测试数量、耗时与失败（如环境缺包需说明，不准虚报 PASS；已记录 Python 3.11/3.12 本地 `NOT RUN` 及 2 个存量未格式化文件）。
+- [x] 增加**纯离线**的确定性回归样本及黄金测试：单资产、比较、组合（含 OOS / 自定义权重）、收益率水平语义阻断、跨币种/跨日历、报告/Parquet 离线重放。固定随机种子，记录关键数值、NaN/None 行为和 JSON 字段约定（见 [tests/test_m6_0_baseline_golden.py](../tests/test_m6_0_baseline_golden.py)）。
+- [x] 对 `max_drawdown` 的三种现状及旧产物绝对路径问题分别添加**当前行为刻画/预期失败测试**；设计修复后再将其转为通过测试（3 项 strict `xfail` 覆盖 A1 / A2 / A3）。
+- [x] 写明数学容差和兼容策略（默认沿用既有数值/测试要求），明确哪些字段允许在新 schema 中语义迁移（见 [M6_BASELINE.md](M6_BASELINE.md#32-黄金测试数值容差与契约迁移策略)）。
+- [x] 做最小依赖方向审计；不要先迁文件再找回归（AST 依赖审计见 [M6_BASELINE.md](M6_BASELINE.md#22-实际依赖方向与真实耦合记录) 与 `test_module_dependency_direction_audit`）。
 
-**产物：** `docs/M6_BASELINE.md` + `tests` 中的确定性回归用例；独立提交。**通过条件：** 除有意标记的预期失败外，现有回归不退化，基线可复跑。
+**产物：** [docs/M6_BASELINE.md](M6_BASELINE.md) + [tests/test_m6_0_baseline_golden.py](../tests/test_m6_0_baseline_golden.py)；独立提交。**通过条件：** 除有意标记的预期失败外，现有回归不退化，基线可复跑。
 
 ### M6-1：契约与产物闭环（P0，先于大规模拆分）
 
