@@ -371,7 +371,9 @@ def inspect_ohlcv_dataframe(
     if len(valid_idx) >= 2:
         diffs = valid_idx.to_series().diff().dropna().dt.days
         max_gap = int(diffs.max())
-        gap_threshold = 2 if asset_type == "crypto" else (12 if asset_type in CN_MAINLAND_TYPES else 6)
+        gap_threshold = (
+            2 if asset_type == "crypto" else (12 if asset_type in CN_MAINLAND_TYPES else 6)
+        )
         for pos in range(1, len(valid_idx)):
             prev_dt = pd.Timestamp(valid_idx[pos - 1])
             cur_dt = pd.Timestamp(valid_idx[pos])
@@ -925,7 +927,9 @@ def compute_category_summaries(records: list[dict[str, Any]]) -> list[dict[str, 
         usable = pass_c + warn_c
         sources = sorted({item["data_source"] for item in items if item["data_source"]})
         avg_elapsed = (
-            round(sum(float(item["elapsed_seconds"]) for item in items) / total, 3) if total else 0.0
+            round(sum(float(item["elapsed_seconds"]) for item in items) / total, 3)
+            if total
+            else 0.0
         )
         summaries.append(
             {
@@ -1263,10 +1267,17 @@ def build_report_markdown(
             f"- **失败错误分类统计（全量 {len(all_runs)} 次抓取含别名）**："
             + (", ".join(f"`{k}`: {v}" for k, v in sorted(err_cats.items())) if err_cats else "无"),
             "- **限流/断连/超时信号统计**："
-            + (", ".join(f"`{k}`: {v}" for k, v in sorted(rl_counter.items())) if rl_counter else "无"),
+            + (
+                ", ".join(f"`{k}`: {v}" for k, v in sorted(rl_counter.items()))
+                if rl_counter
+                else "无"
+            ),
             f"- **触发多源回退的标的（{len(fallback_items)} 项）**："
             + (
-                ", ".join(f"`{r['asset_type']}:{r['symbol']}` -> `{r['data_source']}`" for r in fallback_items)
+                ", ".join(
+                    f"`{r['asset_type']}:{r['symbol']}` -> `{r['data_source']}`"
+                    for r in fallback_items
+                )
                 if fallback_items
                 else "无"
             ),
@@ -1280,7 +1291,9 @@ def build_report_markdown(
     )
     lines.extend(["", "## 四、OHLC 异常最严重的标的及具体异常样本", ""])
     if not ohlc_bad_items:
-        lines.append("65 个独立标的中未检测到 `High < Low` / `High < max(O,C)` / `Low > min(O,C)` 异常行。")
+        lines.append(
+            "65 个独立标的中未检测到 `High < Low` / `High < max(O,C)` / `Low > min(O,C)` 异常行。"
+        )
     else:
         lines.extend(
             [
@@ -1618,7 +1631,9 @@ def main(argv: list[str] | None = None) -> int:
         summary_file = data_root / "summary.json"
         if summary_file.is_file():
             try:
-                prev_meta = json.loads(summary_file.read_text(encoding="utf-8")).get("audit_metadata", {})
+                prev_meta = json.loads(summary_file.read_text(encoding="utf-8")).get(
+                    "audit_metadata", {}
+                )
                 run_started_at = str(prev_meta.get("run_started_at") or run_started_at)
                 run_finished_at = str(prev_meta.get("run_finished_at") or "")
             except Exception:

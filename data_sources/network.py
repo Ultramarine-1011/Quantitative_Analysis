@@ -51,6 +51,7 @@ def resolve_akshare_callable(ak: Any, *candidate_names: str) -> tuple[str, Calla
         f"当前 AKShare 版本缺少可用接口（已尝试: {tried}），请检查 AKShare 版本或数据路由配置。"
     )
 
+
 # 全进程仅解析一次：首个 ``AKShareFetcher`` 构造时的参数优先，避免导入本模块即改写全局代理行为。
 _PROXY_POLICY_RESOLVED: bool = False
 _POLICY_LOCK = threading.Lock()
