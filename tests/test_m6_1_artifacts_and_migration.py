@@ -929,6 +929,36 @@ def test_quant_cli_stale_cleanup_never_follows_symlinks_outside_output_dir(
     assert outside_result.exists()
 
 
+def test_load_artifacts_validates_raw_frame_attrs_before_sync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import artifacts.store as store_mod
+
+    loader, _ = _multi_asset_loaders()
+    an_res = analyze_single_asset(
+        AnalysisRequest("etf", "510300", "2024-01-02", "2024-05-15", adjust="hfq"),
+        loader=loader,
+    )
+    bundle_dir = tmp_path / "attrs_mismatch_bundle"
+    save_result_bundle(an_res, bundle_dir)
+
+    real_reader = store_mod._read_frame_from_disk
+
+    def _reader_with_conflicting_attrs(
+        parquet_path: Path | None, csv_path: Path | None = None
+    ) -> pd.DataFrame | None:
+        loaded_df = real_reader(parquet_path, csv_path)
+        assert loaded_df is not None
+        loaded_df.attrs["currency"] = "USD"
+        loaded_df.attrs["asset_type"] = "us_stock"
+        return loaded_df
+
+    monkeypatch.setattr(store_mod, "_read_frame_from_disk", _reader_with_conflicting_attrs)
+    with pytest.raises(ValueError, match="不一致"):
+        load_result_from_artifacts(bundle_dir)
+
+
 def test_artifacts_package_dependency_boundaries() -> None:
     forbidden = {
         "services",

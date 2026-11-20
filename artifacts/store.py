@@ -618,6 +618,7 @@ def load_result_with_migration_info(
             allow_undeclared_fallback=allow_undeclared_fallback,
         )
         if df is not None:
+            validate_frame_metadata_consistency(df, asset_meta)
             params = migrated.get("parameters") or {}
             metrics = migrated.get("metrics") or {}
             sync_metadata_to_frame(df, asset_meta, quality=quality)
@@ -636,7 +637,6 @@ def load_result_with_migration_info(
                 "bollinger_window": bb_win,
                 "volatility_window": int(params.get("volatility_window", inferred_vol_win)),
             }
-            validate_frame_metadata_consistency(df, asset_meta)
 
         res: AnalysisResult | MultiAssetResult = AnalysisResult(
             schema_version=str(migrated["schema_version"]),

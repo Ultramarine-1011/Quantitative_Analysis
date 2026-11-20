@@ -192,6 +192,37 @@ def test_build_series_metadata_explicit_checks_and_frame_sync() -> None:
         validate_frame_metadata_consistency(df_etf, meta)
 
 
+def test_multi_asset_validates_raw_frame_metadata_before_sync() -> None:
+    df_a = _sample_df(
+        asset_type="etf",
+        symbol="510300",
+        adjust="hfq",
+        currency="CNY",
+        extra_attrs={"native_currency": "USD", "fx_converted": False},
+    )
+    df_b = _sample_df(asset_type="etf", symbol="510500", adjust="hfq", currency="CNY")
+
+    from contracts import AssetSpec, CompareRequest
+    from services.multi_asset_service import compare_assets
+
+    req = CompareRequest(
+        assets=(
+            AssetSpec("etf", "510300", adjust="hfq"),
+            AssetSpec("etf", "510500", adjust="hfq"),
+        ),
+        start_date="2024-01-02",
+        end_date="2024-02-05",
+        base_currency="CNY",
+    )
+    with pytest.raises(ValueError, match="fx_converted"):
+        compare_assets(
+            req,
+            loader=lambda asset_type, symbol, *a, **kw: (
+                df_a.copy() if "510300" in symbol else df_b.copy()
+            ),
+        )
+
+
 def test_service_honors_loader_adjust_attr_over_default_request_adjust() -> None:
     # Loader explicitly returns unadjusted prices (adjust="") despite default request adjust="hfq"
     raw = _sample_df(asset_type="etf", symbol="510300", adjust="", currency="CNY")

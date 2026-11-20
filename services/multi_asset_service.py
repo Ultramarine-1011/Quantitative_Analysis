@@ -251,8 +251,8 @@ def _collect_metadata_and_quality(
             trading_days=trading_days,
             strict=True,
         )
-        sync_metadata_to_frame(frame, base_meta, q)
         validate_frame_metadata_consistency(frame, base_meta)
+        sync_metadata_to_frame(frame, base_meta, q)
         leg_ccy_meta = dict(fx_pairs_meta.get(leg, {}))
         native_ccy = (
             str(
@@ -914,8 +914,8 @@ def _align_benchmark_to_oos_nav(
         strict=True,
     )
     b_quality = build_quality_report(converted_bench)
-    sync_metadata_to_frame(converted_bench, b_meta, b_quality)
     validate_frame_metadata_consistency(converted_bench, b_meta)
+    sync_metadata_to_frame(converted_bench, b_meta, b_quality)
 
     bench_summary = {
         "leg_name": bench_spec.leg_name,

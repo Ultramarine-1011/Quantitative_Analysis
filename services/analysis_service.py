@@ -300,8 +300,8 @@ def fetch_single_asset(
         warnings=all_warnings,
         strict=True,
     )
-    sync_metadata_to_frame(prepared_df, asset_meta, quality_report)
     validate_frame_metadata_consistency(prepared_df, asset_meta)
+    sync_metadata_to_frame(prepared_df, asset_meta, quality_report)
     disclaimers: list[str] = []
     basis_note = ASSET_RETURN_BASIS_NOTES.get(asset_meta.return_basis)
     if basis_note:
@@ -431,8 +431,8 @@ def analyze_single_asset(
         warnings=all_warnings,
         strict=True,
     )
-    sync_metadata_to_frame(featured_df, asset_meta, quality_report)
     validate_frame_metadata_consistency(featured_df, asset_meta)
+    sync_metadata_to_frame(featured_df, asset_meta, quality_report)
 
     disclaimers: list[str] = []
     basis_note = ASSET_RETURN_BASIS_NOTES.get(asset_meta.return_basis)

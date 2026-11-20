@@ -76,8 +76,8 @@
    - `SeriesMetadata.__post_init__` 强校验 `adjust` vs `return_basis`、`trading_days >= 1`、`series_kind` 合法性以及 `yield_level`/`fx_rate` 不允许标记 `fx_converted=True`。
    - `AnalysisResult` / `MultiAssetResult` 在 `__post_init__` 中强制校验 `schema_version`、`command`、`status`、`asset_order` 一致性与 `validate_result_invariants`。
    - `yield_level` 序列在非 `error` 状态下禁止对 `YIELD_BLOCKED_METRICS`（9 项）输出非空数值，并必须附带 `metric_reasons[key] == "yield_level_not_return"`。
-3. **双写一致性检验（`sync_metadata_to_frame` / `validate_frame_metadata_consistency`）**：
-   - 在 `services/analysis_service.py`、`services/multi_asset_service.py` 与 `artifacts/store.py` 构造或反序列化结果时，将规范化 `SeriesMetadata` 与 `QualityReport` 双写至 `df.attrs`，并校验证书与 `DataFrame.attrs` 无静默漂移；此外先确定 `effective_adjust` 再推导 `return_basis`，修复历史覆盖缺陷。
+3. **双写一致性检验（`validate_frame_metadata_consistency` -> `sync_metadata_to_frame`）**：
+   - 在 `services/analysis_service.py`、`services/multi_asset_service.py` 与 `artifacts/store.py` 构造或反序列化结果时，先执行 `validate_frame_metadata_consistency` 前置校验原始 `df.attrs` 与 `SeriesMetadata` 是否存在不一致（避免同步覆盖错误），再调用 `sync_metadata_to_frame` 将规范化 `SeriesMetadata` 与 `QualityReport` 双写至 `df.attrs`；此外先确定 `effective_adjust` 再推导 `return_basis`，修复历史覆盖缺陷。
 
 ---
 
