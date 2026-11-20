@@ -92,8 +92,11 @@
    - 仅当 `--export-csv` 未同时指定 `-o <dir>`（无落盘研究目录）时保留解析后路径；若与 `-o <dir>` 并用且位于输出目录外，不写入可移植 `result.json` 内部相对索引或 `artifact_manifest`。
 2. **SHA-256 完整性清单（`artifact_manifest`）**：
    - `artifact_manifest` 结构为 `{"algorithm": "sha256", "files": {"<artifact_key>": {"path": "<rel_posix>", "sha256": "<hex>", "size_bytes": <int>}}}`，覆盖除 `output_dir` 与 `result_json` 外的全部研究目录内产出文件。
-   - 加载时 `verify_artifact_manifest` 校验：`artifacts` 与 `artifact_manifest.files` 键集合一致、路径字符串完全一致（防目录内路径替换）、文件存在且 SHA-256 与字节长度完全吻合；任一违例抛出 `ArtifactIntegrityError`。
-3. **路径安全边界（`resolve_safe_artifact_path`）**：
+   - **v0.2.0 落盘产物包必需包含 `artifact_manifest`**：`save_result_bundle` 与 `quant_cli.py::_write_outputs` 始终生成该字段（即使 `files` 为空映射）；在默认 `verify_integrity=True` 加载 v0.2.0 产物时，缺失 `artifact_manifest` 或其值非映射对象一律抛出 `ArtifactIntegrityError`，绝不静默跳过 SHA-256 校验（仅调用方显式传入 `verify_integrity=False` 时跳过清单存在性与哈希校验）。
+   - **v0.1.0 历史产物兼容**：v0.1.0 `result.json` 允许缺失 `artifact_manifest`（`None`）；若存在则会正常校验。
+   - 加载时 `verify_artifact_manifest` 校验：`artifacts` 中每项（除 `output_dir` 与 `result_json`）均须存在于 `artifact_manifest.files`、路径字符串完全一致（防目录内路径替换）、文件存在且 SHA-256 与字节长度完全吻合；任一违例抛出 `ArtifactIntegrityError`。
+3. **路径安全边界与声明读取策略（`resolve_safe_artifact_path` / `_load_declared_or_fallback_frame`）**：
    - 无条件拒绝 NUL 字节、`..` 路径段（同时拆解 `/` 与 `\`）、以及指向或穿越到 `output_dir` 之外的符号链接（包括 `result.json`、`data.parquet` 与 `charts/` 子目录）-> 抛出 `ArtifactSecurityError`。
-   - **v0.2.0** 严格禁止一切绝对路径与 `~` 前缀；仅 **v0.1.0** 允许受限兼容转换（**绝不访问外部原始绝对路径**，仅提取文件名或 `charts/<filename>` 映射到**当前指定 `output_dir` 内部**，支持 POSIX 与 Windows 盘符风格路径）。
+   - **v0.2.0 严格禁止读取未声明文件**：`v0.2.0` 仅按 `result.json["artifacts"]` 显式声明的路径读取 Parquet/CSV，绝不回退读取研究目录内未声明的残留 `data.parquet` / `data.csv` / 多资产 frame 文件（无论 `verify_integrity` 为 `True` 或 `False`）；若声明的主 Parquet 文件缺失且未同时声明可用 CSV，立即抛出 `ArtifactIntegrityError`。
+   - **v0.2.0** 严格禁止一切绝对路径与 `~` 前缀；仅 **v0.1.0** 允许受限兼容转换（**绝不访问外部原始绝对路径**，仅提取文件名或 `charts/<filename>` 映射到**当前指定 `output_dir` 内部**，支持 POSIX 与 Windows 盘符风格路径），并在 v0.1.0 `artifacts` 未显式声明 frame 路径时保留受 `resolve_safe_artifact_path` 保护的目录内默认文件安全回退。
    - `load_result_with_migration_info` 与 `load_result_from_artifacts`（[reporting/formatting.py](../reporting/formatting.py) 已薄委托至此）支持整个研究目录跨路径、跨设备复制并在原目录被篡改或删除后完全离线重放。

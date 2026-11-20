@@ -535,10 +535,13 @@ def _load_declared_or_fallback_frame(
     csv_key: str,
     default_parquet: str,
     default_csv: str,
+    allow_undeclared_fallback: bool = False,
 ) -> pd.DataFrame | None:
     pq_path = resolved_files.get(parquet_key)
     csv_path = resolved_files.get(csv_key)
     if pq_path is None and csv_path is None:
+        if not allow_undeclared_fallback:
+            return None
         fallback_pq = resolve_safe_artifact_path(out_dir, default_parquet)
         fallback_csv = resolve_safe_artifact_path(out_dir, default_csv)
         pq_path = fallback_pq if fallback_pq.is_file() else None
@@ -573,7 +576,9 @@ def load_result_with_migration_info(
         raise ArtifactIntegrityError(f"Invalid result.json object in {result_path}")
 
     migrated, migration_record = migrate_result_payload(payload)
-    allow_legacy_abs = migration_record.source_schema_version == "0.1.0"
+    is_legacy_v01 = migration_record.source_schema_version == "0.1.0"
+    allow_legacy_abs = is_legacy_v01
+    allow_undeclared_fallback = is_legacy_v01
 
     normalized_artifacts, resolved_files = _normalize_and_validate_artifacts_map(
         out_dir,
@@ -583,10 +588,16 @@ def load_result_with_migration_info(
     )
 
     manifest_raw = migrated.get("artifact_manifest")
-    if verify_integrity and manifest_raw is not None:
-        if not isinstance(manifest_raw, Mapping):
-            raise ArtifactIntegrityError("artifact_manifest must be a mapping when present.")
-        verify_artifact_manifest(out_dir, normalized_artifacts, manifest_raw)
+    if manifest_raw is not None and not isinstance(manifest_raw, Mapping):
+        raise ArtifactIntegrityError("artifact_manifest must be a mapping when present.")
+    if verify_integrity:
+        if manifest_raw is None:
+            if not is_legacy_v01:
+                raise ArtifactIntegrityError(
+                    "Schema v0.2.0 artifact bundle requires 'artifact_manifest' when verify_integrity=True."
+                )
+        else:
+            verify_artifact_manifest(out_dir, normalized_artifacts, manifest_raw)
 
     command = str(migrated.get("command", "")).strip().lower()
     if command in {"analyze", "fetch"}:
@@ -604,6 +615,7 @@ def load_result_with_migration_info(
             csv_key="data_csv",
             default_parquet="data.parquet",
             default_csv="data.csv",
+            allow_undeclared_fallback=allow_undeclared_fallback,
         )
         if df is not None:
             params = migrated.get("parameters") or {}
@@ -669,6 +681,7 @@ def load_result_with_migration_info(
             csv_key="data_csv",
             default_parquet="data.parquet",
             default_csv="data.csv",
+            allow_undeclared_fallback=allow_undeclared_fallback,
         )
 
         frames: dict[str, pd.DataFrame] = {}
@@ -680,6 +693,7 @@ def load_result_with_migration_info(
                 csv_key=f"{name}_csv",
                 default_parquet=f"{name}.parquet",
                 default_csv=f"{name}.csv",
+                allow_undeclared_fallback=allow_undeclared_fallback,
             )
             if loaded is not None:
                 frames[name] = loaded

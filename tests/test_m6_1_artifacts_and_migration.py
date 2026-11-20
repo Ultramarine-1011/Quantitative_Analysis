@@ -546,6 +546,143 @@ def test_integrity_and_schema_version_errors(tmp_path: Path) -> None:
         load_result_from_artifacts(bundle_dir)
 
 
+def test_v020_forbids_undeclared_fallback_and_requires_manifest_while_v010_migrates(
+    tmp_path: Path,
+) -> None:
+    from artifacts.store import _load_declared_or_fallback_frame
+
+    loader, fx_loader = _multi_asset_loaders()
+    an_res = analyze_single_asset(
+        AnalysisRequest("etf", "510300", "2024-01-02", "2024-05-15", adjust="hfq"),
+        loader=loader,
+    )
+    cmp_res = compare_assets(
+        CompareRequest(
+            assets=(
+                AssetSpec("etf", "510300", adjust="hfq"),
+                AssetSpec("us_stock", "SPY", adjust="qfq"),
+            ),
+            benchmark=AssetSpec("global_index", "000300"),
+            start_date="2024-01-02",
+            end_date="2024-05-15",
+        ),
+        loader=loader,
+        fx_loader=fx_loader,
+    )
+
+    # 1. Missing artifact_manifest on v0.2.0 must fail integrity verification (no silent bypass)
+    no_manifest_dir = tmp_path / "v02_missing_manifest"
+    save_result_bundle(an_res, no_manifest_dir)
+    orig_bytes = (no_manifest_dir / "data.parquet").read_bytes()
+    # Even a syntactically valid substituted Parquet cannot bypass verification when manifest is removed
+    (an_res.data_frame * 2.0).to_parquet(  # type: ignore[operator]
+        no_manifest_dir / "data.parquet", engine="pyarrow", index=True
+    )
+    no_manifest_payload = json.loads((no_manifest_dir / "result.json").read_text(encoding="utf-8"))
+    no_manifest_payload.pop("artifact_manifest", None)
+    (no_manifest_dir / "result.json").write_text(json.dumps(no_manifest_payload), encoding="utf-8")
+    with pytest.raises(ArtifactIntegrityError, match="artifact_manifest"):
+        load_result_from_artifacts(no_manifest_dir)
+
+    # Explicit verify_integrity=False skips missing-manifest check for valid declared files
+    (no_manifest_dir / "data.parquet").write_bytes(orig_bytes)
+    loaded_noverify = load_result_from_artifacts(no_manifest_dir, verify_integrity=False)
+    assert loaded_noverify.data_frame is not None
+
+    # Even with valid data.parquet and empty artifacts, missing artifact_manifest in v0.2.0 fails
+    no_manifest_payload["artifacts"] = {"output_dir": ".", "result_json": "result.json"}
+    (no_manifest_dir / "result.json").write_text(json.dumps(no_manifest_payload), encoding="utf-8")
+    with pytest.raises(ArtifactIntegrityError, match="artifact_manifest"):
+        load_result_from_artifacts(no_manifest_dir)
+
+    # Non-mapping artifact_manifest fails regardless of verify_integrity
+    bad_manifest_payload = dict(no_manifest_payload, artifact_manifest="not-a-mapping")
+    (no_manifest_dir / "result.json").write_text(json.dumps(bad_manifest_payload), encoding="utf-8")
+    with pytest.raises(ArtifactIntegrityError, match="artifact_manifest"):
+        load_result_from_artifacts(no_manifest_dir, verify_integrity=False)
+
+    # 2. v0.2.0 must NEVER load undeclared leftover Parquet/CSV files on disk
+    undeclared_dir = tmp_path / "v02_undeclared_leftover"
+    save_result_bundle(an_res, undeclared_dir, write_csv=True)
+    # Remove data_parquet/data_csv declarations while leaving data.parquet & data.csv on disk
+    undeclared_payload = json.loads((undeclared_dir / "result.json").read_text(encoding="utf-8"))
+    undeclared_payload["artifacts"] = {"output_dir": ".", "result_json": "result.json"}
+    undeclared_payload["artifact_manifest"] = {"algorithm": "sha256", "files": {}}
+    (undeclared_dir / "result.json").write_text(json.dumps(undeclared_payload), encoding="utf-8")
+    assert (undeclared_dir / "data.parquet").is_file()
+    assert (undeclared_dir / "data.csv").is_file()
+    assert (
+        _load_declared_or_fallback_frame(
+            undeclared_dir,
+            {},
+            parquet_key="data_parquet",
+            csv_key="data_csv",
+            default_parquet="data.parquet",
+            default_csv="data.csv",
+        )
+        is None
+    )
+    loaded_undeclared = load_result_from_artifacts(undeclared_dir)
+    assert loaded_undeclared.data_frame is None
+    loaded_undeclared_noverify = load_result_from_artifacts(undeclared_dir, verify_integrity=False)
+    assert loaded_undeclared_noverify.data_frame is None
+
+    # 3. v0.2.0 compare bundle ignores leftover portfolio Parquet/CSV files in the same directory
+    cmp_dir = tmp_path / "v02_compare_with_stale_portfolio"
+    save_result_bundle(cmp_res, cmp_dir)
+    # Write leftover undeclared frames & CSV into cmp_dir (simulating prior portfolio artifacts)
+    pd.DataFrame({"Asset": ["etf:510300"], "Weight": [0.5]}).to_parquet(
+        cmp_dir / "weights.parquet", engine="pyarrow", index=False
+    )
+    pd.DataFrame({"Volatility": [0.1], "Return": [0.05]}).to_parquet(
+        cmp_dir / "frontier.parquet", engine="pyarrow", index=False
+    )
+    pd.DataFrame({"Portfolio": [1.0, 1.01]}).to_parquet(
+        cmp_dir / "backtest.parquet", engine="pyarrow", index=False
+    )
+    (cmp_dir / "data.csv").write_text("corrupted,csv\n1,2\n", encoding="utf-8")
+
+    reloaded_cmp = load_result_from_artifacts(cmp_dir)
+    assert isinstance(reloaded_cmp, MultiAssetResult)
+    assert "weights" not in reloaded_cmp.frames
+    assert "frontier" not in reloaded_cmp.frames
+    assert "backtest" not in reloaded_cmp.frames
+    assert set(reloaded_cmp.frames.keys()) == set(cmp_res.frames.keys())
+
+    # Declared data_parquet missing with verify_integrity=False must NOT fall back to undeclared data.csv
+    (cmp_dir / "data.parquet").unlink()
+    with pytest.raises(ArtifactIntegrityError, match="missing on disk"):
+        load_result_from_artifacts(cmp_dir, verify_integrity=False)
+
+    # 4. v0.1.0 retains safe migration compatibility (manifest optional + local directory fallback)
+    v01_dir = tmp_path / "v01_undeclared_fallback"
+    v01_dir.mkdir()
+    an_res.data_frame.to_parquet(v01_dir / "data.parquet", engine="pyarrow", index=True)  # type: ignore[union-attr]
+    v01_payload = an_res.to_dict(include_data=False)
+    v01_payload["schema_version"] = "0.1.0"
+    v01_payload.pop("artifact_manifest", None)
+    v01_payload["artifacts"] = {
+        "output_dir": "/legacy/old_machine/run",
+        "result_json": "/legacy/old_machine/run/result.json",
+    }
+    (v01_dir / "result.json").write_text(json.dumps(v01_payload), encoding="utf-8")
+
+    migrated_v01, rec_v01 = load_result_with_migration_info(v01_dir)
+    assert rec_v01.applied is True
+    assert rec_v01.source_schema_version == "0.1.0"
+    assert rec_v01.target_schema_version == "0.2.0"
+    assert migrated_v01.data_frame is not None
+    assert len(migrated_v01.data_frame) == len(an_res.data_frame)  # type: ignore[arg-type]
+
+    # v0.1.0 fallback still enforces symlink escape checks
+    outside_pq = tmp_path / "outside_v01.parquet"
+    an_res.data_frame.to_parquet(outside_pq, engine="pyarrow", index=True)  # type: ignore[union-attr]
+    (v01_dir / "data.parquet").unlink()
+    os.symlink(outside_pq, v01_dir / "data.parquet")
+    with pytest.raises(ArtifactSecurityError):
+        load_result_from_artifacts(v01_dir)
+
+
 def test_encode_decode_encode_semantic_roundtrip_and_offline_reports(tmp_path: Path) -> None:
     loader, fx_loader = _multi_asset_loaders()
 
