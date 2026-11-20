@@ -481,6 +481,27 @@ def _inject_ui_theme_css() -> None:
             padding: 0.65rem 0.85rem;
             background: rgba(128, 128, 128, 0.04);
         }
+        [data-testid="stMain"] {
+            overflow-y: auto;
+            overflow-anchor: none;
+            overscroll-behavior-y: contain;
+        }
+        [data-testid="stMainBlockContainer"] {
+            flex-shrink: 0;
+        }
+        header[data-testid="stHeader"],
+        header[data-testid="stHeader"] [data-testid="stToolbar"] {
+            pointer-events: none;
+        }
+        header[data-testid="stHeader"] button,
+        header[data-testid="stHeader"] a,
+        header[data-testid="stHeader"] [data-testid="stToolbarActions"],
+        header[data-testid="stHeader"] [data-testid="stStatusWidget"],
+        header[data-testid="stHeader"] [data-testid="stMainMenu"],
+        header[data-testid="stHeader"] [data-testid="stAppDeployButton"],
+        header[data-testid="stHeader"] [data-testid="stExpandSidebarButton"] {
+            pointer-events: auto;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -2251,10 +2272,12 @@ def main() -> None:
             "**样本内拟合（含前视偏差警告）** 与 **严格因果样本外回测（OOS）**。"
         )
         st.markdown(_TAB2_SYSTEM_MATH_MARKDOWN)
+        _ref_df = build_ef_multi_asset_codes_reference_df()
         st.dataframe(
-            build_ef_multi_asset_codes_reference_df(),
+            _ref_df,
             width="stretch",
             hide_index=True,
+            height=min(580, 42 + 36 * len(_ref_df)),
         )
 
     cfg = _render_sidebar()

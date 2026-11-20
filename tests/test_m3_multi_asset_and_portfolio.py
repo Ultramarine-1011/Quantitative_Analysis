@@ -246,11 +246,13 @@ def test_cli_multi_file_output_atomic_rollback_and_stale_cleanup(
     assert (out_dir / "correlation.parquet").is_file()
     assert (out_dir / "rolling_metrics.parquet").is_file()
     assert user_note.read_text(encoding="utf-8") == "unrelated user file\n"
+    assert res3.artifacts.get("output_dir") == "."
     for art_key, art_val in res3.artifacts.items():
         if art_key == "output_dir":
-            assert Path(art_val).is_dir()
+            assert art_val == "."
         else:
-            assert Path(art_val).is_file()
+            assert not Path(art_val).is_absolute()
+            assert (out_dir / art_val).is_file()
 
 
 @pytest.mark.parametrize(

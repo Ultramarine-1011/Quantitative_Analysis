@@ -541,7 +541,7 @@ def _build_single_asset_document(
             format_reason_label(reason)
             if reason and formatted == "N/A"
             else (
-                "水下负数展示 (JSON 内部为 >=0 深度)"
+                "水下负数展示 (JSON 内部统一为 >=0 深度)"
                 if key == "max_drawdown" and formatted != "N/A"
                 else "历史统计量"
             )
@@ -632,7 +632,7 @@ def _build_single_asset_document(
         ("波动率滚动窗口", f"{params.get('volatility_window', 20)}D"),
         (
             "回撤展示约定",
-            "报告及图表统一展示为非正水下回撤 (<= 0%)；result.json 底层字段 `max_drawdown` 存储为非负深度 (>= 0)。",
+            "报告及图表统一展示为非正水下回撤 (<= 0%)；schema v0.2.0 起 result.json 底层字段 `max_drawdown` 跨命令统一存储为非负深度 (>= 0)。",
         ),
         (
             "历史统计限定声明",
@@ -1099,7 +1099,10 @@ def _build_compare_document(
             "MTM 相关性采样说明",
             "mtm_outer 模式下相关性与协方差基于各腿同时有有效报价的交集收益率估计。",
         ),
-        ("回撤展示约定", "所有表格及水下回撤图均以 <= 0% 展示。"),
+        (
+            "回撤展示约定",
+            "报告及图表以 <= 0% 展示；result.json 内部 `max_drawdown` 跨命令统一为非负深度 (>= 0)。",
+        ),
     )
     sections.append(
         _Section(
@@ -1798,7 +1801,7 @@ def _build_portfolio_document(
                         ("日历与计价货币", f"`{meth.get('calendar_mode', '')}` / `{base_ccy}`"),
                         (
                             "回撤展示约定",
-                            "报告及图表统一展示为非正水下回撤 (<= 0%)；result.json 内部 backtest max_drawdown 为非负深度 (>= 0)。",
+                            "报告及图表统一展示为非正水下回撤 (<= 0%)；result.json 内部 backtest 与资产 `max_drawdown` 统一为非负深度 (>= 0)。",
                         ),
                     ),
                 ),

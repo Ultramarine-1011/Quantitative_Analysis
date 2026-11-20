@@ -16,6 +16,12 @@ from typing import Any
 
 import pandas as pd
 
+from artifacts import (
+    ArtifactError,
+    build_artifact_manifest,
+    prepare_export_frame,
+    resolve_safe_artifact_path,
+)
 from asset_catalog import (
     DEFAULT_SYMBOLS,
     SUPPORTED_ASSET_TYPES,
@@ -750,14 +756,6 @@ def _atomic_write(target_path: Path, writer: Callable[[Path], None]) -> Path:
             pass
 
 
-def _prepare_export_frame(df: pd.DataFrame | None) -> pd.DataFrame:
-    out = df.copy() if df is not None else pd.DataFrame()
-    out.attrs = {}
-    if isinstance(out.index, pd.DatetimeIndex) and not out.index.name:
-        out.index.name = "Date"
-    return out
-
-
 def _collect_stale_managed_artifacts(
     out_dir: Path,
     *,
@@ -791,12 +789,17 @@ def _collect_stale_managed_artifacts(
             artifacts = parsed.get("artifacts") if isinstance(parsed, dict) else None
             if isinstance(artifacts, dict):
                 for key, val in artifacts.items():
-                    if key == "output_dir" or not isinstance(val, str) or not val.strip():
+                    if (
+                        key in {"output_dir", "result_json", "export_csv"}
+                        or not isinstance(val, str)
+                        or not val.strip()
+                    ):
                         continue
-                    art_path = Path(val).expanduser()
                     try:
-                        resolved_art = art_path.resolve()
-                    except OSError:
+                        resolved_art = resolve_safe_artifact_path(
+                            resolved_dir, val, allow_legacy_absolute=True
+                        )
+                    except ArtifactError:
                         continue
                     if (
                         resolved_art.parent in {resolved_dir, resolved_charts_dir}
@@ -825,12 +828,21 @@ def _write_outputs(
     artifacts: dict[str, str] = {}
     write_tasks: list[tuple[Path, Callable[[Path], None]]] = []
     seen_targets: set[Path] = set()
+    manifest_keys_by_target: dict[Path, tuple[str, str]] = {}
 
-    def _enqueue(target: Path, writer: Callable[[Path], None]) -> Path:
+    def _enqueue(
+        target: Path,
+        writer: Callable[[Path], None],
+        *,
+        artifact_key: str | None = None,
+        rel_path: str | None = None,
+    ) -> Path:
         resolved = target.resolve()
         if resolved not in seen_targets:
             seen_targets.add(resolved)
             write_tasks.append((target, writer))
+        if artifact_key is not None and rel_path is not None:
+            manifest_keys_by_target[resolved] = (artifact_key, rel_path)
         return resolved
 
     def _enqueue_bytes(target: Path, content: bytes) -> Path:
@@ -844,28 +856,55 @@ def _write_outputs(
         write_idx = not isinstance(df.index, pd.RangeIndex)
         return lambda tmp: df.to_csv(tmp, index=write_idx, encoding="utf-8-sig")
 
-    if out_dir is not None:
-        out_dir_resolved = out_dir.resolve()
+    out_dir_resolved = out_dir.resolve() if out_dir is not None else None
+
+    if out_dir is not None and out_dir_resolved is not None:
         result_target = out_dir / "result.json"
         parquet_target = out_dir / "data.parquet"
-        primary_df = _prepare_export_frame(working_result.data_frame)
+        primary_df = prepare_export_frame(working_result.data_frame)
 
-        artifacts["output_dir"] = str(out_dir_resolved)
-        artifacts["result_json"] = str(result_target.resolve())
-        artifacts["data_parquet"] = str(_enqueue(parquet_target, _parquet_writer(primary_df)))
+        artifacts["output_dir"] = "."
+        artifacts["result_json"] = "result.json"
+        artifacts["data_parquet"] = "data.parquet"
+        _enqueue(
+            parquet_target,
+            _parquet_writer(primary_df),
+            artifact_key="data_parquet",
+            rel_path="data.parquet",
+        )
 
         if write_csv:
             csv_target = out_dir / "data.csv"
-            artifacts["data_csv"] = str(_enqueue(csv_target, _csv_writer(primary_df)))
+            artifacts["data_csv"] = "data.csv"
+            _enqueue(
+                csv_target,
+                _csv_writer(primary_df),
+                artifact_key="data_csv",
+                rel_path="data.csv",
+            )
 
         if isinstance(working_result, MultiAssetResult):
             for frame_name, raw_frame in working_result.frames.items():
-                prep = _prepare_export_frame(raw_frame)
-                pq_path = out_dir / f"{frame_name}.parquet"
-                artifacts[f"{frame_name}_parquet"] = str(_enqueue(pq_path, _parquet_writer(prep)))
+                prep = prepare_export_frame(raw_frame)
+                pq_rel = f"{frame_name}.parquet"
+                pq_path = out_dir / pq_rel
+                artifacts[f"{frame_name}_parquet"] = pq_rel
+                _enqueue(
+                    pq_path,
+                    _parquet_writer(prep),
+                    artifact_key=f"{frame_name}_parquet",
+                    rel_path=pq_rel,
+                )
                 if write_csv:
-                    cs_path = out_dir / f"{frame_name}.csv"
-                    artifacts[f"{frame_name}_csv"] = str(_enqueue(cs_path, _csv_writer(prep)))
+                    cs_rel = f"{frame_name}.csv"
+                    cs_path = out_dir / cs_rel
+                    artifacts[f"{frame_name}_csv"] = cs_rel
+                    _enqueue(
+                        cs_path,
+                        _csv_writer(prep),
+                        artifact_key=f"{frame_name}_csv",
+                        rel_path=cs_rel,
+                    )
 
         chart_artifacts: tuple[Any, ...] = ()
         skipped_charts: dict[str, str] = {}
@@ -882,7 +921,10 @@ def _write_outputs(
             chart_artifacts = chart_out.charts
             skipped_charts = dict(chart_out.skipped)
             for ch in chart_artifacts:
-                artifacts[ch.artifact_key] = str(ch.path)
+                ch_resolved = Path(ch.path).resolve()
+                ch_rel = ch_resolved.relative_to(out_dir_resolved).as_posix()
+                artifacts[ch.artifact_key] = ch_rel
+                manifest_keys_by_target[ch_resolved] = (ch.artifact_key, ch_rel)
             if chart_out.warnings:
                 merged_warns = list(working_result.warnings)
                 for warn_msg in chart_out.warnings:
@@ -902,33 +944,28 @@ def _write_outputs(
                 file_writer=_enqueue_bytes,
             )
             for rep in rep_out.reports:
-                artifacts[rep.artifact_key] = str(rep.path)
+                rep_resolved = Path(rep.path).resolve()
+                rep_rel = rep_resolved.relative_to(out_dir_resolved).as_posix()
+                artifacts[rep.artifact_key] = rep_rel
+                manifest_keys_by_target[rep_resolved] = (rep.artifact_key, rep_rel)
 
     if export_csv is not None:
-        primary_csv_df = _prepare_export_frame(working_result.data_frame)
-        artifacts["export_csv"] = str(_enqueue(export_csv, _csv_writer(primary_csv_df)))
-
-    final_result = working_result.with_artifacts(artifacts)
+        primary_csv_df = prepare_export_frame(working_result.data_frame)
+        csv_resolved = _enqueue(export_csv, _csv_writer(primary_csv_df))
+        if out_dir_resolved is None:
+            artifacts["export_csv"] = str(csv_resolved)
+        elif csv_resolved.is_relative_to(out_dir_resolved):
+            csv_rel = csv_resolved.relative_to(out_dir_resolved).as_posix()
+            artifacts["export_csv"] = csv_rel
+            manifest_keys_by_target[csv_resolved] = ("export_csv", csv_rel)
 
     if out_dir is not None:
-        result_target = out_dir / "result.json"
-        try:
-            payload = final_result.to_dict(include_data=include_data)
-            serialized = json.dumps(
-                payload,
-                ensure_ascii=False,
-                indent=None if compact else 2,
-                allow_nan=False,
-            )
-        except Exception as exc:
-            raise _ArtifactIOError(f"Failed serializing result.json payload: {exc}") from exc
-        _enqueue(
-            result_target,
-            lambda tmp, text=serialized + "\n": tmp.write_text(text, encoding="utf-8"),
-        )
-
-    if not write_tasks:
-        return final_result
+        seen_targets.add((out_dir / "result.json").resolve())
+        final_result = working_result.with_artifacts(artifacts)
+    else:
+        final_result = working_result.with_artifacts(artifacts)
+        if not write_tasks:
+            return final_result
 
     stale_paths = (
         _collect_stale_managed_artifacts(out_dir, new_target_resolved=seen_targets)
@@ -937,16 +974,44 @@ def _write_outputs(
     )
 
     staged_pairs: list[tuple[Path, Path]] = []
+    staged_by_resolved: dict[Path, Path] = {}
     backups: dict[Path, Path] = {}
     preexisting_targets: set[Path] = set()
     committed_targets: list[Path] = []
     removed_stale: list[Path] = []
 
     try:
-        # Phase 1: stage all new output files before modifying any live target.
+        # Phase 1: stage data/chart/report files first, compute SHA-256 manifest, stage result.json last.
         for target, writer in write_tasks:
             tmp_path = _stage_temp_file(target, writer, suffix=".stage.tmp")
             staged_pairs.append((tmp_path, target))
+            staged_by_resolved[target.resolve()] = tmp_path
+
+        if out_dir is not None:
+            manifest_inputs = {
+                art_key: (rel_path, staged_by_resolved[res_path])
+                for res_path, (art_key, rel_path) in manifest_keys_by_target.items()
+                if res_path in staged_by_resolved
+            }
+            manifest = build_artifact_manifest(manifest_inputs)
+            final_result = working_result.with_artifacts(artifacts, artifact_manifest=manifest)
+            result_target = out_dir / "result.json"
+            try:
+                payload = final_result.to_dict(include_data=include_data)
+                serialized = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    indent=None if compact else 2,
+                    allow_nan=False,
+                )
+            except Exception as exc:
+                raise _ArtifactIOError(f"Failed serializing result.json payload: {exc}") from exc
+            result_tmp = _stage_temp_file(
+                result_target,
+                lambda tmp, text=serialized + "\n": tmp.write_text(text, encoding="utf-8"),
+                suffix=".stage.tmp",
+            )
+            staged_pairs.append((result_tmp, result_target))
 
         # Phase 2: back up pre-existing targets and stale artifacts on same filesystem.
         staged_resolved = {t.resolve() for _, t in staged_pairs}

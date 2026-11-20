@@ -20,6 +20,7 @@ GLOBAL_INDEX_CURRENCIES: dict[str, str] = {
     ".INX": "USD",
     ".DJI": "USD",
     ".IXIC": "USD",
+    ".NDX": "USD",
     "SPX": "USD",
     "INX": "USD",
     "GSPC": "USD",
@@ -36,14 +37,19 @@ GLOBAL_INDEX_CURRENCIES: dict[str, str] = {
     "国企指数": "HKD",
     "N225": "JPY",
     "日经225": "JPY",
+    "日经225指数": "JPY",
     "FTSE": "GBP",
     "英国富时100": "GBP",
+    "英国富时100指数": "GBP",
     "GDAXI": "EUR",
     "FCHI": "EUR",
     "SX5E": "EUR",
     "德国DAX30": "EUR",
+    "德国DAX 30种股价指数": "EUR",
     "法国CAC40": "EUR",
+    "法CAC40指数": "EUR",
     "欧洲斯托克50": "EUR",
+    "欧洲Stoxx50指数": "EUR",
 }
 
 _DIRECT_FX_PAIRS: dict[tuple[str, str], str] = {

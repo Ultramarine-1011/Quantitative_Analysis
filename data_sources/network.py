@@ -20,6 +20,37 @@ from .errors import (
     VendorUpstreamError,
 )
 
+
+def is_rate_limit_exception(exc: BaseException) -> bool:
+    """Return True when ``exc`` or its cause chain represents an upstream rate-limit/block error."""
+    stack: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while stack:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        cls_names = {cls.__name__ for cls in type(cur).__mro__}
+        if cls_names & {"Push2RateLimitError", "RateLimitError", "DceBlockedError"}:
+            return True
+        if cur.__cause__ is not None:
+            stack.append(cur.__cause__)
+        if cur.__context__ is not None:
+            stack.append(cur.__context__)
+    return False
+
+
+def resolve_akshare_callable(ak: Any, *candidate_names: str) -> tuple[str, Callable[..., Any]]:
+    """Resolve the first available callable attribute on an AKShare module or mock."""
+    for name in candidate_names:
+        fn = getattr(ak, name, None)
+        if callable(fn):
+            return name, fn
+    tried = ", ".join(candidate_names)
+    raise VendorUpstreamError(
+        f"当前 AKShare 版本缺少可用接口（已尝试: {tried}），请检查 AKShare 版本或数据路由配置。"
+    )
+
 # 全进程仅解析一次：首个 ``AKShareFetcher`` 构造时的参数优先，避免导入本模块即改写全局代理行为。
 _PROXY_POLICY_RESOLVED: bool = False
 _POLICY_LOCK = threading.Lock()
@@ -106,6 +137,8 @@ def classify_network_exception(
     if isinstance(exc, NetworkFetchError):
         return "transport"
     if isinstance(exc, VendorUpstreamError):
+        return "upstream"
+    if is_rate_limit_exception(exc):
         return "upstream"
     if isinstance(exc, ChinaEquityPipelineError):
         return "transport" if exc.network_related else "upstream"
@@ -245,6 +278,8 @@ def _call_akshare(
             last_exc = exc
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            if is_rate_limit_exception(exc):
+                raise VendorUpstreamError("%s 上游限流/拦截: %s" % (op_label, exc)) from exc
             if classify_network_exception(exc) == "caller":
                 raise
         if attempt + 1 < attempts and active_budget.remaining_seconds() > retry_delay:
@@ -269,6 +304,8 @@ __all__ = [
     "classify_network_exception",
     "configure_windows_proxy_behavior",
     "import_akshare",
+    "is_rate_limit_exception",
+    "resolve_akshare_callable",
     "without_http_proxy_env",
     "_without_http_proxy_env",
     "_import_akshare",

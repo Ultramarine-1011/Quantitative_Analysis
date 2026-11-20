@@ -1,0 +1,164 @@
+# M6 后端架构收敛与契约稳定化：Agent 执行计划
+
+> 状态：**M6-0 与 M6-1 已完成（M6-2～M6-5 待实施；基线与契约规范见 [M6_BASELINE.md](M6_BASELINE.md) 与 [CONTRACTS.md](CONTRACTS.md)）**
+> 计划基线：`codex/frontend-qa` @ `826d0a8caaacbbabb198ba99b397cd546f84bdb3`（2026-11-18，65 标的审计后的最新开发基线）
+> 工作分支：`refactor/m6-backend`（由上述分支创建）
+> 适用环境：Python >=3.11；CI 矩阵（[tests.yml](../.github/workflows/tests.yml)）覆盖 `3.11` / `3.12` / `3.14`，本机实测运行时为 `3.14.5`（3.11 / 3.12 本机无可用测试环境，`NOT RUN`）
+> 产品方向：稳定的金融分析内核 + 可复用的 Agent CLI；**Streamlit 前端重写放在最后，M6 禁止主动进行前端视觉/交互重构**。
+
+## 0. 决策与非目标
+
+本次 M6 是**行为保持式、渐进式后端重构**，不是推倒 M1–M5 重来。首先消除最容易造成错误金融结论的契约不一致和研究产物重放问题，再降低服务/模型模块的修改传播范围，最后完善数据源隔离与可复现加载。完整计划可分多次 Agent 会话完成，按阶段提交；每个阶段必须独立通过测试后才能推进下一个阶段。
+
+**必须维持：**
+- `quant fetch` / `quant analyze` / `quant compare` / `quant portfolio` 四个 CLI 子命令、`python main.py` / `quantitative-analysis` 兼容入口；输出 JSON、CSV、Parquet、Markdown、HTML、图表在未说明迁移时继续可用。
+- `analyze_single_asset`、`fetch_single_asset`、`compare_assets`、`analyze_portfolio` 等 Python API 的可用性；可通过旧模块重导出保留兼容。
+- 多资产日历对齐、FX 防前视、收益率水平语义阻断、SLSQP / Ledoit-Wolf / Train-Test / Walk-Forward 核心数值逻辑。除明确批准的语义修复外，**不得重写算法或悄悄修改结果**。
+- 离线测试不调用真实网络。65 标的审计只作为外部数据源健康度基线，不是纯后端重构的必经在线测试门禁。
+- 单体 Python 项目；不引入微服务、消息队列、常驻数据库、全新 Web 框架，不为“整齐”进行大范围移动。
+
+**M6 不做：**
+- 不重写 `app.py`，不改 Streamlit 页面结构、主题、布局或用户交互；只允许必要的兼容适配与测试修复。
+- 不扩充统计/交易策略，不新增金融指标，不换数据供应商以追求 100% 线上可用率。
+- 不大版本升级依赖、不借重构修正未验证的数学定义、不删除历史入口。
+- 不把代码行数本身当作重构成功指标。
+
+## 1. 已验证的结构问题（Agent 要先复核，不得把计划当作已修复事实）
+
+| 编号 | 问题与源码位置 | 风险 | 优先级 |
+| --- | --- | --- | --- |
+| A1 | `max_drawdown` 在 `analyze` / `portfolio` 是非负深度，在 `compare` 是非正水下收益；`reporting/formatting.py` 用 `-abs()` 统一显示 | JSON/Agent 消费方可能误解同名指标 | P0 |
+| A2 | `contracts.py` 的结果对象虽为 dataclass，但 `metrics` / `parameters` / `methodology` / `DataFrame.attrs` 仍为自由字典、隐式传递口径 | 跨模块口径漂移、类型检查覆盖不足 | P0 |
+| A3 | `quant_cli.py::_write_outputs` 输出结果带绝对产物路径；`reporting/formatting.py::_resolve_artifact_path` 优先使用仍存在的旧绝对路径 | 拷贝目录后可能读错快照，不利于可移植性/安全 | P0 |
+| A4 | `services/multi_asset_service.py` 约 1873 行，混合多资产加载、统计比较、优化求解、基准对齐、验证和敏感性分析 | 改动范围大，难以单独测试 | P1 |
+| A5 | `quant_models.py` 约 2047 行，GBM、协方差、优化、有效前沿、回测集中 | 算法边界模糊 | P1 |
+| A6 | `asset_loader.py` / `quant_cli.py` / `app.py` 有不同的资产列表、代码及权重解析逻辑 | Web/CLI/Agent 规则漂移 | P1 |
+| A7 | `quant_cli.py` 包含事务性文件写入与报告调度；`main.py`、Web 与 `reporting` 仍各自维护部分导出及格式化 | 重复与兼容负担 | P2 |
+| A8 | `app.py` 的状态/图表/导出缓存依赖手工签名；部分报告导出缓存只检查是否存在 | 可能展示陈旧图表/报告；**本轮仅记录，留给前端阶段** | 延后 |
+| A9 | `asset_loader.py` 内路由/缓存/读取绑定；`data_fetcher.py` 聚合多市场供应商；Parquet 目前主要是 TTL 缓存 | 源变更影响大、研究快照未完全持久化 | P1（后置数据阶段） |
+| A10 | `pyproject.toml` 安装大量顶层模块；展示/CLI依赖混在 `requirements.txt` | 分发和复用时可能冲突，最晚处理 | P3 |
+
+**重要：** A1–A10 是基于源码的结构审计，不等于已经证实每条都会在用户环境重现为错误。先建立失败用例，再修复。
+
+## 2. 目标分层（逻辑边界优先，目录迁移允许延后）
+
+`interfaces → services → domain / models`
+
+- `domain`：资产标识、金融语义、请求/结果契约、标准化指标含义；不得引用 Streamlit、CLI 和供应商。
+- `models`：纯数值计算、协方差、优化器、样本外回测、GBM；不得抓数据或写报告。
+- `services`：数据准备、单资产分析、多资产比较、组合研究的业务编排；可以通过抽象加载接口获取数据。
+- `data`：行情 Provider、路由、持久化快照、质量校验。
+- `artifacts`：结果 JSON/Parquet/Manifest 的序列化、文件提交、校验和离线加载。
+- `presentation`：统一指标展示元模型、报告和图表；消费分析结果，不能重复拉数或重算金融指标。
+- `interfaces`：CLI / Web 入口，只处理外部输入输出。Web 大规模整理推迟到 M7。
+
+**无需一次性创建以上全部目录。** 优先引入必要的新子模块，保留现有导入路径作为薄兼容层；为任何真正的循环依赖建立失败测试。
+
+## 3. 实施顺序及每阶段独立验收
+
+### M6-0：冻结可比较的行为基线（首先执行）
+
+- [x] 从 `refactor/m6-backend` 检查 `git status`、分支 HEAD、Python 与依赖版本；核对 `docs/ARCHITECTURE.md`、`docs/ROADMAP.md` 和相关测试。基线与此计划有冲突时以当前代码为准，并更新本文证据（见 [M6_BASELINE.md](M6_BASELINE.md#1-运行环境与验证矩阵)）。
+- [x] 运行 `python -m pytest -q`、`ruff check .`、`ruff format --check .`、`python -m pip check`；记录命令、测试数量、耗时与失败（如环境缺包需说明，不准虚报 PASS；已记录 Python 3.11/3.12 本地 `NOT RUN` 及 2 个存量未格式化文件）。
+- [x] 增加**纯离线**的确定性回归样本及黄金测试：单资产、比较、组合（含 OOS / 自定义权重）、收益率水平语义阻断、跨币种/跨日历、报告/Parquet 离线重放。固定随机种子，记录关键数值、NaN/None 行为和 JSON 字段约定（见 [tests/test_m6_0_baseline_golden.py](../tests/test_m6_0_baseline_golden.py)）。
+- [x] 对 `max_drawdown` 的三种现状及旧产物绝对路径问题分别添加**当前行为刻画/预期失败测试**；设计修复后再将其转为通过测试（3 项 strict `xfail` 覆盖 A1 / A2 / A3）。
+- [x] 写明数学容差和兼容策略（默认沿用既有数值/测试要求），明确哪些字段允许在新 schema 中语义迁移（见 [M6_BASELINE.md](M6_BASELINE.md#32-黄金测试数值容差与契约迁移策略)）。
+- [x] 做最小依赖方向审计；不要先迁文件再找回归（AST 依赖审计见 [M6_BASELINE.md](M6_BASELINE.md#22-实际依赖方向与真实耦合记录) 与 `test_module_dependency_direction_audit`）。
+
+**产物：** [docs/M6_BASELINE.md](M6_BASELINE.md) + [tests/test_m6_0_baseline_golden.py](../tests/test_m6_0_baseline_golden.py)；独立提交。**通过条件：** 除有意标记的预期失败外，现有回归不退化，基线可复跑。
+
+### M6-1：契约与产物闭环（P0，先于大规模拆分）
+
+- [x] 建立**统一的领域金融指标定义**：明确 `max_drawdown` 始终是非负深度（`>=0`），水下曲线另以负数表达；显式指定单位（比例、百分比点、价格、指数点）、年化口径、收益率 convention、`yield_level` 适用性（见 [contracts.py](../contracts.py) `METRIC_DEFINITIONS` 与 [CONTRACTS.md](CONTRACTS.md)）。
+- [x] 先写跨命令测试：相同定义的字段语义一致；单资产/比较/组合转换后的结果不依赖呈现层的 `-abs()` 纠错（[reporting/formatting.py](../reporting/formatting.py) 已移除 `-abs()` 并按 `input_convention` 强校验）。处理旧版本时依据 `schema_version + command` 显式迁移（[artifacts/migration.py](../artifacts/migration.py)），拒绝盲目绝对值覆盖，相关测试见 [test_m6_0_baseline_golden.py](../tests/test_m6_0_baseline_golden.py) 与 [test_m6_1_contracts.py](../tests/test_m6_1_contracts.py)。
+- [x] **任何破坏对外 JSON 语义的改动必须提升 `SCHEMA_VERSION`（`0.1.0 → 0.2.0`）并提供 v0.1 读取兼容与迁移测试**：已升级至 `SCHEMA_VERSION = "0.2.0"`（`SUPPORTED_SCHEMA_VERSIONS = ("0.1.0", "0.2.0")`），并在 [artifacts/migration.py](../artifacts/migration.py) 与 [tests/test_m6_1_artifacts_and_migration.py](../tests/test_m6_1_artifacts_and_migration.py) 提供 v0.1 迁移与违规拒绝回归。
+- [x] 强化 `SeriesMetadata` / 结果构建过程：在 [contracts.py](../contracts.py) 新增 `SeriesMetadata.__post_init__`、`QualityReport.__post_init__`、`validate_result_invariants`、严格 `build_series_metadata` 与 `sync_metadata_to_frame` / `validate_frame_metadata_consistency` 双向检验，修复 [services/analysis_service.py](../services/analysis_service.py) 与 [services/multi_asset_service.py](../services/multi_asset_service.py) 的 `adjust` vs `return_basis` 覆盖与 frame 元数据绑定，禁止偷偷推断缺失复权或币种。
+- [x] 抽出独立 `artifacts` 序列化/反序列化：[artifacts/store.py](../artifacts/store.py) 与 [quant_cli.py](../quant_cli.py) 新产物 `result.json` 全面使用**相对 POSIX 路径**并附带 SHA-256 `artifact_manifest`；[tests/test_m6_1_artifacts_and_migration.py](../tests/test_m6_1_artifacts_and_migration.py) 覆盖 `../` 越界、路径替换、丢失文件、错误版本、损坏数据、符号链接逃逸与哈希不符测试。
+- [x] 兼容旧目录的 `result.json`：优先并严格在**用户指定目录内**解析匹配文件；[artifacts/store.py](../artifacts/store.py) `resolve_safe_artifact_path` 对 v0.1.0 旧绝对路径仅抽取本地相对文件名（支持 POSIX 与 Windows 路径）映射至指定目录内部，绝不读取原路径残留文件，并已在 `test_p0_a3_copied_artifact_dir_reads_local_parquet_and_uses_relative_paths` 及 `test_copied_and_relocated_bundle_ignores_deleted_source_and_replays_offline` 通过。
+- [x] 增加 `encode → decode → encode` 的语义一致性往返测试，覆盖 v0.2.0 全命令与 `v0.1.0 → v0.2.0` 迁移不动点、跨目录复制、报告离线重放及缺文件/损坏文件明确报错（见 [test_encode_decode_encode_semantic_roundtrip_and_offline_reports](../tests/test_m6_1_artifacts_and_migration.py)）。
+- [x] 同步报告、[quant_cli.py](../quant_cli.py)、[main.py](../main.py) 及最小 Web 兼容校验：更新 [reporting/report_renderer.py](../reporting/report_renderer.py) 方法论口径、[reporting/formatting.py](../reporting/formatting.py) 薄委托至 `artifacts`、`pyproject.toml` 注册 `artifacts*`；`app.py` 零修改并通过原有 Streamlit `AppTest` 回归。
+
+**产物：** [docs/CONTRACTS.md](CONTRACTS.md)、[artifacts/](../artifacts/)、契约/迁移/往返与安全测试（[tests/test_m6_1_contracts.py](../tests/test_m6_1_contracts.py)、[tests/test_m6_1_artifacts_and_migration.py](../tests/test_m6_1_artifacts_and_migration.py)）。**通过条件：** 已验证达标（离线测试全量通过且 `0` xfailed）。
+
+### M6-2：业务编排与解析统一（P1）
+
+- [ ] 引入统一的资产 token / 多标的解析 / 自定义权重解析核心，以 `AssetSpec` 为内部输出；CLI/Web 保留各自外观语法和错误文案，但不得重复实现同一语义规则。
+- [ ] 将 `services/multi_asset_service.py` 内的数据准备与元数据质量汇总提取为可重用组件；将 `compare_assets` / `analyze_portfolio` 编排逻辑隔离。保持入口签名与加载器注入兼容。
+- [ ] 消除 `services.multi_asset_service` 对 `services.analysis_service` 私有实现的跨模块依赖（例如 `_slice_to_requested_window`），将真正共享的逻辑迁到公共 preparation 模块。
+- [ ] 保持对齐方式、资金/FX 口径、基准对照、样本外隔离和多资产顺序严格不变；配套离线性质测试与黄金快照对比。
+- [ ] 不为了减少行数额外引入抽象工厂、插件框架或隐式反射。
+
+**通过条件：** 解析只需维护一份核心规则；服务新增场景不需编辑其他分析服务的私有函数；数值结果、告警和 CLI 输出回归保持不变。
+
+### M6-3：模型内聚（P1）
+
+- [ ] 按自然算法边界从 `quant_models.py` 提取 `covariance`、`optimization`、`frontier`、`backtesting`、`simulation` 等内部模块；`analysis_metrics.py` 的统计函数可按测试覆盖和真实需要逐步分组。
+- [ ] `quant_models.py` 继续作为兼容重导出 facade，调用方无需立即改 import。
+- [ ] **只搬迁和清理调用依赖，不重新实现算法**。特别核对 SciPy SLSQP 约束/可行域、权重边界、Ledoit-Wolf 收缩、风险贡献、交易成本、Train/Test 与 Walk-Forward 的防前视保证。
+- [ ] 数值等价、固定随机种子、零泄漏、边界样本、失败路径全部通过；无“顺手优化”引入浮点结果大漂移。
+
+**通过条件：** 关键 public API 稳定，模型模块与服务/展示无反向依赖，黄金测试结果一致。
+
+### M6-4：输出编排与展示接口收敛（P2，前端仍不重写）
+
+- [ ] 将 `quant_cli.py` 的事务性落盘器/manifest 交给 `artifacts` 层复用，保持原有多文件 staging → backup → commit → rollback 语义和退出码。
+- [ ] 可把重复的指标表格字段/格式化规则提炼为 Presentation Model，但 `reporting/report_renderer.py` 已有 `_ReportDocument`，应复用而非重造第二套 AST。
+- [ ] `main.py` 是历史兼容入口：保留命令，渐进委托统一服务和报告层；不为“纯粹”直接删除。
+- [ ] 分离真正可选的渲染依赖（如 `[web]` / `[charts]`），但须先验证打包、CI 和已发布入口可用性；顶层包命名空间迁移可延后独立提交。
+
+**通过条件：** 渲染只消费结果、离线可重放、无必要时不导入绘图库、原子输出和受管旧文件清理仍安全、Web 只做兼容修复。
+
+### M6-5：数据源与研究快照隔离（后端最后一项，可拆独立 PR）
+
+- [ ] 抽象 Provider 协议、来源选择和错误分类，让新增/替换供应商无需修改算法层。
+- [ ] 将短期 TTL 缓存与不可变研究快照区分，支持 `online` / `prefer_local` / `offline` 读取策略；快照携带来源、采集时间、数据覆盖、复权、币种、成交量单位及契约版本。
+- [ ] 引入基于用途的质量门禁：OHLC 异常、缺失量、收益率水平、复权/成交量单位不一致均有机器可读警告或阻断，拒绝静默语义降级。
+- [ ] 优先复用现有 `data_sources/`、`ohlcv.py`、`scripts/live_asset_audit.py`、`tests/test_vendor_regressions.py`，不要一口气重新实现全部 13 类。
+- [ ] 修复已验证的数据语义缺陷时独立提交，尤其成交量单位、C-REITs 复权、DXY 指数点位/币种含义、期货的异常质量门禁；与纯重构提交分离。
+
+**通过条件：** 使用受控离线数据可完成全部分析与报告；替换一个 Provider 不影响统计/模型；真实源的错误不被当作干净 PASS。
+
+### M7（明确延后）：Web 全面重写
+
+不纳入 M6 验收。单独制定 UX、组件化、工作区状态与前端方案。M6 只需保证现有 `app.py` 可用、必要 AppTest 继续通过。不要在本阶段编写新 UI 框架或重设计页面。
+
+## 4. 每阶段通用质量门禁
+
+在每个阶段独立提交前执行：
+
+```bash
+python -m pytest -q
+ruff check .
+ruff format --check .
+python -m pip check
+```
+
+- 使用仓库现有离线测试和 `tests/conftest.py` 的网络阻断；不能以偶然成功的实时拉取代替单元/集成测试。
+- 对结果 JSON 采用字段级 schema 断言；对金融计算采用稳定 fixtures 的等价或已约定数值容差；新增测试覆盖旧产物迁移、异常与边界条件。
+- 不能只修改测试让实现通过；发现旧测试错误时须说明其错因，并添加能验证正确语义的替代测试。
+- 若环境无法安装某项依赖或无法运行命令，必须明确标记 `NOT RUN`，列出原因与所需环境，不能声称已通过。
+- 重要迁移若导致结果 schema 变更，必须同步文档与消费方；禁止旧新版本同名字段具有相反含义而未加版本说明。
+- 不提交实盘凭据、网络响应原件、巨型二进制测试产物或不允许再分发的金融行情数据。
+- 不进行仓库范围的格式化、锁文件随意重生成、语义无关重命名；每个提交聚焦一个目的。
+- 阶段提交建议使用 `refactor(m6-0): ...`、`fix(m6-1): ...`、`refactor(m6-2): ...` 等形式。
+
+## 5. Agent 工作方式与停止条件
+
+1. **先阅读本文件与基线代码**，做影响评估和最小实现计划；无需重复向用户询问已确定的“后端先行、前端最后”。
+2. 一个提交只解决一个可验证的垂直问题；对外契约更改必须同时包含迁移方案、测试与说明。必要时多个小提交完成同一阶段。
+3. 首轮**只实施 M6-0 和 M6-1**，不要一口气移动全部模块；达成验收后在回复中报告，再继续 M6-2。
+4. 每轮汇报：基线/当前 HEAD、修改文件、关键决策、解决的结构问题、实际测试命令及结果、已知风险、下一步与 commit SHA。
+5. 如果需要修改现有 `app.py`，仅修改必要的兼容桥与测试；大规模前端变更视为超出范围并停止。
+6. 如果发现会改变金融数学意义、引入数据丢失或破坏旧产物读取的迁移，先写失败测试、兼容策略和单独提交，不得悄悄改变行为。
+7. 提交代码前确保 `git diff --check`、`git status` 可审查；禁止 `git reset --hard`、强推或自动合并到 `main`。
+8. 完成阶段后，更新本文件勾选状态与对应证据链接，若实际设计偏离计划，记录明确理由。
+
+## 6. 首轮 Agent 应交付的结果
+
+- `docs/M6_BASELINE.md`：基线统计、依赖/模块边界、数学/JSON 语义现状、测试环境和关键基准。
+- P0 修复：跨命令回撤语义统一 + 结果 schema 迁移；独立、可移植、安全加载的研究产物。
+- 新旧 `result.json` / Parquet 离线重放测试、旧 schema 迁移测试、复制目录测试、路径越界/哈希错误测试，以及关键算法黄金测试。
+- 现有 Web/CLI 的兼容通过（不触碰页面视觉设计）。
+- 清晰的阶段性提交记录及实际测试输出，不夸大已经完成的 M6-2～M6-5。
+
+**最终目标：** AKShare、Web UI、报告格式、某一种优化算法的实现各自可以被替换，而不会迫使用户重写整个系统；金融语义、研究结果与回测可重复验证。

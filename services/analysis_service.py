@@ -15,7 +15,9 @@ from asset_catalog import (
     SUPPORTED_ADJUSTMENTS,
     get_asset_trading_days,
     normalize_symbol_alias,
+    resolve_adjustment,
     resolve_return_basis,
+    resolve_semantic_series_kind,
 )
 from asset_loader import load_asset_data
 from contracts import (
@@ -27,6 +29,8 @@ from contracts import (
     build_metric_units,
     build_quality_report,
     build_series_metadata,
+    sync_metadata_to_frame,
+    validate_frame_metadata_consistency,
 )
 from currency import convert_ohlcv_to_base_currency, infer_asset_currency
 from data_sources.errors import EmptySymbolDataError
@@ -160,22 +164,43 @@ def _prepare_single_asset_frame(
         work_df = loaded.copy()
         work_df.attrs = dict(loaded.attrs)
 
-    work_df.attrs.setdefault("asset_type", request.asset_type)
-    work_df.attrs.setdefault("symbol", request.symbol)
-    if request.asset_type in SUPPORTED_ADJUSTMENTS:
-        work_df.attrs.setdefault("adjust", request.adjust)
-    resolved_sym = str(work_df.attrs.get("symbol", request.symbol) or request.symbol).strip()
+    work_df.attrs["asset_type"] = request.asset_type
+    requested_canonical = normalize_symbol_alias(request.asset_type, request.symbol)
+    raw_attr_symbol = str(work_df.attrs.get("symbol") or "").strip()
+    if raw_attr_symbol and (
+        normalize_symbol_alias(request.asset_type, raw_attr_symbol) == requested_canonical
+    ):
+        resolved_sym = raw_attr_symbol
+    else:
+        resolved_sym = request.symbol
+    work_df.attrs["symbol"] = resolved_sym
+    has_attr_adjust = "adjust" in work_df.attrs and work_df.attrs.get("adjust") is not None
+    raw_attr_adjust = str(work_df.attrs.get("adjust") or "").strip() if has_attr_adjust else None
+    if raw_attr_adjust is not None:
+        if request.asset_type not in SUPPORTED_ADJUSTMENTS and raw_attr_adjust == "none":
+            effective_adjust = ""
+        elif request.asset_type in SUPPORTED_ADJUSTMENTS:
+            effective_adjust = resolve_adjustment(request.asset_type, raw_attr_adjust)
+        else:
+            effective_adjust = raw_attr_adjust
+    else:
+        effective_adjust = request.adjust
+    work_df.attrs["adjust"] = effective_adjust
     work_df.attrs["return_basis"] = resolve_return_basis(
         request.asset_type,
-        adjust=request.adjust if request.asset_type in SUPPORTED_ADJUSTMENTS else None,
+        adjust=effective_adjust if request.asset_type in SUPPORTED_ADJUSTMENTS else None,
         attrs=work_df.attrs,
     )
-    work_df.attrs.setdefault(
-        "canonical_symbol", normalize_symbol_alias(request.asset_type, resolved_sym)
+    work_df.attrs["series_kind"] = resolve_semantic_series_kind(
+        request.asset_type,
+        return_basis=work_df.attrs["return_basis"],
+        attrs=work_df.attrs,
     )
-    work_df.attrs.setdefault(
-        "currency", infer_asset_currency(request.asset_type, resolved_sym, work_df.attrs)
-    )
+    work_df.attrs["canonical_symbol"] = normalize_symbol_alias(request.asset_type, resolved_sym)
+    if not work_df.attrs.get("currency"):
+        work_df.attrs["currency"] = infer_asset_currency(
+            request.asset_type, resolved_sym, work_df.attrs
+        )
     work_df.attrs.setdefault("fetched_at", datetime.now(UTC).isoformat())
     work_df.attrs.setdefault("cache_hit", False)
 
@@ -264,9 +289,19 @@ def fetch_single_asset(
         prepared_df,
         asset_type=request.asset_type,
         symbol=request.symbol,
+        adjust=str(prepared_df.attrs.get("adjust", request.adjust) or ""),
+        return_basis=str(prepared_df.attrs.get("return_basis") or ""),
+        series_kind=str(prepared_df.attrs.get("series_kind") or ""),
+        native_currency=prepared_df.attrs.get("native_currency"),
+        output_currency=prepared_df.attrs.get("currency"),
+        fx_converted=bool(prepared_df.attrs.get("fx_converted", False)),
+        fx_pair=prepared_df.attrs.get("fx_pair"),
         trading_days=trading_days,
         warnings=all_warnings,
+        strict=True,
     )
+    sync_metadata_to_frame(prepared_df, asset_meta, quality_report)
+    validate_frame_metadata_consistency(prepared_df, asset_meta)
     disclaimers: list[str] = []
     basis_note = ASSET_RETURN_BASIS_NOTES.get(asset_meta.return_basis)
     if basis_note:
@@ -385,9 +420,19 @@ def analyze_single_asset(
         featured_df,
         asset_type=request.asset_type,
         symbol=request.symbol,
+        adjust=str(featured_df.attrs.get("adjust", request.adjust) or ""),
+        return_basis=str(featured_df.attrs.get("return_basis") or ""),
+        series_kind=str(featured_df.attrs.get("series_kind") or ""),
+        native_currency=featured_df.attrs.get("native_currency"),
+        output_currency=featured_df.attrs.get("currency"),
+        fx_converted=bool(featured_df.attrs.get("fx_converted", False)),
+        fx_pair=featured_df.attrs.get("fx_pair"),
         trading_days=trading_days,
         warnings=all_warnings,
+        strict=True,
     )
+    sync_metadata_to_frame(featured_df, asset_meta, quality_report)
+    validate_frame_metadata_consistency(featured_df, asset_meta)
 
     disclaimers: list[str] = []
     basis_note = ASSET_RETURN_BASIS_NOTES.get(asset_meta.return_basis)

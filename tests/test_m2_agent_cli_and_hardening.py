@@ -164,11 +164,13 @@ def test_quant_analyze_writes_result_json_parquet_and_csv_idempotently(
     assert disk_payload["data_summary"]["actual_end"] == "2024-02-19"
     assert disk_payload["data_summary"]["row_count"] == len(dates)
     assert disk_payload["artifacts"] == {
-        "output_dir": str(out_dir.resolve()),
-        "result_json": str(result_path.resolve()),
-        "data_parquet": str(parquet_path.resolve()),
-        "data_csv": str(csv_path.resolve()),
+        "output_dir": ".",
+        "result_json": "result.json",
+        "data_parquet": "data.parquet",
+        "data_csv": "data.csv",
     }
+    assert disk_payload["artifact_manifest"]["algorithm"] == "sha256"
+    assert {"data_parquet", "data_csv"}.issubset(disk_payload["artifact_manifest"]["files"])
 
     loaded_parquet = pd.read_parquet(parquet_path)
     assert loaded_parquet.index.name == "Date"
@@ -277,7 +279,8 @@ def test_quant_fetch_stdout_and_disk_contract(
     capsys.readouterr()
     disk_payload = json.loads((fetch_dir / "result.json").read_text(encoding="utf-8"))
     assert "data" not in disk_payload
-    assert Path(disk_payload["artifacts"]["data_parquet"]).is_file()
+    assert disk_payload["artifacts"]["data_parquet"] == "data.parquet"
+    assert (fetch_dir / disk_payload["artifacts"]["data_parquet"]).is_file()
     parquet_df = pd.read_parquet(fetch_dir / "data.parquet")
     assert list(parquet_df.columns) == ["Open", "High", "Low", "Close", "Volume"]
 
