@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -756,6 +757,64 @@ def _atomic_write(target_path: Path, writer: Callable[[Path], None]) -> Path:
             pass
 
 
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:(.*)$")
+
+
+def _resolve_non_symlink_managed_file(resolved_dir: Path, candidate: Path) -> Path | None:
+    """Return ``candidate`` only when it is a regular non-symlink file inside ``resolved_dir``."""
+    if candidate.is_symlink() or not candidate.is_file():
+        return None
+    resolved_candidate = candidate.resolve()
+    if (
+        resolved_candidate != candidate
+        or resolved_candidate == resolved_dir
+        or not resolved_candidate.is_relative_to(resolved_dir)
+    ):
+        return None
+    return resolved_candidate
+
+
+def _resolve_prior_artifact_candidate(
+    resolved_dir: Path,
+    charts_dir: Path,
+    raw_val: str,
+) -> Path | None:
+    """Resolve a prior ``result.json`` entry strictly to a non-symlink file inside ``resolved_dir``."""
+    try:
+        resolved_art = resolve_safe_artifact_path(resolved_dir, raw_val, allow_legacy_absolute=True)
+    except ArtifactError:
+        return None
+    if resolved_art.parent not in {resolved_dir, charts_dir}:
+        return None
+
+    cleaned = raw_val.strip()
+    drive_match = _WIN_DRIVE_RE.match(cleaned)
+    is_abs_or_home = (
+        cleaned.startswith(("/", "\\", "~"))
+        or drive_match is not None
+        or Path(cleaned).is_absolute()
+    )
+    if is_abs_or_home:
+        raw_rest = drive_match.group(1) if drive_match is not None else cleaned
+        segs = [seg for seg in re.split(r"[/\\]+", raw_rest) if seg and seg != "."]
+        if not segs or ".." in segs:
+            return None
+        rel_segs = ["charts", segs[-1]] if len(segs) >= 2 and segs[-2] == "charts" else [segs[-1]]
+    else:
+        rel_segs = [seg for seg in re.split(r"[/\\]+", cleaned) if seg and seg != "."]
+        if not rel_segs or ".." in rel_segs:
+            return None
+
+    cur = resolved_dir
+    for seg in rel_segs:
+        cur = cur / seg
+        if cur.is_symlink():
+            return None
+    if cur != resolved_art:
+        return None
+    return _resolve_non_symlink_managed_file(resolved_dir, cur)
+
+
 def _collect_stale_managed_artifacts(
     out_dir: Path,
     *,
@@ -765,25 +824,23 @@ def _collect_stale_managed_artifacts(
     if not out_dir.exists() or not out_dir.is_dir():
         return []
     resolved_dir = out_dir.resolve()
-    resolved_charts_dir = (resolved_dir / "charts").resolve()
+    charts_dir = resolved_dir / "charts"
     candidates: set[Path] = set()
 
     for name in _MANAGED_OUTPUT_FILENAMES:
-        p = resolved_dir / name
-        if p.is_file():
-            candidates.add(p.resolve())
+        resolved_item = _resolve_non_symlink_managed_file(resolved_dir, resolved_dir / name)
+        if resolved_item is not None:
+            candidates.add(resolved_item)
 
-    if resolved_charts_dir.is_dir():
-        for p in resolved_charts_dir.iterdir():
-            if (
-                p.is_file()
-                and p.stem in _MANAGED_CHART_TYPES
-                and p.suffix.lower() in _MANAGED_CHART_SUFFIXES
-            ):
-                candidates.add(p.resolve())
+    if not charts_dir.is_symlink() and charts_dir.is_dir() and charts_dir.resolve() == charts_dir:
+        for p in charts_dir.iterdir():
+            if p.stem in _MANAGED_CHART_TYPES and p.suffix.lower() in _MANAGED_CHART_SUFFIXES:
+                resolved_chart = _resolve_non_symlink_managed_file(resolved_dir, p)
+                if resolved_chart is not None and resolved_chart.parent == charts_dir:
+                    candidates.add(resolved_chart)
 
     prior_result = resolved_dir / "result.json"
-    if prior_result.is_file():
+    if not prior_result.is_symlink() and prior_result.is_file():
         try:
             parsed = json.loads(prior_result.read_text(encoding="utf-8"))
             artifacts = parsed.get("artifacts") if isinstance(parsed, dict) else None
@@ -795,21 +852,20 @@ def _collect_stale_managed_artifacts(
                         or not val.strip()
                     ):
                         continue
-                    try:
-                        resolved_art = resolve_safe_artifact_path(
-                            resolved_dir, val, allow_legacy_absolute=True
-                        )
-                    except ArtifactError:
-                        continue
-                    if (
-                        resolved_art.parent in {resolved_dir, resolved_charts_dir}
-                        and resolved_art.is_file()
-                    ):
+                    resolved_art = _resolve_prior_artifact_candidate(resolved_dir, charts_dir, val)
+                    if resolved_art is not None:
                         candidates.add(resolved_art)
         except Exception:
             pass
 
-    return sorted(p for p in candidates if p not in new_target_resolved)
+    return sorted(
+        p
+        for p in candidates
+        if p not in new_target_resolved
+        and not p.is_symlink()
+        and p != resolved_dir
+        and p.is_relative_to(resolved_dir)
+    )
 
 
 def _write_outputs(
@@ -1042,7 +1098,7 @@ def _write_outputs(
 
         if out_dir is not None:
             charts_dir = out_dir / "charts"
-            if charts_dir.is_dir():
+            if not charts_dir.is_symlink() and charts_dir.is_dir():
                 try:
                     if not any(charts_dir.iterdir()):
                         charts_dir.rmdir()

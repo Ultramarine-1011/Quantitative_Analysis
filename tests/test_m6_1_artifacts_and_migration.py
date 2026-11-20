@@ -690,6 +690,108 @@ def test_quant_cli_stale_cleanup_ignores_traversal_and_external_paths(
     assert outside_sentinel.read_text(encoding="utf-8") == "keep me"
 
 
+def test_quant_cli_stale_cleanup_never_follows_symlinks_outside_output_dir(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    loader, _ = _multi_asset_loaders()
+    outside_sentinel = tmp_path / "outside_sentinel.md"
+    outside_sentinel.write_text("external report sentinel", encoding="utf-8")
+
+    outside_charts = tmp_path / "outside_charts"
+    outside_charts.mkdir()
+    outside_chart_price = outside_charts / "price.png"
+    outside_chart_corr = outside_charts / "correlation.png"
+    outside_chart_price.write_bytes(b"external-price-png")
+    outside_chart_corr.write_bytes(b"external-corr-png")
+
+    outside_result = tmp_path / "outside_result.json"
+    outside_result.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2.0",
+                "command": "analyze",
+                "artifacts": {"report_md": "report.md", "chart_price_png": "charts/price.png"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # 1. Direct _collect_stale_managed_artifacts check with report.md symlink & charts/ symlink
+    out_dir = tmp_path / "cli_symlink_cleanup"
+    out_dir.mkdir()
+    os.symlink(outside_sentinel, out_dir / "report.md")
+    os.symlink(outside_charts, out_dir / "charts")
+    stale_regular = out_dir / "weights.parquet"
+    stale_regular.write_bytes(b"stale-regular")
+
+    new_targets = {
+        (out_dir / "data.parquet").resolve(),
+        (out_dir / "result.json").resolve(),
+    }
+    collected = quant_cli._collect_stale_managed_artifacts(out_dir, new_target_resolved=new_targets)
+    assert stale_regular.resolve() in collected
+    assert outside_sentinel.resolve() not in collected
+    assert outside_chart_price.resolve() not in collected
+    assert outside_chart_corr.resolve() not in collected
+    for item in collected:
+        assert item.is_relative_to(out_dir.resolve())
+        assert not item.is_symlink()
+
+    # 2. End-to-end CLI cleanup preserves external targets while purging genuine stale files
+    code, _ = quant_cli.run_cli_command(
+        [
+            "analyze",
+            "etf:510300",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-05-15",
+            "-o",
+            str(out_dir),
+        ],
+        loader=loader,
+    )
+    capsys.readouterr()
+    assert code == quant_cli.EXIT_OK
+    assert not stale_regular.exists()
+    assert outside_sentinel.read_text(encoding="utf-8") == "external report sentinel"
+    assert outside_chart_price.read_bytes() == b"external-price-png"
+    assert outside_chart_corr.read_bytes() == b"external-corr-png"
+
+    # 3. Also guard symlinked chart files inside a real charts/ dir and symlinked result.json
+    real_charts_out = tmp_path / "cli_nested_chart_symlink"
+    (real_charts_out / "charts").mkdir(parents=True)
+    os.symlink(outside_chart_price, real_charts_out / "charts" / "price.png")
+    os.symlink(outside_result, real_charts_out / "result.json")
+    nested_collected = quant_cli._collect_stale_managed_artifacts(
+        real_charts_out,
+        new_target_resolved={
+            (real_charts_out / "data.parquet").resolve(),
+            (real_charts_out / "result.json").resolve(),
+        },
+    )
+    assert nested_collected == []
+
+    code2, _ = quant_cli.run_cli_command(
+        [
+            "analyze",
+            "etf:510300",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-05-15",
+            "-o",
+            str(real_charts_out),
+        ],
+        loader=loader,
+    )
+    capsys.readouterr()
+    assert code2 == quant_cli.EXIT_OK
+    assert outside_chart_price.read_bytes() == b"external-price-png"
+    assert outside_result.exists()
+
+
 def test_artifacts_package_dependency_boundaries() -> None:
     forbidden = {
         "services",
