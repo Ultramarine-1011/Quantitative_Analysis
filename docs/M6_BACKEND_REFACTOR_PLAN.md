@@ -2,8 +2,8 @@
 
 > 状态：**M6-0 与 M6-1 已完成（M6-2～M6-5 待实施；基线与契约规范见 [M6_BASELINE.md](M6_BASELINE.md) 与 [CONTRACTS.md](CONTRACTS.md)）**
 > 计划基线：`codex/frontend-qa` @ `826d0a8caaacbbabb198ba99b397cd546f84bdb3`（2026-11-18，65 标的审计后的最新开发基线）
-> 工作分支：`refactor/m6-backend`（由上述分支创建）
-> 适用环境：Python >=3.11；CI 矩阵（[tests.yml](../.github/workflows/tests.yml)）覆盖 `3.11` / `3.12` / `3.14`，本机实测运行时为 `3.14.5`（3.11 / 3.12 本机无可用测试环境，`NOT RUN`）
+> 实施源分支：`refactor/m6-backend`（M6-0/M6-1 已合并到 `main`；后续以当前代码工作分支为准）
+> 适用环境：仅维护 Python 3.14.x（`>=3.14,<3.15`）；CI 只检验 3.14，本机已报告的基线运行时为 3.14.5。历史 3.11/3.12 测试记录不构成后续兼容义务。
 > 产品方向：稳定的金融分析内核 + 可复用的 Agent CLI；**Streamlit 前端重写放在最后，M6 禁止主动进行前端视觉/交互重构**。
 
 ## 0. 决策与非目标

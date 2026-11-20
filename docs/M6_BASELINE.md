@@ -1,5 +1,7 @@
 # M6 后端行为与依赖基线（M6-0）
 
+> **版本维护政策更新（2026-11-20）**：项目从此仅维护 Python 3.14.x（`>=3.14,<3.15`）。下列 3.11/3.12 记录属于 M6-0 当时的历史环境审计，不代表当前支持矩阵。
+
 > 记录分支：`refactor/m6-backend`
 > 基线提交：`33afdcb90a6544c7ac198711fc6bfef342e58429`（在 `codex/frontend-qa` @ `826d0a8caaacbbabb198ba99b397cd546f84bdb3` 上新增 `docs/M6_BACKEND_REFACTOR_PLAN.md`）
 > 采集日期：2026-11-20

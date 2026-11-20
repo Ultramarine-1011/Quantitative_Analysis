@@ -1,6 +1,6 @@
 # Quantitative Analysis
 
-**Python 多资产金融数据分析与可视化工具**（Python 3.11+）。
+**Python 多资产金融数据分析与可视化工具**（仅维护 Python 3.14.x）。
 
 项目围绕统一的 **OHLCV（开高低收量）** 数据契约，整合跨市场行情检索、数据清洗与质量诊断、技术特征工程、风险收益统计指标、精确有效前沿优化及无前视偏差样本外回测。现已完成 **M0–M5（V1.0）** 全部阶段演进，通过 **Streamlit Web 交互平台** 与 **Python 命令行（`quant` Agent CLI / `quantitative-analysis`）** 提供统一计算口径、交互可视化与结构化报告能力。
 
@@ -34,7 +34,7 @@
 
 | 类别 | 主要技术与库 |
 | --- | --- |
-| 运行环境 | Python `>=3.11`（推荐 `3.12+`，当前主验证环境 `3.14.5`） |
+| 运行环境 | Python `>=3.14,<3.15`（仅维护 3.14.x；本地验证环境 3.14.5） |
 | 数据处理与契约 | `pandas`、`NumPy`、`PyArrow`（`<26`） |
 | 统计与优化算法 | `SciPy`（SLSQP 精确有效前沿）、内置解析 Ledoit-Wolf 收缩与风险指标计算 |
 | 可视化与界面 | `Streamlit`（`>=1.50`）、`Plotly`、`Matplotlib`、`mplfinance` |
@@ -294,7 +294,7 @@ Quantitative_Analysis/
 
 ### 环境与缓存配置
 
-- **Python 与核心依赖**：最低要求 Python **3.11**（推荐 **3.12 / 3.14**，本地主验证环境为 Python **3.14.5**，CI 覆盖 **3.11 / 3.12 / 3.14**）。`pyproject.toml` 动态读取 `requirements.txt`；Web 端要求 `streamlit>=1.50.0`（避免旧版前端与新版 Plotly 数组格式不兼容），`pyarrow` 保留 `<26.0.0` 约束。
+- **Python 与核心依赖**：仅支持 Python **3.14.x**（本地主验证环境为 **3.14.5**，CI 仅运行 **3.14**）。`pyproject.toml` 动态读取 `requirements.txt`；Web 端要求 `streamlit>=1.50.0`（避免旧版前端与新版 Plotly 数组格式不兼容），`pyarrow` 保留 `<26.0.0` 约束。
 - **共享磁盘缓存**：默认写入 `~/.cache/quantitative_analysis/ohlcv`，可通过环境变量控制：
   - `QUANT_CACHE_DIR`：自定义缓存目录。
   - `QUANT_CACHE_TTL`：缓存有效期（秒，默认 `3600`）。

@@ -77,7 +77,7 @@
 
 ## 4. 环境依赖与验证边界
 
-- **Python 版本要求**：[pyproject.toml](../pyproject.toml) 指定 `requires-python >= 3.11`；本地主要开发与验证环境为 **Python 3.14.5**。
+- **Python 版本要求**：[pyproject.toml](../pyproject.toml) 指定 `requires-python >=3.14,<3.15`，仅维护 **Python 3.14.x**；本地主要开发与验证环境为 **Python 3.14.5**。
 - **关键依赖约束**：[requirements.txt](../requirements.txt) 由 `pyproject.toml` 动态读取，包含 `scipy>=1.11.0`、`streamlit>=1.50.0`、`plotly>=5.18.0`、`pyarrow<26.0.0`、`ccxt>=4.0.0`、`akshare>=1.13.0`、`httpx>=0.27.0` 等；`pip install -e ".[dev]"` 同时注册 `quant` 与 `quantitative-analysis` 命令及 `pytest`、`ruff`。
 - **离线测试与外部数据源边界**：
   - 自动化测试全部采用确定性样本或 monkeypatch 模拟数据源（默认 `QUANT_DISABLE_CACHE=1` 隔离），覆盖 OHLCV 清洗、数学公式、FX 折算、网络预算与代理策略、SLSQP 优化与 OOS 回测、共享缓存、CLI 与 Streamlit `AppTest`。

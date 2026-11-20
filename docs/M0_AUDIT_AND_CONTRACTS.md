@@ -1,7 +1,7 @@
 # M0 现状审计、技术债清单与 V0.1/V0.2 架构契约
 
 > 阶段：**M0（V0.1 准备工作）** · 基线分支：`codex/frontend-qa`（已合入 `origin/main` 路线图）  
-> 主开发与验证环境：Python 3.14.5（[pyproject.toml](../pyproject.toml) 声明 `>=3.11`，CI 覆盖 `3.11` / `3.12` / `3.14`）
+> 主开发与验证环境：Python 3.14.5（当前仅支持 Python 3.14.x（`>=3.14,<3.15`），CI 只运行 3.14）
 
 本文档固定 M0 阶段的全部审计事实、历史兼容边界、技术债优先级清单、`ROADMAP.md` 已实现能力重估以及 V0.1/V0.2 核心契约与模块拆分方案，作为 M1–M5 渐进式重构的单一设计依据。
 
@@ -162,7 +162,7 @@ class AnalysisResult:
 
 - **运行方式**：`MPLBACKEND=Agg QUANT_DISABLE_CACHE=1 .venv/bin/python -m pytest -q -p no:cacheprovider`
 - **检查工具**：`ruff check .`、`ruff format --check .`、`python -m pip check`
-- **CI 矩阵**：[.github/workflows/tests.yml](../.github/workflows/tests.yml) 在 Python `3.11` / `3.12` / `3.14` 上全量执行测试、Lint、格式与依赖完整性检查。
+- **CI 矩阵**：[.github/workflows/tests.yml](../.github/workflows/tests.yml) 仅在 Python `3.14` 上全量执行测试、Lint、格式与依赖完整性检查。
 - **测试分布**：覆盖 `tests/` 下的契约与数学公式、网络预算与代理隔离、SLSQP/OOS 组合模型、Web AppTest 与状态持久、Plotly/mplfinance 图表、共享缓存与 CLI 端到端。
 
 ### 5.2 离线测试无法覆盖的外部边界
