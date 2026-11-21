@@ -77,7 +77,7 @@ def _resolve_forex_market_map() -> dict[str, int]:
             for k, v in ext_map.items():
                 try:
                     merged[str(k)] = int(v)
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
     except Exception:  # noqa: BLE001
         # Keep working seamlessly even if AKShare renames internal forex.cons.

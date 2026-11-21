@@ -173,7 +173,7 @@ def _to_json_safe(value: Any) -> Any:
     try:
         if pd.isna(value):
             return None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         pass
     return str(value)
 

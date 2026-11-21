@@ -273,7 +273,7 @@ def _call_akshare(
                 with _without_http_proxy_env():
                     return fn(*args, **kwargs)
             return fn(*args, **kwargs)
-        except (ImportError, ValueError, TypeError, EmptySymbolDataError):
+        except ImportError, ValueError, TypeError, EmptySymbolDataError:
             raise
         except DataFetchError as exc:
             last_exc = exc

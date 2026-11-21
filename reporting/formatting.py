@@ -43,7 +43,7 @@ def is_valid_number(value: Any) -> bool:
         return False
     try:
         num = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     return math.isfinite(num)
 

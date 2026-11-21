@@ -106,7 +106,7 @@ def _json_safe_value(value: Any) -> Any:
     try:
         if pd.isna(value):
             return None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         pass
     if hasattr(value, "item"):
         return _json_safe_value(value.item())
@@ -122,7 +122,7 @@ def _is_missing_or_nan(value: Any) -> bool:
         return math.isnan(value)
     try:
         return bool(pd.isna(value))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
 
 

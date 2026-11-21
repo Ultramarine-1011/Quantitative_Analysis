@@ -1118,7 +1118,7 @@ def _format_num(val: Any, digits: int = 4) -> str:
         return "—"
     try:
         num = float(val)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return str(val)
     if not math.isfinite(num):
         return "—"

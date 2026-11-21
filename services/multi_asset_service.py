@@ -107,7 +107,7 @@ def _invoke_asset_loader(
             kwargs["adjust"] = spec.adjust
         if (has_var_kw or "force_refresh" in params) and force_refresh:
             kwargs["force_refresh"] = True
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         pass
     return fetch_fn(**kwargs)
 

@@ -182,7 +182,7 @@ class EastMoneyDailyKlineClient:
                         return df
                     # Valid 200 payload with zero klines: do not amplify transport retries across remaining mirrors.
                     return pd.DataFrame()
-                except (ValueError, VendorUpstreamError):
+                except ValueError, VendorUpstreamError:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc

@@ -36,7 +36,7 @@ class BaseDataFetcher(ABC):
                 if data.empty:
                     raise EmptySymbolDataError(f"{operation_name} returned an empty DataFrame.")
                 return data
-            except (EmptySymbolDataError, ImportError, ValueError, TypeError):
+            except EmptySymbolDataError, ImportError, ValueError, TypeError:
                 raise
             except Exception as exc:
                 last_error = exc
