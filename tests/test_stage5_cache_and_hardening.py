@@ -255,7 +255,7 @@ def test_app_force_refresh_checkbox_bypasses_streamlit_and_disk_cache(
     app.load_multi_leg_close_wide.clear()
 
 
-def test_yfinance_fetcher_deprecated_and_pyproject_requires_py311():
+def test_yfinance_fetcher_deprecated_and_pyproject_requires_py314():
     with pytest.warns(DeprecationWarning, match="YFinanceFetcher is deprecated"):
         client = YFinanceFetcher()
     with pytest.raises(NotImplementedError):
@@ -264,4 +264,4 @@ def test_yfinance_fetcher_deprecated_and_pyproject_requires_py311():
     pyproject_text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
         encoding="utf-8"
     )
-    assert 'requires-python = ">=3.11"' in pyproject_text
+    assert 'requires-python = ">=3.14,<3.15"' in pyproject_text
