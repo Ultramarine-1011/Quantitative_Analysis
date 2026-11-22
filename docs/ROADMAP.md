@@ -1,6 +1,6 @@
 # 产品定位与开发路线图（Roadmap）
 
-> 状态：**M5（V1.0）已完成** · 更新：2026-11-15  
+> 状态：**M6 后端重构已完成，M7 前端重构待实施** · 更新：2026-11-22
 > V0.1（M0–M1）、V0.2（M2：`quant fetch` / `analyze`）、V0.3（M3：`quant compare` / `portfolio`）、V0.4（M4：独立报告渲染器 `reporting/` 与按需图表生成）及 V1.0（M5：Streamlit Web UI 全面重构并接入统一服务与渲染层，完成 Web/CLI 统一验收）已全部落地。现有功能与口径细节以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
 >
 > **M0 重估提示**：因近期代码分支（Stages 1–5）已提前落地了多市场日历对齐、FX 换汇、9 项 OHLCV 质量诊断、SLSQP 精确有效前沿、Ledoit-Wolf 收缩、Walk-Forward 样本外回测与 Parquet 共享缓存，以下 M1/M3/M5 中的部分基础工作已具备实现，**后续开发须先对照 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md#2-roadmapmd-实际完成度重估防止-m1m5-重复开发) 避免重复造轮子**。
@@ -168,6 +168,14 @@ quant portfolio etf:510300 us_stock:SPY --benchmark etf:510500 --base-currency C
 - [x] **Web / CLI 一致性与统一验收（[test_m5_web_cli_parity_and_ui.py](../tests/test_m5_web_cli_parity_and_ui.py)）**：补充同一数据快照与参数下的单资产、多资产比较与组合回测 Web/CLI 一致性验证、`bond_us_yield` 跨工作区语义拦截、加密自适应交易日 GBM、`custom` 权重校验及离线 `AppTest` / 无可选依赖兼容性验收，并将版本升级至 `1.0.0`。
 
 **验收标准**：Web 和 CLI 共用同一计算口径；能够从资产查询到图表、数据、指标与报告完成全流程；自动化测试与文档能够支持持续维护。
+
+### M6 · 后端契约、模型与可复现研究（已完成）
+
+M6-0/1 固定离线黄金基线并完成契约迁移。M6-2/3 将输入解析、研究服务与数值模型拆分。M6-4 统一 CLI 和 Python 输出事务，保留旧入口。M6-5 通过可替换的行情仓库和不可变输入清单实现离线重算，覆盖资产、基准与 FX。验证依据见 [M6 实施记录](M6_BACKEND_REFACTOR_PLAN.md)。
+
+### M7 · 前端整体重构（待实施）
+
+保留当前三工作区交互，下一阶段集中处理组件拆分、工作区状态与导出缓存失效。沿用 M6 的研究服务与结果契约。
 
 ## 5. 版本与交付重点
 

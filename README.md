@@ -70,6 +70,8 @@ streamlit run app.py
 
 ### 3. 运行 Agent CLI（`quant`）与原单资产终端（`quantitative-analysis`）
 
+需要离线重算时，首次运行加 `--data-mode online --snapshot-dir ./inputs`，之后使用相同资产、复权和日期，传入 `--data-mode offline --snapshot-dir ./inputs --snapshot-id <清单SHA256>`。清单 ID 在 `data_summary.snapshot_id` 中。具体示例见[研究输入快照](docs/ARCHITECTURE.md#研究输入快照)。
+
 安装可编辑包（`pip install -e .`）后即可直接调用 `quant` 与兼容命令 `quantitative-analysis`（源码目录内亦可使用 `python quant_cli.py`）：
 
 ```bash

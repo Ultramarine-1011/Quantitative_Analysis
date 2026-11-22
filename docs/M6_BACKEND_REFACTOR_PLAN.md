@@ -1,8 +1,8 @@
 # M6 后端架构收敛与契约稳定化：Agent 执行计划
 
-> 状态：**M6-0 与 M6-1 已完成（M6-2～M6-5 待实施；基线与契约规范见 [M6_BASELINE.md](M6_BASELINE.md) 与 [CONTRACTS.md](CONTRACTS.md)）**
+> 状态：**M6-0 至 M6-5 已完成（基线与契约规范见 [M6_BASELINE.md](M6_BASELINE.md) 与 [CONTRACTS.md](CONTRACTS.md)）**
 > 计划基线：`codex/frontend-qa` @ `826d0a8caaacbbabb198ba99b397cd546f84bdb3`（2026-11-18，65 标的审计后的最新开发基线）
-> 实施源分支：`refactor/m6-backend`（M6-0/M6-1 已合并到 `main`；后续以当前代码工作分支为准）
+> 实施源分支：`refactor/m6-backend`（M6-0/M6-1 已合并到 `main`；M6-2 至 M6-5 直接在 main 分阶段提交）
 > 适用环境：仅维护 Python 3.14.x（`>=3.14,<3.15`）；CI 只检验 3.14，本机已报告的基线运行时为 3.14.5。历史 3.11/3.12 测试记录不构成后续兼容义务。
 > 产品方向：稳定的金融分析内核 + 可复用的 Agent CLI；**Streamlit 前端重写放在最后，M6 禁止主动进行前端视觉/交互重构**。
 
@@ -116,13 +116,17 @@ CLI 与 Python 产物共用 `artifacts/store.py` 和 `artifacts/transaction.py`�
 
 ### M6-5：数据源与研究快照隔离（后端最后一项，可拆独立 PR）
 
-- [ ] 抽象 Provider 协议、来源选择和错误分类，让新增/替换供应商无需修改算法层。
-- [ ] 将短期 TTL 缓存与不可变研究快照区分，支持 `online` / `prefer_local` / `offline` 读取策略；快照携带来源、采集时间、数据覆盖、复权、币种、成交量单位及契约版本。
-- [ ] 引入基于用途的质量门禁：OHLC 异常、缺失量、收益率水平、复权/成交量单位不一致均有机器可读警告或阻断，拒绝静默语义降级。
-- [ ] 优先复用现有 `data_sources/`、`ohlcv.py`、`scripts/live_asset_audit.py`、`tests/test_vendor_regressions.py`，不要一口气重新实现全部 13 类。
-- [ ] 修复已验证的数据语义缺陷时独立提交，尤其成交量单位、C-REITs 复权、DXY 指数点位/币种含义、期货的异常质量门禁；与纯重构提交分离。
+- [x] 抽象 Provider 协议、来源选择和错误分类，让新增/替换供应商无需修改算法层。
+- [x] 将短期 TTL 缓存与不可变研究快照区分，支持 `online` / `prefer_local` / `offline` 读取策略；快照携带来源、采集时间、数据覆盖、复权、币种、成交量单位及契约版本。
+- [x] 引入基于用途的质量门禁：OHLC 异常、缺失量、收益率水平、复权/成交量单位不一致均有机器可读警告或阻断，拒绝静默语义降级。
+- [x] 优先复用现有 `data_sources/`、`ohlcv.py`、`scripts/live_asset_audit.py`、`tests/test_vendor_regressions.py`，不要一口气重新实现全部 13 类。
+- [x] 修复已验证的数据语义缺陷时独立提交，尤其成交量单位、C-REITs 复权、DXY 指数点位/币种含义、期货的异常质量门禁；与纯重构提交分离。
 
 **通过条件：** 使用受控离线数据可完成全部分析与报告；替换一个 Provider 不影响统计/模型；真实源的错误不被当作干净 PASS。
+
+证据见 [输入快照与故障注入测试](../tests/test_research_repository.py)、[行情质量回归](../tests/test_market_quality.py) 和 [供应商回归](../tests/test_vendor_regressions.py)。采集与重放命令见 [架构说明](ARCHITECTURE.md#研究输入快照)。
+
+**本轮验收（2026-11-22，Python 3.14.5）**：完整离线 pytest 345 项通过，Ruff 检查、格式检查与 `pip check` 通过。相对 `639f858` 的 45 个模型函数和类，经共享函数重命名对齐后 AST 一致。构建 wheel 后在源码目录外验证四个 `quant` 子命令、历史 `quantitative-analysis` 入口和源码 `main.py`。冒烟验证使用固定合成行情并阻断外网，覆盖从缓存建立输入快照、按 ID 重算、读取输出及生成 HTML、Markdown、PNG。实时供应商健康度沿用独立审计流程。
 
 ### M7（明确延后）：Web 全面重写
 

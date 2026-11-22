@@ -1,6 +1,6 @@
 # 工程架构、数据口径与兼容边界
 
-> 更新日期：2026-11-20（M6-1 契约收敛与可移植产物层对齐）
+> 更新日期：2026-11-22（M6 后端重构完成）
 > 详细领域契约与迁移规范见 [领域契约文档](CONTRACTS.md)；M6 基线统计见 [M6 基线报告](M6_BASELINE.md)；历史阶段设计见 [M0 审计与契约文档](M0_AUDIT_AND_CONTRACTS.md)；长期阶段规划与 V0.1–V1.0 交付记录见 [产品定位与开发路线图](ROADMAP.md)。
 
 ---
@@ -16,7 +16,9 @@
 - **契约与分析服务层**：
   - [contracts.py](../contracts.py)：版本化统一数据契约（`SCHEMA_VERSION = "0.2.0"`、`SUPPORTED_SCHEMA_VERSIONS = ("0.1.0", "0.2.0")`、`SOFTWARE_VERSION` 对应 `1.0.0`）：单资产契约 `AnalysisRequest`、`SeriesMetadata`、`QualityReport`、`AnalysisResult`，与多资产契约 `AssetSpec`、`CompareRequest`、`PortfolioRequest`、`MultiAssetResult`（均支持 `to_dict(include_data=...)` 与 strict JSON `allow_nan=False` 序列化）；集中维护 `METRIC_DEFINITIONS`、不变量校验 `validate_result_invariants` 与 `df.attrs` 双向一致性校验（`sync_metadata_to_frame` / `validate_frame_metadata_consistency`）。
   - [services/analysis_service.py](../services/analysis_service.py)：解耦 UI/CLI 的单资产服务（`fetch_single_asset` 与 `analyze_single_asset` 共用 `_prepare_single_asset_frame` 完成窗口裁剪、复权/收益口径显式推导与 FX 折算）。
-  - [services/multi_asset_service.py](../services/multi_asset_service.py)：解耦 UI/CLI 的多资产研究服务（`compare_assets` 与 `analyze_portfolio` 复用 `_fetch_multi_asset_frames`、`align_multi_asset_frames`、`analysis_metrics` 与 `quant_models`），统一输出跨市场可比指标、统一非负深度 `max_drawdown`（`>= 0`）、FX 折算元信息与基准对照。
+  - [services/multi_asset_service.py](../services/multi_asset_service.py) 保留两个历史入口。比较与组合编排位于 `services/comparison.py` 和 `services/portfolio.py`。两者共用 `services/preparation.py` 的窗口裁剪、元数据绑定与多资产加载。样本外基准、策略求解和敏感性验证位于 `services/portfolio_validation.py`。
+  - [asset_inputs.py](../asset_inputs.py) 根据 CLI、文本框和旧双元组接口的输入语法构造 `AssetSpec`，共享权重解析，别名按资产目录规范化。CLI 请求拒绝重复腿，文本框按首次出现顺序去重。
+  - [models/](../models/) 按收益处理、模拟、协方差、权重优化、有效前沿和回测拆分。模型只接收数值输入。`quant_models.py` 继续导出旧 API。
 - **可移植研究产物层（M6-1）**：
   - [artifacts/](../artifacts/)（`artifacts/migration.py`、`artifacts/store.py`）：独立研究产物序列化、加载、路径安全与迁移层。`result.json["artifacts"]` 仅使用相对 POSIX 路径并附带必需的 SHA-256 `artifact_manifest`（v0.2.0 默认校验模式必需，且禁止读取未声明的残留 Parquet/CSV 文件）；按 `(schema_version, command)` 显式支持 `0.1.0 -> 0.2.0` 安全迁移（保留旧版缺失 manifest 与受限本地文件回退兼容）；`resolve_safe_artifact_path` 与 `verify_artifact_manifest` 阻断 `../` 越界、v0.2.0 绝对路径、符号链接逃逸、路径替换及文件哈希不符，并保证旧目录绝对路径仅受限映射至用户指定的当前目录内部。
 - **报告与可视化渲染层（M4）**：
@@ -37,6 +39,29 @@
 - [YFinanceFetcher](../data_sources/base.py) 作为历史 API 保留占位，调用会发出 `DeprecationWarning` 并抛出 `NotImplementedError`；美股日线通过 AKShare 路由加载。
 
 ---
+
+### 研究输入快照
+
+`QuoteProvider` 接收 `QuoteRequest`，返回行情 DataFrame。`CachedQuoteRepository(provider, namespace="供应商标识")` 按供应商隔离 TTL 缓存，内置路由保留历史缓存键。可以向 `run_cli_command(..., repository=repo)` 注入替代仓库，或向分析服务传入 `loader=repo.load`。供应商异常沿用 empty、transport、upstream 和 caller 分类。
+
+四个 `quant` 子命令共享以下读取策略。省略所有快照参数时沿用原有 TTL 行为。显式指定 `--snapshot-dir` 时默认 `prefer_local`；显式启用快照但省略目录时写入 `~/.local/share/quantitative_analysis/snapshots`。
+
+| 模式 | 输入选择 |
+| --- | --- |
+| `online` | 重新获取本次所需的标的、外部基准和 FX 行情，发布新的输入清单。 |
+| `prefer_local` | 先查最近发布清单中的同一请求，缺项从仓库获取。关键参数包括角色、规范化标识、复权和请求起止日期。`--refresh` 强制重取。 |
+| `offline` | 仅读取所选清单及其 Parquet 对象。缺项或哈希错误使重放失败。可用 `--snapshot-id` 固定版本，缺省选最近发布的清单。 |
+
+从输出的 `data_summary.snapshot_id` 取得 ID。用原日期和研究参数重放时，可复制整个快照目录到另一台机器。命令如下。先将首条命令输出的 ID 赋给 `SNAPSHOT_ID`，再运行第二条。
+
+```bash
+quant analyze us_stock:SPY --start 2024-01-02 --end 2024-05-31 --base-currency CNY --snapshot-dir inputs --data-mode online -o initial
+quant analyze us_stock:SPY --start 2024-01-02 --end 2024-05-31 --base-currency CNY --snapshot-dir inputs --snapshot-id "$SNAPSHOT_ID" -o replay --report html
+```
+
+`objects/<SHA256>.parquet` 保存原始行情，`manifests/<SHA256>.json` 保存实际输入、来源、采集时间、请求与实际覆盖、复权、币种、成交量单位及契约版本。清单固定普通外汇、USDT/USD 以及显式近似或备用汇率用到的取数失败记录。发布新清单仅替换 `latest` 指针。相同请求可以引用新旧不同版本，同一清单 ID 总是读取原版本。Python 端可创建一次研究专用的 `ResearchRepository`，把 `load`、`fx`、`usdt` 分别注入服务，并在成功后用 `finish()` 取得 ID。
+
+结果目录有独立用途。只想重新生成报告或图表时，调用 `load_result_from_artifacts(output_dir)` 读取已算好的结果；要改变策略、费率等研究参数后再计算，使用输入快照。
 
 ## 2. 数据与计算口径
 
@@ -67,7 +92,7 @@
   - `services/analysis_service.py` 在分析与拉取前置阶段严格按 `[request.start_date, request.end_date]` 裁剪传入样本（空重叠直接抛出 `EmptySymbolDataError`），且 `build_quality_report` 与 `data_summary` 始终以实际交付样本与 FX 对齐后行数推导起止日期与质量范围。
   - 共享 Parquet + JSON 元信息缓存默认写入 `~/.cache/quantitative_analysis/ohlcv`（TTL 3600 秒）；M0 已修复禁止持久化 `proxy_url` 到 `.meta.json` 并在空切片时触发重拉；M1/M2 将进程内线程锁键细化至 `(cache_dir, key)`，在 POSIX `fcntl` 之外增加 Windows `msvcrt` 字节锁回退，`clear_ohlcv_cache()` 按 key 加锁且保留 `.locks/` 句柄避免破坏 POSIX inode 锁；M3 进一步加固 `save_cached_ohlcv` 覆盖已有缓存时的旧文件同盘备份（`_backup_existing_file`）与按替换标志精准回滚（`_restore_or_unlink_file`），确保中途失败时原有有效 `(parquet, meta.json)` 成对保留且不残余 `.tmp`/`.bak` 文件。
 - **Agent CLI 事务性落盘与严格标的解析（M3–M4）**：
-  - [quant_cli.py](../quant_cli.py) `_write_outputs` 采用三阶段事务提交（全量临时暂存 -> 同文件系统旧文件/陈旧产物备份 -> 原子 `os.replace` 提交并按受管文件名集合清理上一次残留的陈旧产物，覆盖 `weights.parquet`/`frontier.parquet`/`backtest.parquet` 及 `report.md`/`report.html` 与 `charts/<managed_type>.{html,png,svg}`，空受管 `charts/` 目录按需安全回收），任意文件失败时完整回滚并还原覆盖或已删文件，绝不触碰用户非受管文件（包括 `charts/` 下用户自定义文件）。
+  - [reporting/output.py](../reporting/output.py) 调度渲染，[artifacts/store.py](../artifacts/store.py) 与 [artifacts/transaction.py](../artifacts/transaction.py) 采用三阶段事务提交（全量临时暂存 -> 同文件系统旧文件/陈旧产物备份 -> 原子 `os.replace` 提交并按受管文件名集合清理上一次残留的陈旧产物，覆盖 `weights.parquet`/`frontier.parquet`/`backtest.parquet` 及 `report.md`/`report.html` 与 `charts/<managed_type>.{html,png,svg}`，空受管 `charts/` 目录按需安全回收），任意文件失败时完整回滚并还原覆盖或已删文件，绝不触碰用户非受管文件（包括 `charts/` 下用户自定义文件）。
   - 回撤口径跨命令与展现层统一：自 schema `0.2.0` 起，`analyze`、`compare` 与 `portfolio` 在 `result.json` 底层统一将 `max_drawdown` 存储为非负最大回撤深度（`>= 0`），并在 `methodology` 显式标注 `max_drawdown_convention = "non_negative_depth"`；[reporting/](../reporting/) 与 [charts.py](../charts.py) 在所有报告表格及水下回撤图中统一标准化为非正水下百分比（`<= 0%`），且 `format_drawdown_percent` 按显式 `input_convention` 校验符号并拒绝静默 `-abs()` 掩盖。读取历史 `0.1.0` 产物时，[artifacts/migration.py](../artifacts/migration.py) 按 `(schema_version, command)` 将旧版 `compare`（`<= 0`）显式迁移为非负深度 `>= 0`。
   - [asset_catalog.py](../asset_catalog.py) `normalize_symbol_alias` 在 `hk_stock`、`fx`、`gold` 之外新增 `ashare`/`etf` 交易所前缀/后缀（如 `sh600519` / `600519.SH` -> `600519`）规范化，配合 `quant_cli` 严格前缀校验消除多资产重复腿漏判与裸代码猜错类别风险。
   - Web 端 [app.py](../app.py) 自 M5 起直接消费统一契约 `QualityReport` 与 `result.warnings`，经 `_format_data_quality_warning` 去重展示；M5 专项回归 [test_m5_web_cli_parity_and_ui.py](../tests/test_m5_web_cli_parity_and_ui.py) 验证同一数据快照、资产语义、基准货币与参数下 Web 与 `quant` CLI 输出严格一致。
