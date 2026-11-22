@@ -82,13 +82,15 @@
 
 ### M6-2：业务编排与解析统一（P1）
 
-- [ ] 引入统一的资产 token / 多标的解析 / 自定义权重解析核心，以 `AssetSpec` 为内部输出；CLI/Web 保留各自外观语法和错误文案，但不得重复实现同一语义规则。
-- [ ] 将 `services/multi_asset_service.py` 内的数据准备与元数据质量汇总提取为可重用组件；将 `compare_assets` / `analyze_portfolio` 编排逻辑隔离。保持入口签名与加载器注入兼容。
-- [ ] 消除 `services.multi_asset_service` 对 `services.analysis_service` 私有实现的跨模块依赖（例如 `_slice_to_requested_window`），将真正共享的逻辑迁到公共 preparation 模块。
-- [ ] 保持对齐方式、资金/FX 口径、基准对照、样本外隔离和多资产顺序严格不变；配套离线性质测试与黄金快照对比。
-- [ ] 不为了减少行数额外引入抽象工厂、插件框架或隐式反射。
+- [x] 引入统一的资产 token / 多标的解析 / 自定义权重解析核心，以 `AssetSpec` 为内部输出；CLI/Web 保留各自外观语法和错误文案，但不得重复实现同一语义规则。
+- [x] 将 `services/multi_asset_service.py` 内的数据准备与元数据质量汇总提取为可重用组件；将 `compare_assets` / `analyze_portfolio` 编排逻辑隔离。保持入口签名与加载器注入兼容。
+- [x] 消除 `services.multi_asset_service` 对 `services.analysis_service` 私有实现的跨模块依赖（例如 `_slice_to_requested_window`），将真正共享的逻辑迁到公共 preparation 模块。
+- [x] 保持对齐方式、资金/FX 口径、基准对照、样本外隔离和多资产顺序严格不变；配套离线性质测试与黄金快照对比。
+- [x] 不为了减少行数额外引入抽象工厂、插件框架或隐式反射。
 
 **通过条件：** 解析只需维护一份核心规则；服务新增场景不需编辑其他分析服务的私有函数；数值结果、告警和 CLI 输出回归保持不变。
+
+实现与回归见 `asset_inputs.py`、`services/preparation.py`、`services/comparison.py`、`services/portfolio*.py` 和 `tests/test_asset_inputs.py`。
 
 ### M6-3：模型内聚（P1）
 

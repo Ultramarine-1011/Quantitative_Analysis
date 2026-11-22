@@ -42,6 +42,7 @@ from asset_catalog import (
     normalize_symbol_alias,
     resolve_adjustment,
 )
+from asset_inputs import parse_asset_list, parse_asset_token, parse_weights
 from asset_loader import multi_asset_leg_column_name, parse_multi_asset_legs
 from asset_resolver import format_diagnosis_user_message, resolve_analysis_date_window
 from charts import (
@@ -184,7 +185,6 @@ _WORKSPACE_SINGLE_KEY = "_workspace_single"
 _WORKSPACE_COMPARE_KEY = "_workspace_compare"
 _WORKSPACE_PORTFOLIO_KEY = "_workspace_portfolio"
 _LEGACY_RESULTS_KEY = "_analysis_results"
-_EMPTY_LEG_MSG = "每行需为 `资产类型,代码`、`资产类型|代码` 或 `资产类型:代码`。"
 
 
 # ---------------------------------------------------------------------------
@@ -298,82 +298,20 @@ def _make_service_loaders(
 
 
 def _split_ui_leg_token(segment: str) -> tuple[str, str]:
-    """Parse ``type,symbol``, ``type|symbol``, or ``type:symbol`` (preserving slashes)."""
-    cleaned = str(segment).strip()
-    if not cleaned:
-        raise ValueError("空的标的行。")
-    for sep in (",", "|", ":"):
-        if sep in cleaned:
-            raw_type, raw_sym = cleaned.split(sep, 1)
-            asset_key = raw_type.strip().lower()
-            sym = raw_sym.strip()
-            if not asset_key:
-                raise ValueError(f"资产类型不能为空：{segment!r}")
-            if not sym:
-                raise ValueError(f"代码不能为空：{segment!r}")
-            if asset_key not in SUPPORTED_ASSET_TYPES:
-                supported = ", ".join(SUPPORTED_ASSET_TYPES)
-                raise ValueError(f"不支持的资产类型 {raw_type!r}；可选：{supported}")
-            return asset_key, normalize_symbol_alias(asset_key, sym)
-    raise ValueError(f"{_EMPTY_LEG_MSG} 无效输入：{segment!r}")
+    spec = parse_asset_token(segment, syntax="web")
+    return spec.asset_type, spec.symbol
 
 
 def _parse_ui_multi_asset_specs(text: str) -> tuple[AssetSpec, ...]:
-    """Parse textarea asset list into deduplicated ``AssetSpec`` tuple (min 2 assets)."""
-    segments: list[str] = []
-    for raw_line in str(text).splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        for part in line.split(";"):
-            tok = part.strip()
-            if tok:
-                segments.append(tok)
-
-    ordered: list[AssetSpec] = []
-    seen: set[tuple[str, str]] = set()
-    for seg in segments:
-        asset_key, sym = _split_ui_leg_token(seg)
-        dedup_key = (asset_key, sym)
-        if dedup_key in seen:
-            continue
-        seen.add(dedup_key)
-        ordered.append(AssetSpec(asset_type=asset_key, symbol=sym))
-
-    if len(ordered) < 2:
-        raise ValueError("至少需要 2 个不重复标的（支持 `类型,代码` 或 `类型:代码`）。")
-    return tuple(ordered)
+    return parse_asset_list([text], syntax="web")
 
 
 def _parse_ui_benchmark_spec(raw: str) -> AssetSpec | None:
-    """Parse optional benchmark string (`etf:510300` or `etf,510300`), or None when blank."""
-    cleaned = str(raw).strip()
-    if not cleaned:
-        return None
-    asset_key, sym = _split_ui_leg_token(cleaned)
-    return AssetSpec(asset_type=asset_key, symbol=sym)
+    return parse_asset_token(raw, syntax="web") if raw.strip() else None
 
 
 def _parse_ui_custom_weights(raw: str) -> tuple[float, ...] | None:
-    """Parse comma/semicolon/space-separated non-negative custom weights matching CLI semantics."""
-    cleaned = str(raw).strip()
-    if not cleaned:
-        raise ValueError(
-            "自定义权重策略 (custom) 需要输入与标的数一致的权重，例如 `0.4, 0.3, 0.3`。"
-        )
-    parts = [p for p in cleaned.replace(";", ",").replace(" ", ",").split(",") if p != ""]
-    if not parts:
-        raise ValueError("请输入有效的数字权重，例如 `0.5, 0.5`。")
-    weights: list[float] = []
-    for part in parts:
-        try:
-            val = float(part)
-        except ValueError as exc:
-            raise ValueError(f"权重包含无效数字：{part!r}") from exc
-        if not math.isfinite(val):
-            raise ValueError(f"权重不能为 NaN 或 Inf：{part!r}")
-        weights.append(val)
-    return tuple(weights)
+    return parse_weights(raw, web=True)
 
 
 def _extract_quality_counts(

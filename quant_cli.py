@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import shutil
 import sys
@@ -26,6 +25,7 @@ from asset_catalog import (
     get_asset_trading_days,
     resolve_adjustment,
 )
+from asset_inputs import parse_asset_list, parse_asset_token, parse_weights
 from asset_resolver import format_diagnosis_user_message, resolve_analysis_date_window
 from contracts import (
     SCHEMA_VERSION,
@@ -530,40 +530,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def _parse_explicit_asset_token(raw_token: str, *, asset_type: str | None) -> tuple[str, str]:
-    """Resolve an explicit asset token strictly without silent fallback guesses."""
-    cleaned = str(raw_token or "").strip()
-    if not cleaned:
-        raise ValueError("Symbol must be a non-empty string.")
-
-    for sep in (":", "|"):
-        if sep in cleaned:
-            prefix, remainder = cleaned.split(sep, 1)
-            prefix_key = prefix.strip().lower()
-            remainder_clean = remainder.strip()
-            if not prefix_key or not remainder_clean:
-                raise ValueError(
-                    f"Malformed asset identifier {cleaned!r}: expected TYPE{sep}SYMBOL with non-empty parts."
-                )
-            if prefix_key not in SUPPORTED_ASSET_TYPES:
-                raise ValueError(
-                    f"Unknown asset type prefix {prefix_key!r} in {cleaned!r}; "
-                    f"supported: {', '.join(SUPPORTED_ASSET_TYPES)}."
-                )
-            if asset_type is not None and prefix_key != asset_type:
-                raise ValueError(
-                    f"Conflicting asset_type: --asset-type={asset_type!r} vs prefix {prefix_key!r}."
-                )
-            return prefix_key, remainder_clean
-
-    if asset_type is None:
-        raise ValueError(
-            f"Ambiguous bare symbol {cleaned!r}: specify -t/--asset-type or prefix as TYPE:SYMBOL "
-            f"(e.g. etf:{cleaned}, us_stock:{cleaned})."
-        )
-    return asset_type, cleaned
-
-
 def _resolve_asset_and_symbol(
     *,
     asset_type: str | None,
@@ -578,61 +544,8 @@ def _resolve_asset_and_symbol(
         resolved_type = asset_type or "etf"
         return resolved_type, DEFAULT_SYMBOLS.get(resolved_type, "510300")
 
-    return _parse_explicit_asset_token(raw_symbol, asset_type=asset_type)
-
-
-def _split_multi_asset_input(raw_item: str) -> list[str]:
-    tokens: list[str] = []
-    for line in str(raw_item).splitlines():
-        for seg in line.split(";"):
-            part = seg.strip()
-            if not part:
-                continue
-            if "," not in part:
-                tokens.append(part)
-                continue
-            comma_parts = [p.strip() for p in part.split(",")]
-            if any(not p for p in comma_parts):
-                raise ValueError(f"Empty token in comma-separated asset list: {part!r}")
-            # Support single legacy `TYPE,SYMBOL` leg notation when unambiguous.
-            if (
-                len(comma_parts) == 2
-                and ":" not in comma_parts[0]
-                and "|" not in comma_parts[0]
-                and ":" not in comma_parts[1]
-                and "|" not in comma_parts[1]
-                and comma_parts[0].lower() in SUPPORTED_ASSET_TYPES
-                and comma_parts[1].lower() not in SUPPORTED_ASSET_TYPES
-            ):
-                tokens.append(f"{comma_parts[0].lower()}:{comma_parts[1]}")
-            else:
-                tokens.extend(comma_parts)
-    return tokens
-
-
-def _parse_multi_asset_specs(
-    assets_pos: Sequence[str],
-    assets_opts: Sequence[str],
-    *,
-    asset_type: str | None,
-    adjust: str | None,
-) -> tuple[AssetSpec, ...]:
-    raw_items = [*assets_pos, *assets_opts]
-    tokens: list[str] = []
-    for item in raw_items:
-        tokens.extend(_split_multi_asset_input(item))
-
-    if not tokens:
-        raise ValueError(
-            "At least 2 asset specs are required (e.g. etf:510300 us_stock:SPY or --assets ...)."
-        )
-
-    specs: list[AssetSpec] = []
-    for tok in tokens:
-        atype, sym = _parse_explicit_asset_token(tok, asset_type=asset_type)
-        leg_adjust = resolve_adjustment(atype, adjust) if adjust is not None else None
-        specs.append(AssetSpec(asset_type=atype, symbol=sym, adjust=leg_adjust))
-    return tuple(specs)
+    spec = parse_asset_token(raw_symbol, asset_type=asset_type)
+    return spec.asset_type, spec.symbol
 
 
 def _parse_benchmark_spec(
@@ -646,30 +559,7 @@ def _parse_benchmark_spec(
     cleaned = str(raw_benchmark).strip()
     if not cleaned:
         raise ValueError("--benchmark cannot be empty when specified.")
-    atype, sym = _parse_explicit_asset_token(cleaned, asset_type=asset_type)
-    leg_adjust = resolve_adjustment(atype, adjust) if adjust is not None else None
-    return AssetSpec(asset_type=atype, symbol=sym, adjust=leg_adjust)
-
-
-def _parse_custom_weights(raw_weights: str | None) -> tuple[float, ...] | None:
-    if raw_weights is None:
-        return None
-    cleaned = str(raw_weights).strip()
-    if not cleaned:
-        raise ValueError("--weights cannot be empty when specified.")
-    parts = [p for p in cleaned.replace(";", ",").replace(" ", ",").split(",") if p != ""]
-    if not parts:
-        raise ValueError("--weights must contain numeric weights matching --assets.")
-    parsed: list[float] = []
-    for p in parts:
-        try:
-            val = float(p)
-        except ValueError as exc:
-            raise ValueError(f"Invalid numeric weight {p!r} in --weights.") from exc
-        if not math.isfinite(val):
-            raise ValueError(f"Non-finite weight {p!r} in --weights.")
-        parsed.append(val)
-    return tuple(parsed)
+    return parse_asset_token(cleaned, asset_type=asset_type, adjust=adjust)
 
 
 def _validate_output_targets(
@@ -1287,9 +1177,8 @@ def run_cli_command(
                     usdt_usd_loader=usdt_usd_loader,
                 )
         elif args.command == "compare":
-            specs = _parse_multi_asset_specs(
-                args.assets_pos,
-                args.assets_opts,
+            specs = parse_asset_list(
+                [*args.assets_pos, *args.assets_opts],
                 asset_type=args.asset_type,
                 adjust=args.adjust,
             )
@@ -1327,9 +1216,8 @@ def run_cli_command(
                 usdt_usd_loader=usdt_usd_loader,
             )
         else:
-            specs = _parse_multi_asset_specs(
-                args.assets_pos,
-                args.assets_opts,
+            specs = parse_asset_list(
+                [*args.assets_pos, *args.assets_opts],
                 asset_type=args.asset_type,
                 adjust=args.adjust,
             )
@@ -1338,7 +1226,7 @@ def run_cli_command(
                 asset_type=args.asset_type,
                 adjust=args.adjust,
             )
-            custom_w = _parse_custom_weights(args.weights)
+            custom_w = parse_weights(args.weights)
             port_req = PortfolioRequest(
                 assets=specs,
                 start_date=start_str,

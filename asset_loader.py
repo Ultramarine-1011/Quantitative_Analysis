@@ -20,6 +20,7 @@ from asset_catalog import (
     resolve_adjustment,
     resolve_return_basis,
 )
+from asset_inputs import parse_asset_list
 from asset_resolver import load_china_equity_ohlcv
 from currency import convert_prices_to_base_currency, infer_asset_currency, normalize_currency_code
 from data_fetcher import (
@@ -267,62 +268,11 @@ def multi_asset_leg_column_name(asset_type_key: str, symbol: str) -> str:
     return "%s:%s" % (str(asset_type_key).strip().lower(), str(symbol).strip())
 
 
-def _split_asset_leg_segment(segment: str) -> tuple[str, str]:
-    """解析单行 leg：`类型,代码` 或 `类型|代码`（仅拆第一处分隔符）。"""
-    s = str(segment).strip()
-    if not s:
-        raise ValueError("空的标的行。")
-    if "," in s:
-        left, right = s.split(",", 1)
-    elif "|" in s:
-        left, right = s.split("|", 1)
-    else:
-        raise ValueError(
-            "每行需为 `资产类型,代码` 或 `资产类型|代码`，例如 `etf,510300`；无效行：%r" % segment
-        )
-    asset_raw, symbol_raw = left.strip(), right.strip()
-    if not asset_raw:
-        raise ValueError("资产类型不能为空：%r" % segment)
-    if not symbol_raw:
-        raise ValueError("代码不能为空：%r" % segment)
-    return asset_raw, symbol_raw
-
-
 def parse_multi_asset_legs(text: str) -> tuple[tuple[str, str], ...]:
-    """从多行文本解析 Tab3 有效前沿标的列表；校验类型、去重（保序）、至少 2 条。
-
-    支持：换行分段；同一行内可用英文分号 `;` 分隔多条。空行忽略。
-    返回的元组中资产类型已规范为小写键（``SUPPORTED_ASSET_TYPES`` 成员）。
-    """
-    segments: list[str] = []
-    for line in str(text).splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        for part in line.split(";"):
-            part = part.strip()
-            if part:
-                segments.append(part)
-
-    legs_ordered: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for seg in segments:
-        asset_raw, symbol_raw = _split_asset_leg_segment(seg)
-        asset_key = asset_raw.strip().lower()
-        if asset_key not in SUPPORTED_ASSET_TYPES:
-            raise ValueError(
-                "不支持的资产类型 %r；可选：%s" % (asset_raw, ", ".join(SUPPORTED_ASSET_TYPES))
-            )
-        key = (asset_key, symbol_raw)
-        if key in seen:
-            continue
-        seen.add(key)
-        legs_ordered.append((asset_key, symbol_raw))
-
-    if len(legs_ordered) < 2:
-        raise ValueError("有效前沿至少需要 2 个不重复标的（`类型,代码` 每行一条，或用 `;` 分隔）。")
-
-    return tuple(legs_ordered)
+    """Historical tuple API for comma/pipe-separated legs."""
+    return tuple(
+        (spec.asset_type, spec.symbol) for spec in parse_asset_list([text], syntax="legacy")
+    )
 
 
 def _fetch_legs_frames(

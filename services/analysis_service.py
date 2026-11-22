@@ -6,7 +6,6 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from analysis_metrics import get_quant_metrics
@@ -37,11 +36,9 @@ from data_sources.errors import EmptySymbolDataError
 from ohlcv import (
     REQUIRED_OHLCV_COLUMNS,
     DateLike,
-    compute_ohlcv_quality,
     prepare_ohlcv,
 )
-
-AssetLoaderFn = Callable[..., pd.DataFrame]
+from services.preparation import AssetLoaderFn as AssetLoaderFn, slice_to_requested_window
 
 
 def _extract_latest_snapshot(df: pd.DataFrame, metrics: Mapping[str, Any]) -> dict[str, Any]:
@@ -65,58 +62,6 @@ def _extract_latest_snapshot(df: pd.DataFrame, metrics: Mapping[str, Any]) -> di
         val = last_row[col]
         snapshot[str(col)] = None if pd.isna(val) else float(val)
     return snapshot
-
-
-def _slice_to_requested_window(
-    df: pd.DataFrame,
-    *,
-    asset_type: str,
-    symbol: str,
-    start_date: str,
-    end_date: str,
-) -> pd.DataFrame:
-    """Clip a loaded OHLCV frame to ``[start_date, end_date]`` and update slice quality if narrowed."""
-    idx = pd.to_datetime(df.index, errors="coerce")
-    valid_mask = ~pd.isna(idx)
-    if not valid_mask.any():
-        raise EmptySymbolDataError(
-            f"未找到标的 {asset_type}:{symbol} 在 {start_date}~{end_date} 的有效数据。"
-        )
-    idx_valid = pd.DatetimeIndex(idx[valid_mask])
-    if idx_valid.tz is not None:
-        idx_cmp = idx_valid.tz_convert("UTC").tz_localize(None).normalize()
-    else:
-        idx_cmp = idx_valid.normalize()
-
-    start_ts = pd.Timestamp(start_date).normalize()
-    end_ts = pd.Timestamp(end_date).normalize()
-    range_mask = (idx_cmp >= start_ts) & (idx_cmp <= end_ts)
-
-    full_mask = np.zeros(len(df), dtype=bool)
-    full_mask[np.asarray(valid_mask, dtype=bool)] = np.asarray(range_mask, dtype=bool)
-    if not full_mask.any():
-        raise EmptySymbolDataError(
-            f"未找到标的 {asset_type}:{symbol} 在 {start_date}~{end_date} 的有效数据。"
-        )
-    if full_mask.all():
-        return df
-
-    sliced = df.loc[full_mask].copy()
-    sliced.attrs = dict(df.attrs)
-    raw_quality = sliced.attrs.get("data_quality")
-    existing = dict(raw_quality) if isinstance(raw_quality, Mapping) else {}
-    if existing and "source_data_quality" not in sliced.attrs:
-        sliced.attrs["source_data_quality"] = dict(existing)
-    policy = str(existing.get("missing_policy", "drop") or "drop")
-    sliced.attrs["data_quality"] = compute_ohlcv_quality(
-        sliced,
-        missing_policy=policy,
-        dropped_invalid_rows=0,
-        filled_price_rows=0,
-        missing_volume_rows=0,
-    )
-    sliced.attrs["data_quality"]["quality_scope"] = "slice"
-    return sliced
 
 
 def _prepare_single_asset_frame(
@@ -153,7 +98,7 @@ def _prepare_single_asset_frame(
             f"未找到标的 {request.asset_type}:{request.symbol} 在 {request.start_date}~{request.end_date} 的有效数据。"
         )
 
-    work_df = _slice_to_requested_window(
+    work_df = slice_to_requested_window(
         loaded,
         asset_type=request.asset_type,
         symbol=request.symbol,
