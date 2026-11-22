@@ -1,7 +1,7 @@
 # 产品定位与开发路线图（Roadmap）
 
-> 状态：**M6 后端重构已完成，M7 前端重构待实施** · 更新：2026-11-22
-> V0.1（M0–M1）、V0.2（M2：`quant fetch` / `analyze`）、V0.3（M3：`quant compare` / `portfolio`）、V0.4（M4：独立报告渲染器 `reporting/` 与按需图表生成）及 V1.0（M5：Streamlit Web UI 全面重构并接入统一服务与渲染层，完成 Web/CLI 统一验收）已全部落地。现有功能与口径细节以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
+> 状态：**M6 后端重构与 M7 前端整体重构已完成** · 更新：2026-11-23
+> V0.1（M0–M1）、V0.2（M2：`quant fetch` / `analyze`）、V0.3（M3：`quant compare` / `portfolio`）、V0.4（M4：独立报告渲染器 `reporting/` 与按需图表生成）、V1.0（M5：Streamlit Web UI 接入统一服务与渲染层）及 M6/M7 前后端模块化重构已全部落地。现有功能与口径细节以 [README](../README.md)、[工程架构](ARCHITECTURE.md) 与 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md) 为准。
 >
 > **M0 重估提示**：因近期代码分支（Stages 1–5）已提前落地了多市场日历对齐、FX 换汇、9 项 OHLCV 质量诊断、SLSQP 精确有效前沿、Ledoit-Wolf 收缩、Walk-Forward 样本外回测与 Parquet 共享缓存，以下 M1/M3/M5 中的部分基础工作已具备实现，**后续开发须先对照 [M0 审计与契约](M0_AUDIT_AND_CONTRACTS.md#2-roadmapmd-实际完成度重估防止-m1m5-重复开发) 避免重复造轮子**。
 
@@ -173,9 +173,16 @@ quant portfolio etf:510300 us_stock:SPY --benchmark etf:510500 --base-currency C
 
 M6-0/1 固定离线黄金基线并完成契约迁移。M6-2/3 将输入解析、研究服务与数值模型拆分。M6-4 统一 CLI 和 Python 输出事务，保留旧入口。M6-5 通过可替换的行情仓库和不可变输入清单实现离线重算，覆盖资产、基准与 FX。验证依据见 [M6 实施记录](M6_BACKEND_REFACTOR_PLAN.md)。
 
-### M7 · 前端整体重构（待实施）
+### M7 · 前端整体重构（已完成）
 
-保留当前三工作区交互，下一阶段集中处理组件拆分、工作区状态与导出缓存失效。沿用 M6 的研究服务与结果契约。
+**目标**：在不修改后端金融算法、结果契约与 CLI 行为的前提下，将原有单体 `app.py` 升级为组件化、视觉现代、状态严谨的专业量化金融分析平台。
+
+**工作内容（已在 M7 落地）**
+- [x] **组件化与工作区拆分**：将 [app.py](../app.py) 精简为兼容门面入口，按职责拆分为 [ui/theme.py](../ui/theme.py)、[ui/labels.py](../ui/labels.py)、[ui/errors.py](../ui/errors.py)、[ui/state.py](../ui/state.py)、[ui/services_bridge.py](../ui/services_bridge.py)、可复用组件包 [ui/components/](../ui/components/)（顶栏、侧边栏、告警与空状态、指标卡与次级 KPI 网格、标签页图表浏览器、财务表格与统一导出面板）以及三大工作区 [ui/workspaces/](../ui/workspaces/)（单资产探索、多资产比较、投资组合研究）。
+- [x] **视觉设计系统与双主题支持**：引入金融终端级自适应（`auto`）/ 深色终端（`dark`）/ 浅色研报（`light`）主题系统、`tabular-nums` 等宽数字排版、响应式 KPI 网格与平滑暗色表格适配，并通过 `apply_ui_plotly_theme` 同步适配 Plotly 图表字色、网格与悬停提示框。
+- [x] **状态隔离与缓存失效加固**：引入单调递增 `result_version`、`figures_cache_key = (result_version, chart_types, theme_mode)` 与 `exports_cache_key = (result_version, sorted_skipped_charts)`，修复切换附加图表或 `proxy_url` 等参数时的缓存失效边界；切换主题仅重绘图表而不重复触发后端拉数与计算。
+- [x] **结构化错误分类与 Plotly 图表升级**：区分 `validation`（校验/金融语义拦截）、`empty_data`、`market_data`（网络/上游）、`dependency` 与 `computation` 五类故障提示，避免与正常负收益结果混淆；升级 [charts.py](../charts.py) 配色、十字准星、`rangeselector` 快捷区间切换与带单位 `hovertemplate`。
+- [x] **回归与浏览器视觉验收**：新增 [tests/test_m7_frontend_refactor.py](../tests/test_m7_frontend_refactor.py)，完成全量 354 项 `pytest`、Ruff、依赖检查、Streamlit 冒烟测试及 Chrome CDP 双主题/三工作区/多视口（1440/1280/768）实际界面验收。
 
 ## 5. 版本与交付重点
 
@@ -186,6 +193,7 @@ M6-0/1 固定离线黄金基线并完成契约迁移。M6-2/3 将输入解析、
 | **V0.3** | M3 | **已完成**：多资产比较（`quant compare`）、组合与无前视偏差回测（`quant portfolio`）、分布/Memmel/风险贡献统计及 M2 事务性落盘与解析加固 |
 | **V0.4** | M4 | **已完成**：独立报告与按需图表渲染包 [reporting/](../reporting/)（Markdown/HTML 报告 + HTML/PNG/SVG 图表、计算与渲染分离及 `--report`/`--charts`/`--chart-types` CLI 集成） |
 | **V1.0** | M5 | **已完成**：[app.py](../app.py) 全面接入 `services/` + `reporting/` 三工作区平台重构、Web/CLI 数值口径与参数默认严格对齐、M5 一致性与 `AppTest` 回归通过 |
+| **M6 / M7** | M6 + M7 | **已完成**：M6 后端契约/研究输入快照/模型分层重构；M7 Streamlit `ui/` 组件与工作区拆分、明暗主题、状态/导出缓存失效与 Plotly 交互升级 |
 
 > M0–M5（V1.0）核心建设已完成；后续演进围绕实盘数据源适应与按实际使用场景评估扩展能力。
 

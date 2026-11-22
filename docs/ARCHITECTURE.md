@@ -1,6 +1,6 @@
 # 工程架构、数据口径与兼容边界
 
-> 更新日期：2026-11-22（M6 后端重构完成）
+> 更新日期：2026-11-23（M6 后端重构与 M7 前端整体重构已完成）
 > 详细领域契约与迁移规范见 [领域契约文档](CONTRACTS.md)；M6 基线统计见 [M6 基线报告](M6_BASELINE.md)；历史阶段设计见 [M0 审计与契约文档](M0_AUDIT_AND_CONTRACTS.md)；长期阶段规划与 V0.1–V1.0 交付记录见 [产品定位与开发路线图](ROADMAP.md)。
 
 ---
@@ -12,7 +12,11 @@
 - **入口层**：
   - [quant_cli.py](../quant_cli.py)：面向 AI Agent 的命令行入口（已注册 CLI 脚本 `quant`，提供 `quant fetch`、`quant analyze`、`quant compare` 与 `quant portfolio`）。`stdout` 严格输出 JSON，`stderr` 输出诊断日志与结构化 JSON 错误；严格校验资产类型输入（裸代码无 `-t/--asset-type` 及非法/空 `TYPE:` / `TYPE|` 前缀直接以退出码 `2` 失败，不静默猜为 `etf`）；`--output <dir>` 事务性写入 `result.json` 与类型化 Parquet（如 `data.parquet`、`prices.parquet`、`returns.parquet`、`correlation.parquet`、`covariance.parquet`、`rolling_metrics.parquet`、`weights.parquet`、`frontier.parquet`、`backtest.parquet`、`weight_history.parquet`，可选 companion CSV）及分级退出码（`0`/`2`/`3`/`4`/`5`/`1`）；`analyze`/`compare`/`portfolio` 按需通过 `--report`、`--charts`、`--chart-types` 触发报告与图表落盘，未请求图表时绝不导入绘图依赖。
   - [main.py](../main.py)：原有全 13 类资产命令行入口（已注册 CLI 脚本 `quantitative-analysis`），保留交互/无头文本诊断报告、`mplfinance` 图表与 CSV 导出兼容。
-  - [app.py](../app.py)：M5（V1.0）重构后的 Streamlit Web 平台，围绕 **📈 单资产探索**、**⚖️ 多资产比较**、**🎯 投资组合研究** 三个工作区组织交互与展示，全面调用 `fetch_single_asset` / `analyze_single_asset` / `compare_assets` / `analyze_portfolio` 并复用 [reporting/](../reporting/) 与 `build_plotly_figures` 渲染图表及 `.md`/`.html`/`.json`/`.csv` 导出，按工作区隔离 `st.session_state`（含 `@st.cache_data` 直接绑定 `asset_loader` 入口确保 `AppTest` 跨模块缓存清理一致），并与 CLI 对齐默认参数（包括组合默认 `monthly` 调仓）。
+  - [app.py](../app.py) 与 [ui/](../ui/)：M7 重构后的模块化 Streamlit Web 平台。`app.py` 保留轻量化门面入口、`__all__` 向后兼容导出及绑定在 `asset_loader` 入口上的 `@st.cache_data` 缓存包装（确保 `import app` 与 `AppTest` 缓存清理一致）；实际展示与交互拆分为：
+    - [ui/theme.py](../ui/theme.py) 与 [ui/labels.py](../ui/labels.py)：支持 `auto`（继承 Streamlit 画布明暗度）/ `dark`（深色终端）/ `light`（浅色研报）双主题设计系统、`tabular-nums` 等宽数字排版、响应式网格与 `apply_ui_plotly_theme` Plotly 主题同步；
+    - [ui/errors.py](../ui/errors.py)：五类故障分类器（`validation` / `empty_data` / `market_data` / `dependency` / `computation`），与正常负收益统计严格区分；
+    - [ui/state.py](../ui/state.py) 与 [ui/services_bridge.py](../ui/services_bridge.py)：按 `_workspace_single` / `_workspace_compare` / `_workspace_portfolio` 隔离 `st.session_state` 并同步 `_analysis_results`，引入 `result_version`、`figures_cache_key = (result_version, chart_types, theme_mode)` 与 `exports_cache_key = (result_version, sorted_skipped_charts)` 确保参数/图表/主题变更下缓存准确失效且不重复触发后端拉数；
+    - [ui/components/](../ui/components/)（`header.py`、`sidebar.py`、`alerts.py`、`metrics.py`、`charts.py`、`tables.py`、`exports.py`）与 [ui/workspaces/](../ui/workspaces/)（`single_asset.py`、`compare.py`、`portfolio.py`）：组织单资产探索、多资产比较、投资组合研究三大工作区，全部计算仍直接复用 `services/` 与 `reporting/`，并与 CLI 对齐默认参数。
 - **契约与分析服务层**：
   - [contracts.py](../contracts.py)：版本化统一数据契约（`SCHEMA_VERSION = "0.2.0"`、`SUPPORTED_SCHEMA_VERSIONS = ("0.1.0", "0.2.0")`、`SOFTWARE_VERSION` 对应 `1.0.0`）：单资产契约 `AnalysisRequest`、`SeriesMetadata`、`QualityReport`、`AnalysisResult`，与多资产契约 `AssetSpec`、`CompareRequest`、`PortfolioRequest`、`MultiAssetResult`（均支持 `to_dict(include_data=...)` 与 strict JSON `allow_nan=False` 序列化）；集中维护 `METRIC_DEFINITIONS`、不变量校验 `validate_result_invariants` 与 `df.attrs` 双向一致性校验（`sync_metadata_to_frame` / `validate_frame_metadata_consistency`）。
   - [services/analysis_service.py](../services/analysis_service.py)：解耦 UI/CLI 的单资产服务（`fetch_single_asset` 与 `analyze_single_asset` 共用 `_prepare_single_asset_frame` 完成窗口裁剪、复权/收益口径显式推导与 FX 折算）。

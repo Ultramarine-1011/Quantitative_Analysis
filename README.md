@@ -2,7 +2,7 @@
 
 **Python 多资产金融数据分析与可视化工具**（仅维护 Python 3.14.x）。
 
-项目围绕统一的 **OHLCV（开高低收量）** 数据契约，整合跨市场行情检索、数据清洗与质量诊断、技术特征工程、风险收益统计指标、精确有效前沿优化及无前视偏差样本外回测。现已完成 **M0–M5（V1.0）** 全部阶段演进，通过 **Streamlit Web 交互平台** 与 **Python 命令行（`quant` Agent CLI / `quantitative-analysis`）** 提供统一计算口径、交互可视化与结构化报告能力。
+项目围绕统一的 **OHLCV（开高低收量）** 数据契约，整合跨市场行情检索、数据清洗与质量诊断、技术特征工程、风险收益统计指标、精确有效前沿优化及无前视偏差样本外回测。现已完成 **M0–M7** 全部阶段演进，通过 **模块化 Streamlit Web 分析平台（`app.py` + `ui/`）** 与 **Python 命令行（`quant` Agent CLI / `quantitative-analysis`）** 提供统一计算口径、交互可视化与结构化报告能力。
 
 > 本文严格对照当前源码说明已实现能力；工程架构与阶段演进记录请参阅 [工程架构](docs/ARCHITECTURE.md) 与 [产品定位与开发路线图](docs/ROADMAP.md)。
 
@@ -13,7 +13,7 @@
 - **多资产数据获取与统一处理**：支持 13 类跨市场资产元数据与行情路由、跨市场交易日历对齐（`common_trading_dates` / `weekly_friday` / `mtm_outer`）、基准货币折算（`CNY` / `USD` / `LOCAL`）与 Web/CLI 共享 Parquet 磁盘缓存。
 - **OHLCV 清洗、校验与特征工程**：标准化六列 OHLCV 契约（无时区升序唯一日期索引），输出 9 项质量诊断计数，并计算 SMA、EMA、布林带、RSI(14)、MACD、对数收益滚动波动率及回撤序列。
 - **风险收益统计与组合模型**：计算累计收益、CAGR、年化波动率、最大回撤、Sharpe / Sortino / Calmar 与 95% 日 VaR / CVaR；支持分布正态性检验（Jarque-Bera）、Memmel 夏普差异检验、Ledoit-Wolf 协方差收缩、SciPy SLSQP 精确有效前沿（GMV 与切点最大夏普）、Euler 风险贡献、GBM 蒙特卡洛模拟及 Train/Test 与 Walk-Forward 样本外回测。
-- **Web 统一平台（M5）与交互导出**：重构后的 [app.py](app.py) 全面对接 `analyze_single_asset`、`compare_assets`、`analyze_portfolio`、`build_plotly_figures` 与 `reporting/` 渲染器，围绕 **单资产探索 / 多资产比较 / 投资组合研究** 三个核心工作区组织界面（数学原理与高级参数按需折叠），支持同一份分析结果的自适应主题 Plotly 交互图表、Markdown / 自包含 HTML 研究报告、strict JSON 与 UTF-8 BOM CSV 一键预览和导出，确保相同数据快照与参数下 Web 与 CLI 输出严格一致。
+- **Web 统一平台（M5–M7）与交互导出**：模块化拆分的 [app.py](app.py) 与 [ui/](ui/) 全面对接 `analyze_single_asset`、`compare_assets`、`analyze_portfolio`、`build_plotly_figures` 与 `reporting/` 渲染器，围绕 **单资产探索 / 多资产比较 / 投资组合研究** 三个核心工作区组织界面，支持 `auto` / 深色终端 / 浅色研报主题切换、标签页图表浏览（含 `1M–全部` 区间快捷按钮与十字准星悬停）、五类故障分类提示、版本化状态与导出缓存失效以及 Markdown / 自包含 HTML 研究报告、strict JSON 与 UTF-8 BOM CSV 一键预览和导出，确保相同数据快照与参数下 Web 与 CLI 输出严格一致。
 - **Agent CLI 与标准化输出（`quant`）**：提供面向 AI Agent 自动化调用的 `quant fetch`、`quant analyze`、`quant compare` 与 `quant portfolio` 命令，支持全 13 类资产检索、跨市场日历与汇率对齐、多资产统计比较、组合优化（SLSQP 精确有效前沿、`min_variance`/`max_sharpe`/`risk_parity`/`inverse_volatility`/`equal_weight`/`custom`）与严格无前视偏差样本外回测，事务性原子输出版本化 `result.json`（含指标、权重、风险贡献、模型假设、数据质量与警告）及类型化 Parquet 产物；`stdout` 严格输出 JSON，`stderr` 输出日志与结构化错误，附稳定退出码（`0`/`2`/`3`/`4`/`5`/`1`）；默认不加载绘图库，按需通过 `--report` / `--charts` / `--chart-types` 生成可阅读报告与图表。
 - **独立报告与图表渲染（M4 `reporting/`）**：支持按需生成结构化 `Markdown`（`report.md`）与离线自包含 `HTML`（`report.html`）研究报告及多格式图表（交互式自包含 Plotly `html` 与 Matplotlib/`mplfinance` 静态 `png`/`svg`，输出至 `<output>/charts/`），严格遵循计算与渲染分离契约（仅消费 `AnalysisResult`/`MultiAssetResult` 或磁盘 `result.json` + Parquet，不重复抓取数据或重算指标），并在展示层显式区分历史实现统计、统计假设检验、样本内前视参考、样本外因果回测与蒙特卡洛/Dirichlet 模拟，统一以非正百分比（`<= 0%`）展示水下回撤并正确处理 `yield_level_not_return` 等阻断指标。
 - **既有终端与 Web 入口兼容**：保留 `python main.py` / `quantitative-analysis` 终端报告、`mplfinance` 静态图表导出与 Streamlit Web 看板完整可用。
@@ -216,7 +216,7 @@ flowchart TB
 
 | 模块 | 职责 |
 | --- | --- |
-| `app.py` / `charts.py` | M5（V1.0）重构后的 Streamlit 三工作区 Web 平台（调用统一 `services`、工作区隔离会话状态、折叠数学说明与导出）；主题自适应 Plotly 图表构建器（供 Web 与 `reporting` 共用） |
+| `app.py` / `ui/` / `charts.py` | M7 组件化重构后的 Streamlit 三工作区 Web 平台（门面入口 `app.py` + `ui/theme.py`、`ui/errors.py`、`ui/state.py`、`ui/components/`、`ui/workspaces/`）；主题自适应 Plotly 图表构建器（供 Web 与 `reporting` 共用） |
 | `quant_cli.py` | V1.0 Agent CLI 入口（`quant fetch` / `quant analyze` / `quant compare` / `quant portfolio`），事务性多文件原子输出 `result.json` + Parquet + 按需报告/图表，附分级退出码 |
 | `reporting/` | M4 独立渲染包（`report_renderer.py`、`chart_renderer.py`、`formatting.py`）：消费内存结果或磁盘 `result.json` + Parquet 生成 Markdown/HTML 报告及 HTML/PNG/SVG 图表，延迟加载绘图依赖 |
 | `main.py` / `visualizer.py` | 原全 13 类资产命令行入口（`quantitative-analysis`）；基于 `mplfinance` 的静态多面板/纯折线图表渲染 |
@@ -237,7 +237,14 @@ flowchart TB
 
 ```text
 Quantitative_Analysis/
-├── app.py                  # Streamlit Web 入口
+├── app.py                  # Streamlit Web 兼容门面入口
+├── ui/                     # M7 模块化前端主题、状态、错误分类、组件与工作区
+│   ├── theme.py                # 自适应/深色/浅色设计系统与 Plotly 主题适配
+│   ├── errors.py               # 五类交互错误分类器与提示格式化
+│   ├── state.py                # 隔离工作区状态与版本化导出/图表缓存失效
+│   ├── services_bridge.py      # 统一服务桥接、质量警告与预览解析
+│   ├── components/             # 顶栏、侧边栏、告警、KPI、图表、表格与导出组件
+│   └── workspaces/             # 单资产探索、多资产比较、投资组合研究工作区
 ├── quant_cli.py            # Agent CLI 入口（quant fetch / analyze / compare / portfolio）
 ├── main.py                 # 原交互/静态图 CLI 入口（quantitative-analysis）
 ├── asset_catalog.py        # 资产元数据、收益语义与预设组合
@@ -286,7 +293,7 @@ Quantitative_Analysis/
 
 | 能力状态 | 具体内容 |
 | --- | --- |
-| **当前已实现（M0–M5 / V1.0）** | 13 类资产适配、别名归一化与带覆盖回滚/锁保护的共享 Parquet 缓存；强类型契约 [contracts.py](contracts.py) 与无 UI 依赖服务 [services/analysis_service.py](services/analysis_service.py) / [services/multi_asset_service.py](services/multi_asset_service.py)；Agent CLI 完整提供 `quant fetch`、`quant analyze`、`quant compare`、`quant portfolio`（严格资产类型解析、多文件事务性落盘与陈旧受管产物清理）；跨市场日历对齐与 FX 折算；高阶矩/JB 正态与 Memmel 夏普检验、相对基准、滚动统计、Euler 风险贡献、Ledoit-Wolf + SLSQP 精确有效前沿与样本外回测；**M4 独立报告与图表渲染器 [reporting/](reporting/)**（按需 `--report` / `--charts` 与 `--chart-types`，统一水下回撤符号与前视偏差/语义阻断警示）；**M5 Web UI 重构**（[app.py](app.py) 全面迁移至统一分析核心与共享可视化/报告渲染器，围绕单资产探索、多资产比较与投资组合研究三工作区组织，通过 Web/CLI 一致性与 `AppTest` 验收）与 `main.py` 兼容 CLI |
+| **当前已实现（M0–M7）** | 13 类资产适配、别名归一化与带覆盖回滚/锁保护的共享 Parquet 缓存；强类型契约 [contracts.py](contracts.py) 与无 UI 依赖服务 [services/](services/)（含 M6 研究输入快照离线重放与模型分层）；Agent CLI 完整提供 `quant fetch`、`quant analyze`、`quant compare`、`quant portfolio`；跨市场日历对齐与 FX 折算；高阶矩/JB 正态与 Memmel 夏普检验、相对基准、滚动统计、Euler 风险贡献、Ledoit-Wolf + SLSQP 精确有效前沿与样本外回测；**M4 独立报告与图表渲染器 [reporting/](reporting/)**；**M7 前端整体重构**（[app.py](app.py) 拆分为 [ui/](ui/) 可复用组件与三工作区，支持深浅双主题、状态/导出缓存精确失效、五类错误分类与 Plotly 终端图表升级）与 `main.py` 兼容 CLI |
 
 详细设计原则、M0–M5 阶段验收标准与 V0.1–V1.0 迭代计划，请参阅 **[产品定位与开发路线图 (docs/ROADMAP.md)](docs/ROADMAP.md)**。
 

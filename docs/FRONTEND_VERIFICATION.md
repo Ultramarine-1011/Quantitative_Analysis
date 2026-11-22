@@ -42,3 +42,19 @@
 使用独立离线样本启动 Streamlit 1.28，并通过 computer-use 复现了更实质的问题：搭配 Plotly 7 时 K 线缺失，价格序列被错误画成 0–120 的递增曲线。根据图表序列化数据及 [Plotly 官方迁移说明](https://plotly.com/python/v6-migration/)，推断为旧版前端与新版数组格式不兼容。Web 最低版本提高至已验证的 Streamlit 1.50；当前用户环境无需升级。旧版 AppTest 本身的格式化 selectbox 错误未通过修改产品逻辑绕过。
 
 独立 Python 3.12 / Streamlit 1.50 / NumPy 1.26 / pandas 2.3 / PyArrow 20 / Plotly 7 环境通过 10 项前端与图表回归，并在浏览器复验 K 线显示。该临时样本和环境仅用于验收，不进入生产代码。
+
+---
+
+# M7 前端整体重构验收记录（2026-11-23）
+
+> 环境：Python 3.14.5 / Streamlit 1.67.0 / Plotly 7.1.0 / Google Chrome 157（Headless CDP 实际渲染与交互检查）
+
+## 架构与交互验收
+
+- **入口冒烟与冷加载检查**：直接启动 `streamlit run app.py` 并通过 Chrome CDP 访问，确认 `/_stcore/health` 返回 `ok`，零控制台/JS 异常；修正冷加载阶段 `auto` 主题误用系统 `prefers-color-scheme: dark` 导致浅色画布上出现深色卡片的错位问题。
+- **三工作区与双主题浏览器检查**（基于离线确定性行情桩运行完整 `app.main()`）：
+  - **单资产探索**：验证 `auto` / `dark`（深色终端）/ `light`（浅色研报）三种外观下顶栏徽章、3 项主 KPI + 5 项次级 `tabular-nums` KPI 网格、标签页切换 K 线/滚动波动率/水下回撤/归一化图表、`1M–全部` `rangeselector` 与导出下载按钮均正常显示、文字与图例无遮挡。
+  - **多资产比较**：验证预设模板、标的实时解析预览芯片、对齐样本与最优指标高亮卡片、绩效对照表、统计推断表与四联交互图在明暗双主题下表现正常。
+  - **投资组合研究**：验证 OOS 验证协议横幅、目标权重与 Euler 风险贡献表、SLSQP 有效前沿/回测净值与回撤双面板图、敏感性抽屉与多 CSV/MD/HTML/JSON 导出区在明暗双主题下表现正常（并修正了暗色模式下 Streamlit 1.67 `stSelectbox`、`stNumberInputContainer`、`stAlert` 及 `stDataFrame` 的对比度适配）。
+- **响应式视口检查**：在 `1440x1080`、`1280x900` 与 `768x1024` 视口下执行浏览器 DOM 宽度校验，均满足 `scrollWidth <= innerWidth + 2`，无整页横向溢出。
+- **自动化回归**：新增 `tests/test_m7_frontend_refactor.py`（9 项测试覆盖模块边界、主题与 Plotly `bdata`/透明背景适配、5 类错误分类与正常负收益区分、状态与导出缓存失效、输入预览与 Plotly 图表升级），全量离线 `pytest` 354 项、Ruff 检查/格式及 `pip check` 全部通过。
