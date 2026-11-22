@@ -7,6 +7,7 @@ import json
 import os as os
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from asset_catalog import (
     resolve_adjustment,
 )
 from asset_inputs import parse_asset_list, parse_asset_token, parse_weights
+from asset_loader import DEFAULT_REPOSITORY
 from asset_resolver import format_diagnosis_user_message, resolve_analysis_date_window
 from contracts import (
     SCHEMA_VERSION,
@@ -36,8 +38,10 @@ from contracts import (
     MultiAssetResult,
     PortfolioRequest,
 )
-from data_sources.errors import DataFetchError
+from data_sources.errors import DataFetchError, SnapshotError
 from data_sources.network import apply_default_network_proxy_policy, classify_network_exception
+from data_sources.repository import QuoteRepository
+from data_sources.research import ResearchRepository
 from reporting.output import write_outputs
 from services.analysis_service import AssetLoaderFn, analyze_single_asset, fetch_single_asset
 from services.multi_asset_service import analyze_portfolio, compare_assets
@@ -130,6 +134,15 @@ def _add_shared_runtime_arguments(
         default=None,
         help="HTTP/SOCKS proxy URL (e.g. http://127.0.0.1:7890)",
     )
+    parser.add_argument(
+        "--data-mode",
+        choices=("online", "prefer_local", "offline"),
+        help="Use fresh quotes, prefer a published snapshot, or replay without network access",
+    )
+    parser.add_argument(
+        "--snapshot-dir", type=Path, metavar="DIR", help="Portable research input store"
+    )
+    parser.add_argument("--snapshot-id", help="Pin an immutable input manifest for offline replay")
     parser.add_argument(
         "--refresh",
         action="store_true",
@@ -544,7 +557,7 @@ def _validate_output_targets(
 def _classify_cli_exception(exc: BaseException) -> tuple[str, int]:
     if isinstance(exc, _CliUsageError):
         return "caller", EXIT_USAGE_OR_CALLER
-    if isinstance(exc, ArtifactIOError):
+    if isinstance(exc, (ArtifactIOError, SnapshotError)):
         return "io_error", EXIT_UNEXPECTED
     if isinstance(exc, DataFetchError):
         category = classify_network_exception(exc)
@@ -614,6 +627,7 @@ def run_cli_command(
     argv: Sequence[str] | None = None,
     *,
     loader: AssetLoaderFn | None = None,
+    repository: QuoteRepository | None = None,
     fx_loader: Any | None = None,
     usdt_usd_loader: Any | None = None,
 ) -> tuple[int, AnalysisResult | MultiAssetResult | None]:
@@ -628,6 +642,37 @@ def run_cli_command(
         args = _parse_args(argv)
         command_hint = str(args.command)
         quiet = bool(getattr(args, "quiet", False))
+
+        research = None
+        if repository is not None and loader is not None:
+            raise ValueError("Supply either a repository or a loader.")
+        if args.data_mode or args.snapshot_dir or args.snapshot_id:
+            mode = args.data_mode or ("offline" if args.snapshot_id else "prefer_local")
+            if mode == "offline" and args.refresh:
+                raise ValueError("--refresh is incompatible with offline replay.")
+            directory = (
+                args.snapshot_dir or Path.home() / ".local/share/quantitative_analysis/snapshots"
+            )
+            research = ResearchRepository(
+                directory,
+                mode=mode,
+                repository=repository or DEFAULT_REPOSITORY,
+                snapshot_id=args.snapshot_id,
+                asset_loader=loader,
+                fx_loader=fx_loader,
+                usdt_usd_loader=usdt_usd_loader,
+                refresh=bool(args.refresh),
+            )
+            loader, fx_loader, usdt_usd_loader = research.load, research.fx, research.usdt
+        elif repository is not None:
+            loader = repository.load
+            if fx_loader is None:
+
+                def fx_loader(symbol, start, end):
+                    return repository.load("fx", symbol, start, end)
+
+        if research is None or research.mode != "offline":
+            apply_default_network_proxy_policy()
 
         start_ts, end_ts = resolve_analysis_date_window(args.start, args.end)
         out_dir, csv_export_path = _validate_output_targets(
@@ -707,7 +752,6 @@ def run_cli_command(
                 f"({request.start_date}..{request.end_date}, base={request.base_currency})",
                 quiet=quiet,
             )
-            apply_default_network_proxy_policy()
 
             if args.command == "fetch":
                 result: AnalysisResult | MultiAssetResult = fetch_single_asset(
@@ -755,7 +799,6 @@ def run_cli_command(
                 f"({cmp_req.start_date}..{cmp_req.end_date}, cal={cmp_req.calendar_mode}, base={cmp_req.base_currency})",
                 quiet=quiet,
             )
-            apply_default_network_proxy_policy()
             result = compare_assets(
                 cmp_req,
                 loader=loader,
@@ -808,7 +851,6 @@ def run_cli_command(
                 f"val={port_req.validation_mode}, base={port_req.base_currency})",
                 quiet=quiet,
             )
-            apply_default_network_proxy_policy()
             result = analyze_portfolio(
                 port_req,
                 loader=loader,
@@ -820,6 +862,11 @@ def run_cli_command(
             include_data = args.command == "fetch" and out_dir is None
         else:
             include_data = bool(args.include_data)
+
+        if research is not None:
+            result = replace(
+                result, data_summary={**result.data_summary, "snapshot_id": research.finish()}
+            )
 
         final_result = write_outputs(
             result,

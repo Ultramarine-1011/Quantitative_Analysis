@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any, Literal
 
 import pandas as pd
@@ -14,11 +13,7 @@ from asset_catalog import (
     ASSET_RETURN_BASIS,
     ASSET_RETURN_BASIS_NOTES,
     GOLD_SYMBOL_ALIASES,
-    SUPPORTED_ADJUSTMENTS,
-    SUPPORTED_ASSET_TYPES,
     normalize_symbol_alias,
-    resolve_adjustment,
-    resolve_return_basis,
 )
 from asset_inputs import parse_asset_list
 from asset_resolver import load_china_equity_ohlcv
@@ -34,7 +29,6 @@ from data_fetcher import (
     load_global_market_data,
     load_reit_data,
 )
-from data_sources.cache import load_cached_ohlcv, save_cached_ohlcv
 from data_sources.crypto import (
     build_ccxt_proxy_config,
     fetch_crypto_data,
@@ -43,9 +37,7 @@ from data_sources.crypto import (
     normalize_proxy_url,
     redact_proxy_url,
 )
-from ohlcv import (
-    validate_analysis_date_range as _validate_date_range,
-)
+from data_sources.repository import CachedQuoteRepository, QuoteRequest
 
 # 兼容已有单测与调用方直接访问原私有函数名。
 _build_ccxt_proxy_config = build_ccxt_proxy_config
@@ -111,53 +103,10 @@ def _fetch_gold_data(symbol: str, start_date: object, end_date: object) -> pd.Da
     return filtered
 
 
-def load_asset_data(
-    asset_type: str,
-    symbol: str,
-    start_date: object,
-    end_date: object,
-    proxy_url: str | None = None,
-    *,
-    adjust: str | None = None,
-    force_refresh: bool = False,
-) -> pd.DataFrame:
-    """统一加载多类资产 OHLCV（契约一致），支持共享持久化缓存与 ``adjust`` 复权口径。"""
-    start_date, end_date = _validate_date_range(start_date, end_date)
-    asset_key = str(asset_type).strip().lower()
-    if asset_key not in SUPPORTED_ASSET_TYPES:
-        raise ValueError("不支持的资产类型: %s" % asset_type)
-    if adjust is not None:
-        if asset_key in SUPPORTED_ADJUSTMENTS:
-            resolve_adjustment(asset_key, adjust)
-        elif adjust != "":
-            resolve_adjustment(asset_key, adjust)
-    if asset_key == "crypto" and proxy_url is not None:
-        _normalize_proxy_url(proxy_url)
-
-    cached = load_cached_ohlcv(
-        asset_key,
-        symbol,
-        start_date,
-        end_date,
-        adjust=adjust,
-        force_refresh=force_refresh,
-    )
-    if cached is not None:
-        resolved_sym = str(cached.attrs.get("symbol", symbol) or symbol).strip()
-        cached.attrs.setdefault("asset_type", asset_key)
-        if asset_key in SUPPORTED_ADJUSTMENTS and "adjust" not in cached.attrs:
-            cached.attrs["adjust"] = resolve_adjustment(asset_key, adjust)
-        cached.attrs["return_basis"] = resolve_return_basis(
-            asset_key, adjust=adjust, attrs=cached.attrs
-        )
-        cached.attrs.setdefault(
-            "canonical_symbol", normalize_symbol_alias(asset_key, resolved_sym or symbol)
-        )
-        cached.attrs.setdefault(
-            "currency", infer_asset_currency(asset_key, resolved_sym, cached.attrs)
-        )
-        return cached
-
+def fetch_market_quotes(request: QuoteRequest, *, proxy_url: str | None = None) -> pd.DataFrame:
+    """Built-in vendor routing; cache policy belongs to the repository."""
+    asset_key, symbol = request.asset_type, request.symbol
+    start_date, end_date, adjust = request.start, request.end, request.adjust
     # 这里是 Web/CLI 的数据总路由：不同资产来源不同，但返回值都遵循统一 OHLCV 契约。
     if asset_key == "etf":
         china_sym = normalize_symbol_alias(asset_key, symbol)
@@ -226,29 +175,32 @@ def load_asset_data(
     else:
         df = load_fx_data(symbol, start_date, end_date)
 
-    resolved_sym = str(df.attrs.get("symbol", symbol) or symbol).strip()
-    df.attrs.setdefault("asset_type", asset_key)
-    if asset_key in SUPPORTED_ADJUSTMENTS and "adjust" not in df.attrs:
-        df.attrs["adjust"] = resolve_adjustment(asset_key, adjust)
-    df.attrs["return_basis"] = resolve_return_basis(asset_key, adjust=adjust, attrs=df.attrs)
-    df.attrs.setdefault(
-        "canonical_symbol", normalize_symbol_alias(asset_key, resolved_sym or symbol)
-    )
-    df.attrs.setdefault("currency", infer_asset_currency(asset_key, resolved_sym, df.attrs))
-    df.attrs.setdefault("fetched_at", datetime.now(UTC).isoformat())
-    df.attrs.setdefault("cache_hit", False)
-    if not df.empty:
-        saved_path = save_cached_ohlcv(
-            df,
-            asset_key,
-            symbol,
-            start_date,
-            end_date,
-            adjust=adjust,
-        )
-        if saved_path is not None:
-            df.attrs["cache_path"] = str(saved_path)
     return df
+
+
+def load_asset_data(
+    asset_type: str,
+    symbol: str,
+    start_date: object,
+    end_date: object,
+    proxy_url: str | None = None,
+    *,
+    adjust: str | None = None,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """Compatibility loader using the shared TTL cache and built-in provider."""
+    return DEFAULT_REPOSITORY.load(
+        asset_type,
+        symbol,
+        start_date,
+        end_date,
+        proxy_url,
+        adjust=adjust,
+        force_refresh=force_refresh,
+    )
+
+
+DEFAULT_REPOSITORY = CachedQuoteRepository(fetch_market_quotes, namespace="")
 
 
 def load_multiple_etfs_close(

@@ -23,3 +23,7 @@ class ChinaEquityPipelineError(DataFetchError):
     def __init__(self, *args: object, network_related: bool = True) -> None:
         super().__init__(*args)
         self.network_related = bool(network_related)
+
+
+class SnapshotError(OSError):
+    """A required offline input is missing, damaged, or incompatible."""

@@ -140,12 +140,18 @@ def canonical_cache_adjust(asset_type: str, adjust: str | None) -> str:
     return ""
 
 
-def build_cache_key(asset_type: str, symbol: object, adjust: str | None = None) -> str:
+def build_cache_key(
+    asset_type: str, symbol: object, adjust: str | None = None, *, namespace: str = ""
+) -> str:
     """Build a deterministic SHA-256 hex cache key for ``(asset_type, symbol, adjust)``."""
     asset_key = str(asset_type).strip().lower()
     sym_key = canonical_cache_symbol(asset_key, symbol)
     adj_key = canonical_cache_adjust(asset_key, adjust)
-    payload = json.dumps([asset_key, sym_key, adj_key], ensure_ascii=False, separators=(",", ":"))
+    payload = json.dumps(
+        ([namespace] if namespace else []) + [asset_key, sym_key, adj_key],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -153,7 +159,7 @@ def _entry_paths(cache_dir: Path, key: str) -> tuple[Path, Path]:
     return cache_dir / f"{key}.parquet", cache_dir / f"{key}.meta.json"
 
 
-def _to_json_safe(value: Any) -> Any:
+def json_safe_attrs(value: Any) -> Any:
     """Convert DataFrame ``attrs`` recursively into strict JSON-serializable objects."""
     if value is None or isinstance(value, (bool, str)):
         return value
@@ -165,11 +171,11 @@ def _to_json_safe(value: Any) -> Any:
     if isinstance(value, (pd.Timestamp, datetime, date)):
         return value.isoformat()
     if isinstance(value, np.ndarray):
-        return [_to_json_safe(item) for item in value.tolist()]
+        return [json_safe_attrs(item) for item in value.tolist()]
     if isinstance(value, dict):
-        return {str(k): _to_json_safe(v) for k, v in value.items()}
+        return {str(k): json_safe_attrs(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
-        return [_to_json_safe(item) for item in value]
+        return [json_safe_attrs(item) for item in value]
     try:
         if pd.isna(value):
             return None
@@ -264,6 +270,7 @@ def load_cached_ohlcv(
     end_date: object,
     *,
     adjust: str | None = None,
+    namespace: str = "",
     ttl_seconds: float | None = None,
     force_refresh: bool = False,
 ) -> pd.DataFrame | None:
@@ -282,7 +289,7 @@ def load_cached_ohlcv(
     cache_dir = get_cache_dir()
     if not cache_dir.is_dir():
         return None
-    key = build_cache_key(asset_type, symbol, adjust=adjust)
+    key = build_cache_key(asset_type, symbol, adjust=adjust, namespace=namespace)
     parquet_path, meta_path = _entry_paths(cache_dir, key)
     if not (meta_path.is_file() and parquet_path.is_file()):
         return None
@@ -369,6 +376,7 @@ def save_cached_ohlcv(
     end_date: object,
     *,
     adjust: str | None = None,
+    namespace: str = "",
 ) -> Path | None:
     """Persist a non-empty OHLCV DataFrame atomically as Parquet + JSON sidecar."""
     if not is_cache_enabled() or df is None or df.empty:
@@ -377,7 +385,7 @@ def save_cached_ohlcv(
     req_start = coerce_analysis_date(start_date, "start_date")
     req_end = coerce_analysis_date(end_date, "end_date")
     cache_dir = get_cache_dir()
-    key = build_cache_key(asset_type, symbol, adjust=adjust)
+    key = build_cache_key(asset_type, symbol, adjust=adjust, namespace=namespace)
     parquet_path, meta_path = _entry_paths(cache_dir, key)
 
     to_store = df.copy()
@@ -402,7 +410,7 @@ def save_cached_ohlcv(
             cov_end = last_ts
 
     cached_at_ts = float(time.time())
-    clean_attrs = _to_json_safe(
+    clean_attrs = json_safe_attrs(
         {k: v for k, v in dict(df.attrs).items() if k not in _TRANSIENT_OR_SENSITIVE_ATTRS}
     )
     if not clean_attrs.get("fetched_at"):

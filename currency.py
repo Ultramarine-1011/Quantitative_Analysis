@@ -11,6 +11,7 @@ import pandas as pd
 
 from asset_catalog import ASSET_DEFAULT_CURRENCY
 from data_fetcher import load_fx_data
+from data_sources.errors import SnapshotError
 from ohlcv import DateLike, compute_ohlcv_quality
 
 SUPPORTED_BASE_CURRENCIES: tuple[str, ...] = ("CNY", "USD", "LOCAL")
@@ -274,6 +275,8 @@ def resolve_fx_rate_series(
                 warnings.append(
                     f"USDT/USD 在 {usdt_stats['stale_filled_days']} 个估值日使用最近有效汇率（<= {max_fx_staleness_days} 天）。"
                 )
+        except SnapshotError:
+            raise
         except Exception as exc:  # noqa: BLE001
             if not allow_usdt_usd_peg:
                 raise ValueError(
@@ -349,6 +352,8 @@ def resolve_fx_rate_series(
                     f"汇率 {pair} 在 {stats['stale_filled_days']} 个非外汇报价日沿用了 <= {max_fx_staleness_days} 天的最近即期汇率。"
                 )
             return series, warnings, meta
+        except SnapshotError:
+            raise
         except Exception as direct_exc:
             if (dst, src) in _DIRECT_FX_PAIRS:
                 inv_pair = _DIRECT_FX_PAIRS[(dst, src)]
