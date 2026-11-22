@@ -10,6 +10,9 @@ import pandas as pd
 from asset_catalog import (
     DOLLAR_INDEX_ALIASES,
     FX_PAIR_ALIASES,
+    GLOBAL_INDEX_GLOBAL_SINA_ALIASES,
+    GLOBAL_INDEX_HK_SINA_ALIASES,
+    GLOBAL_INDEX_US_SINA_ALIASES,
     US_TREASURY_YIELD_10Y_CN_COL,
     normalize_symbol_alias,
     resolve_adjustment,
@@ -106,38 +109,6 @@ GLOBAL_INDEX_EM_ALIASES: dict[str, str] = {
 }
 
 
-_GLOBAL_INDEX_US_SINA_ALIASES: dict[str, str] = {
-    "SPX": ".INX",
-    "INX": ".INX",
-    "GSPC": ".INX",
-    "标普500": ".INX",
-    "NDX": ".NDX",
-    "IXIC": ".IXIC",
-    "纳斯达克": ".IXIC",
-    "DJI": ".DJI",
-    "DJIA": ".DJI",
-    "道琼斯": ".DJI",
-}
-_GLOBAL_INDEX_HK_SINA_ALIASES: dict[str, str] = {
-    "HSI": "HSI",
-    "恒生指数": "HSI",
-    "HSCEI": "HSCEI",
-    "国企指数": "HSCEI",
-}
-_GLOBAL_INDEX_GLOBAL_SINA_ALIASES: dict[str, str] = {
-    "FTSE": "英国富时100指数",
-    "英国富时100": "英国富时100指数",
-    "GDAXI": "德国DAX 30种股价指数",
-    "德国DAX30": "德国DAX 30种股价指数",
-    "FCHI": "法CAC40指数",
-    "法国CAC40": "法CAC40指数",
-    "SX5E": "欧洲Stoxx50指数",
-    "欧洲斯托克50": "欧洲Stoxx50指数",
-    "N225": "日经225指数",
-    "日经225": "日经225指数",
-}
-
-
 def _em_kline_frame_to_ohlcv_raw(df: pd.DataFrame) -> pd.DataFrame:
     """为缺少成交量列的东财 K 线表补 ``成交量``，再交给 ``A_SHARE_COLUMN_MAPPING`` 清洗。"""
     work = df.copy()
@@ -179,8 +150,8 @@ def _resolve_global_index_em_name(symbol: str) -> str:
 def _resolve_global_sina_index_name(ak: Any, display_sym: str, em_name: str) -> str | None:
     upper = display_sym.upper()
     for candidate in (display_sym, upper, em_name):
-        if candidate in _GLOBAL_INDEX_GLOBAL_SINA_ALIASES:
-            return _GLOBAL_INDEX_GLOBAL_SINA_ALIASES[candidate]
+        if candidate in GLOBAL_INDEX_GLOBAL_SINA_ALIASES:
+            return GLOBAL_INDEX_GLOBAL_SINA_ALIASES[candidate]
     table_fn = getattr(ak, "index_global_name_table", None)
     if callable(table_fn):
         try:
@@ -247,7 +218,7 @@ def _load_non_dot_global_index(
     upper = display_sym.upper()
     warnings_list: list[str] = []
 
-    us_sina_sym = _GLOBAL_INDEX_US_SINA_ALIASES.get(upper) or _GLOBAL_INDEX_US_SINA_ALIASES.get(
+    us_sina_sym = GLOBAL_INDEX_US_SINA_ALIASES.get(upper) or GLOBAL_INDEX_US_SINA_ALIASES.get(
         em_name
     )
     if us_sina_sym:
@@ -259,7 +230,7 @@ def _load_non_dot_global_index(
         if not any_us_callable:
             warnings_list.append("akshare missing index_us_daily_sina/index_us_stock_sina")
 
-    hk_sina_sym = _GLOBAL_INDEX_HK_SINA_ALIASES.get(upper) or _GLOBAL_INDEX_HK_SINA_ALIASES.get(
+    hk_sina_sym = GLOBAL_INDEX_HK_SINA_ALIASES.get(upper) or GLOBAL_INDEX_HK_SINA_ALIASES.get(
         em_name
     )
     if hk_sina_sym:

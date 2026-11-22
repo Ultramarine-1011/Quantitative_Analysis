@@ -111,7 +111,52 @@ FX_PAIR_ALIASES: dict[str, str] = {
 GOLD_SYMBOL_ALIASES: dict[str, str] = {"GC": "GC", "AU9999": "GC"}
 
 
+GLOBAL_INDEX_US_SINA_ALIASES: dict[str, str] = {
+    "SPX": ".INX",
+    "INX": ".INX",
+    "GSPC": ".INX",
+    "标普500": ".INX",
+    "NDX": ".NDX",
+    "IXIC": ".IXIC",
+    "纳斯达克": ".IXIC",
+    "DJI": ".DJI",
+    "DJIA": ".DJI",
+    "道琼斯": ".DJI",
+}
+GLOBAL_INDEX_HK_SINA_ALIASES: dict[str, str] = {
+    "HSI": "HSI",
+    "恒生指数": "HSI",
+    "HSCEI": "HSCEI",
+    "国企指数": "HSCEI",
+}
+GLOBAL_INDEX_GLOBAL_SINA_ALIASES: dict[str, str] = {
+    "FTSE": "英国富时100指数",
+    "英国富时100": "英国富时100指数",
+    "GDAXI": "德国DAX 30种股价指数",
+    "德国DAX30": "德国DAX 30种股价指数",
+    "FCHI": "法CAC40指数",
+    "法国CAC40": "法CAC40指数",
+    "SX5E": "欧洲Stoxx50指数",
+    "欧洲斯托克50": "欧洲Stoxx50指数",
+    "N225": "日经225指数",
+    "日经225": "日经225指数",
+}
+
+
 DOLLAR_INDEX_ALIASES = frozenset({"DXY", "UDI", "美元指数", "DINIW"})
+
+
+_INDEX_SYMBOLS = {
+    alias.upper(): canonical
+    for routes in (
+        GLOBAL_INDEX_US_SINA_ALIASES,
+        GLOBAL_INDEX_HK_SINA_ALIASES,
+        GLOBAL_INDEX_GLOBAL_SINA_ALIASES,
+    )
+    for alias, canonical in routes.items()
+}
+_INDEX_SYMBOLS.update({canonical.upper(): canonical for canonical in _INDEX_SYMBOLS.values()})
+_INDEX_SYMBOLS.update(dict.fromkeys(DOLLAR_INDEX_ALIASES, "DXY"))
 
 
 def check_index_conversion(asset_type: str, symbol: str, base_currency: str) -> None:
@@ -129,6 +174,8 @@ def normalize_symbol_alias(asset_type: str, symbol: object) -> str:
     """Normalize asset symbol aliases to canonical cache and metadata identifiers."""
     asset_key = str(asset_type).strip().lower()
     raw = "" if symbol is None else str(symbol).strip()
+    if asset_key == "global_index":
+        return _INDEX_SYMBOLS.get(raw.upper(), raw.upper())
     if asset_key == "bond_us_yield":
         if (
             not raw

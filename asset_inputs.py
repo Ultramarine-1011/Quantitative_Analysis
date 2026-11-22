@@ -61,8 +61,11 @@ def parse_asset_token(
             )
         key, symbol = asset_type, cleaned
     spec = AssetSpec(key, symbol, adjust=adjust)
-    if syntax == "web" and symbol != spec.canonical_symbol:
-        return AssetSpec(key, spec.canonical_symbol, adjust=adjust)
+    if syntax == "web":
+        # A dot-prefixed US index selects a narrower vendor route than its display alias.
+        display_symbol = symbol.upper() if key == "global_index" else spec.canonical_symbol
+        if symbol != display_symbol:
+            return AssetSpec(key, display_symbol, adjust=adjust)
     return spec
 
 
