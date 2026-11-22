@@ -180,3 +180,43 @@ def test_stablecoin_rate_and_explicit_peg_replay(tmp_path, sample_ohlcv, availab
         (tmp_path / "objects" / (fx["sha256"] + ".parquet")).unlink()
         code, _ = run_cli_command([*common, "--data-mode", "offline"], loader=forbidden)
         assert code == 1 and "Missing snapshot file" in capsys.readouterr().err
+
+
+def test_fx_snapshot_write_failure_aborts_even_with_explicit_peg(
+    tmp_path, sample_ohlcv, monkeypatch, capsys
+):
+    def asset(**kwargs):
+        frame = sample_ohlcv.copy()
+        frame.attrs.update(
+            asset_type="crypto", symbol="BTC/USDT", currency="USDT", data_source="fixture"
+        )
+        return frame
+
+    save = SnapshotStore.save_frame
+
+    def fail_fx(self, query, frame):
+        if query["role"] == "usdt_usd":
+            raise OSError("injected FX write failure")
+        return save(self, query, frame)
+
+    monkeypatch.setattr(SnapshotStore, "save_frame", fail_fx)
+    code, _ = run_cli_command(
+        [
+            "fetch",
+            "crypto:BTC/USDT",
+            "--base-currency",
+            "USD",
+            "--allow-usdt-peg",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-05-31",
+            "--snapshot-dir",
+            str(tmp_path),
+        ],
+        loader=asset,
+        usdt_usd_loader=lambda *args: sample_ohlcv,
+    )
+    assert code == 1
+    assert "injected FX write failure" in capsys.readouterr().err
+    assert not (tmp_path / "latest").exists()

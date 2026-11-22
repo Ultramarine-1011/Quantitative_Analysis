@@ -1,6 +1,7 @@
 """Immutable, portable quote objects and pinned research-input manifests."""
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -49,24 +50,27 @@ class SnapshotStore:
         return path
 
     def _publish(self, path: Path, content: bytes, *, immutable: bool) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
-            tmp = Path(handle.name)
-            try:
-                handle.write(content)
-                handle.close()
-                if immutable:
-                    try:
-                        os.link(tmp, path)
-                    except FileExistsError:
-                        if path.read_bytes() != content:
-                            raise SnapshotError(
-                                f"Conflicting immutable snapshot: {path.name}"
-                            ) from None
-                else:
-                    os.replace(tmp, path)
-            finally:
-                tmp.unlink(missing_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+                tmp = Path(handle.name)
+                try:
+                    handle.write(content)
+                    handle.close()
+                    if immutable:
+                        try:
+                            os.link(tmp, path)
+                        except FileExistsError:
+                            if path.read_bytes() != content:
+                                raise SnapshotError(
+                                    f"Conflicting immutable snapshot: {path.name}"
+                                ) from None
+                    else:
+                        os.replace(tmp, path)
+                finally:
+                    tmp.unlink(missing_ok=True)
+        except OSError as exc:
+            raise SnapshotError(f"Failed publishing {path.name}: {exc}") from exc
 
     def _read(self, directory: str, digest: str, suffix: str) -> bytes:
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -111,13 +115,16 @@ class SnapshotStore:
         )
 
     def load_frame(self, entry: Mapping) -> pd.DataFrame:
-        import io
-
-        frame = pd.read_parquet(io.BytesIO(self._read("objects", entry["sha256"], ".parquet")))
-        if entry.get("frequency"):
-            frame.index.freq = entry["frequency"]
-        frame.attrs = dict(entry["attrs"])
-        return frame
+        try:
+            frame = pd.read_parquet(io.BytesIO(self._read("objects", entry["sha256"], ".parquet")))
+            if entry.get("frequency"):
+                frame.index.freq = entry["frequency"]
+            frame.attrs = dict(entry["attrs"])
+            return frame
+        except SnapshotError:
+            raise
+        except Exception as exc:
+            raise SnapshotError(f"Cannot decode snapshot input: {exc}") from exc
 
     def publish_run(self, entries: Mapping) -> str:
         content = _json_bytes(dict(version=1, schema_version=SCHEMA_VERSION, inputs=entries))

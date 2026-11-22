@@ -54,7 +54,7 @@ class ResearchRepository:
         fetch: Callable[[], pd.DataFrame],
         *,
         refresh: bool = False,
-    ):
+    ) -> pd.DataFrame:
         refresh = refresh or self.refresh
         if refresh and self.mode == "offline":
             raise ValueError("Offline data cannot be refreshed.")
@@ -85,9 +85,20 @@ class ResearchRepository:
             raise
         frame = frame.copy(deep=False)
         attach_quote_metadata(frame, req)
-        frame.attrs.setdefault("data_source", "unspecified")
+        if not frame.attrs.get("data_source"):
+            frame.attrs["data_source"] = "unspecified"
+            frame.attrs["quality_warnings"] = [
+                *frame.attrs.get("quality_warnings", ()),
+                "data_source_unspecified",
+            ]
+
         frame.attrs.setdefault("volume_unit", "unknown")
-        self.inputs[key] = self.store.save_frame(query, frame)
+        try:
+            self.inputs[key] = self.store.save_frame(query, frame)
+        except SnapshotError:
+            raise
+        except Exception as exc:
+            raise SnapshotError(f"Cannot record {role} input: {exc}") from exc
         return frame
 
     def load(
@@ -100,7 +111,7 @@ class ResearchRepository:
         *,
         adjust: str | None = None,
         force_refresh: bool = False,
-    ):
+    ) -> pd.DataFrame:
         req = QuoteRequest.create(asset_type, symbol, start_date, end_date, adjust)
         return self._read(
             "asset",
