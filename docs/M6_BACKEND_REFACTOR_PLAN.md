@@ -94,12 +94,14 @@
 
 ### M6-3：模型内聚（P1）
 
-- [ ] 按自然算法边界从 `quant_models.py` 提取 `covariance`、`optimization`、`frontier`、`backtesting`、`simulation` 等内部模块；`analysis_metrics.py` 的统计函数可按测试覆盖和真实需要逐步分组。
-- [ ] `quant_models.py` 继续作为兼容重导出 facade，调用方无需立即改 import。
-- [ ] **只搬迁和清理调用依赖，不重新实现算法**。特别核对 SciPy SLSQP 约束/可行域、权重边界、Ledoit-Wolf 收缩、风险贡献、交易成本、Train/Test 与 Walk-Forward 的防前视保证。
-- [ ] 数值等价、固定随机种子、零泄漏、边界样本、失败路径全部通过；无“顺手优化”引入浮点结果大漂移。
+- [x] 按自然算法边界从 `quant_models.py` 提取 `covariance`、`optimization`、`frontier`、`backtesting`、`simulation` 等内部模块；`analysis_metrics.py` 的统计函数可按测试覆盖和真实需要逐步分组。
+- [x] `quant_models.py` 继续作为兼容重导出 facade，调用方无需立即改 import。
+- [x] **只搬迁和清理调用依赖，不重新实现算法**。特别核对 SciPy SLSQP 约束/可行域、权重边界、Ledoit-Wolf 收缩、风险贡献、交易成本、Train/Test 与 Walk-Forward 的防前视保证。
+- [x] 数值等价、固定随机种子、零泄漏、边界样本、失败路径全部通过；无“顺手优化”引入浮点结果大漂移。
 
 **通过条件：** 关键 public API 稳定，模型模块与服务/展示无反向依赖，黄金测试结果一致。
+
+算法实现见 `models/`，旧入口见 `quant_models.py`。
 
 ### M6-4：输出编排与展示接口收敛（P2，前端仍不重写）
 
