@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from asset_catalog import ASSET_DEFAULT_CURRENCY
+from asset_catalog import ASSET_DEFAULT_CURRENCY, check_index_conversion
 from data_fetcher import load_fx_data
 from data_sources.errors import SnapshotError
 from ohlcv import DateLike, compute_ohlcv_quality
@@ -527,6 +527,7 @@ def convert_ohlcv_to_base_currency(
     """将单标的 OHLCV 价格列按对齐汇率同比例折算为目标基准货币（拒绝 yield_level 与 fx_rate）。"""
     target_norm = normalize_currency_code(target_currency)
     asset_norm = str(asset_key or "").strip().lower()
+    check_index_conversion(asset_norm, symbol, target_norm)
     series_kind = str(df.attrs.get("series_kind", "price") or "price").strip().lower()
     return_basis = str(df.attrs.get("return_basis", "") or "").strip().lower()
     if target_norm == "LOCAL":

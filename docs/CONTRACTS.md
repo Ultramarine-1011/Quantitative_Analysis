@@ -77,7 +77,7 @@
    - `AnalysisResult` / `MultiAssetResult` 在 `__post_init__` 中强制校验 `schema_version`、`command`、`status`、`asset_order` 一致性与 `validate_result_invariants`。
    - `yield_level` 序列在非 `error` 状态下禁止对 `YIELD_BLOCKED_METRICS`（9 项）输出非空数值，并必须附带 `metric_reasons[key] == "yield_level_not_return"`。
 3. **双写一致性检验（`validate_frame_metadata_consistency` -> `sync_metadata_to_frame`）**：
-   - 在 `services/analysis_service.py`、`services/multi_asset_service.py` 与 `artifacts/store.py` 构造或反序列化结果时，先执行 `validate_frame_metadata_consistency` 前置校验原始 `df.attrs` 与 `SeriesMetadata` 是否存在不一致（避免同步覆盖错误），再调用 `sync_metadata_to_frame` 将规范化 `SeriesMetadata` 与 `QualityReport` 双写至 `df.attrs`；此外先确定 `effective_adjust` 再推导 `return_basis`，修复历史覆盖缺陷。
+   - 在 `services/analysis_service.py`、`services/preparation.py` 与 `artifacts/store.py` 构造或反序列化结果时，先执行 `validate_frame_metadata_consistency` 前置校验原始 `df.attrs` 与 `SeriesMetadata` 是否存在不一致（避免同步覆盖错误），再调用 `sync_metadata_to_frame` 将规范化 `SeriesMetadata` 与 `QualityReport` 双写至 `df.attrs`；此外先确定 `effective_adjust` 再推导 `return_basis`，修复历史覆盖缺陷。
 
 ---
 
@@ -100,3 +100,9 @@
    - **v0.2.0 严格禁止读取未声明文件**：`v0.2.0` 仅按 `result.json["artifacts"]` 显式声明的路径读取 Parquet/CSV，绝不回退读取研究目录内未声明的残留 `data.parquet` / `data.csv` / 多资产 frame 文件（无论 `verify_integrity` 为 `True` 或 `False`）；若声明的主 Parquet 文件缺失且未同时声明可用 CSV，立即抛出 `ArtifactIntegrityError`。
    - **v0.2.0** 严格禁止一切绝对路径与 `~` 前缀；仅 **v0.1.0** 允许受限兼容转换（**绝不访问外部原始绝对路径**，仅提取文件名或 `charts/<filename>` 映射到**当前指定 `output_dir` 内部**，支持 POSIX 与 Windows 盘符风格路径），并在 v0.1.0 `artifacts` 未显式声明 frame 路径时保留受 `resolve_safe_artifact_path` 保护的目录内默认文件安全回退。
    - `load_result_with_migration_info` 与 `load_result_from_artifacts`（[reporting/formatting.py](../reporting/formatting.py) 已薄委托至此）支持整个研究目录跨路径、跨设备复制并在原目录被篡改或删除后完全离线重放。
+
+## M6-5 可选来源字段
+
+- 已知成交量单位时，`SeriesMetadata.volume_unit` 记录供应商单位。历史结果可缺省本字段。`shares_or_units` 表示股或份，`lots_100` 表示每手 100 股或份；成交量原值保持原尺度。
+- `adjustment_mismatch`、`volume_unit_mismatch`、`adjustment_unspecified` 标记来源口径冲突或缺失。C-REITs 的腾讯和东财直连路径标记前复权，新浪路径标记不复权。美元指数的跨币种折算以 `index_points_not_currency` 拒绝。期货异常 OHLC 计入逐资产质量报告，并影响研究状态。
+- 启用输入快照时，`data_summary.snapshot_id` 为研究输入清单的 SHA-256。结果 Schema 仍为 0.2.0。读取历史产物无需补填来源信息。

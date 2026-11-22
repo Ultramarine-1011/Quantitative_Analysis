@@ -16,6 +16,7 @@ from asset_catalog import (
 from currency import infer_asset_currency
 from data_sources.cache import load_cached_ohlcv, save_cached_ohlcv
 from data_sources.crypto import normalize_proxy_url
+from data_sources.quality import annotate_quote_quality
 from ohlcv import validate_analysis_date_range
 
 
@@ -69,12 +70,15 @@ class QuoteRepository(Protocol):
 
 def attach_quote_metadata(frame: pd.DataFrame, request: QuoteRequest) -> None:
     key = request.asset_type
+    annotate_quote_quality(frame, key, request.adjust)
     attrs = frame.attrs
     symbol = str(attrs.get("symbol") or request.symbol).strip()
     attrs.setdefault("asset_type", key)
     if key in SUPPORTED_ADJUSTMENTS:
         attrs.setdefault("adjust", resolve_adjustment(key, request.adjust))
-    attrs["return_basis"] = resolve_return_basis(key, adjust=request.adjust, attrs=attrs)
+    attrs["return_basis"] = resolve_return_basis(
+        key, adjust=attrs.get("adjust", request.adjust), attrs=attrs
+    )
     attrs.setdefault("canonical_symbol", normalize_symbol_alias(key, symbol))
     attrs.setdefault("currency", infer_asset_currency(key, symbol, attrs))
     attrs.setdefault("fetched_at", datetime.now(UTC).isoformat())

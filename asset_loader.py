@@ -13,6 +13,7 @@ from asset_catalog import (
     ASSET_RETURN_BASIS,
     ASSET_RETURN_BASIS_NOTES,
     GOLD_SYMBOL_ALIASES,
+    check_index_conversion,
     normalize_symbol_alias,
 )
 from asset_inputs import parse_asset_list
@@ -417,6 +418,7 @@ def align_multi_asset_frames(
             )
         atype = str(attrs.get("asset_type") or parsed_type).strip().lower()
         sym = str(attrs.get("symbol") or parsed_sym).strip()
+        check_index_conversion(atype, sym, base_currency)
         series_kind = str(attrs.get("series_kind", "price") or "price").strip().lower()
         basis = str(attrs.get("return_basis") or ASSET_RETURN_BASIS.get(atype, "")).strip()
 

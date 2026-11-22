@@ -13,10 +13,6 @@ from asset_catalog import (
     ASSET_RETURN_BASIS_NOTES,
     SUPPORTED_ADJUSTMENTS,
     get_asset_trading_days,
-    normalize_symbol_alias,
-    resolve_adjustment,
-    resolve_return_basis,
-    resolve_semantic_series_kind,
 )
 from asset_loader import load_asset_data
 from contracts import (
@@ -31,14 +27,18 @@ from contracts import (
     sync_metadata_to_frame,
     validate_frame_metadata_consistency,
 )
-from currency import convert_ohlcv_to_base_currency, infer_asset_currency
+from currency import convert_ohlcv_to_base_currency
 from data_sources.errors import EmptySymbolDataError
 from ohlcv import (
     REQUIRED_OHLCV_COLUMNS,
     DateLike,
     prepare_ohlcv,
 )
-from services.preparation import AssetLoaderFn as AssetLoaderFn, slice_to_requested_window
+from services.preparation import (
+    AssetLoaderFn as AssetLoaderFn,
+    prepare_quote_metadata,
+    slice_to_requested_window,
+)
 
 
 def _extract_latest_snapshot(df: pd.DataFrame, metrics: Mapping[str, Any]) -> dict[str, Any]:
@@ -109,43 +109,9 @@ def _prepare_single_asset_frame(
         work_df = loaded.copy()
         work_df.attrs = dict(loaded.attrs)
 
-    work_df.attrs["asset_type"] = request.asset_type
-    requested_canonical = normalize_symbol_alias(request.asset_type, request.symbol)
-    raw_attr_symbol = str(work_df.attrs.get("symbol") or "").strip()
-    if raw_attr_symbol and (
-        normalize_symbol_alias(request.asset_type, raw_attr_symbol) == requested_canonical
-    ):
-        resolved_sym = raw_attr_symbol
-    else:
-        resolved_sym = request.symbol
-    work_df.attrs["symbol"] = resolved_sym
-    has_attr_adjust = "adjust" in work_df.attrs and work_df.attrs.get("adjust") is not None
-    raw_attr_adjust = str(work_df.attrs.get("adjust") or "").strip() if has_attr_adjust else None
-    if raw_attr_adjust is not None:
-        if request.asset_type not in SUPPORTED_ADJUSTMENTS and raw_attr_adjust == "none":
-            effective_adjust = ""
-        elif request.asset_type in SUPPORTED_ADJUSTMENTS:
-            effective_adjust = resolve_adjustment(request.asset_type, raw_attr_adjust)
-        else:
-            effective_adjust = raw_attr_adjust
-    else:
-        effective_adjust = request.adjust
-    work_df.attrs["adjust"] = effective_adjust
-    work_df.attrs["return_basis"] = resolve_return_basis(
-        request.asset_type,
-        adjust=effective_adjust if request.asset_type in SUPPORTED_ADJUSTMENTS else None,
-        attrs=work_df.attrs,
+    resolved_sym = prepare_quote_metadata(
+        work_df, request.asset_type, request.symbol, request.adjust
     )
-    work_df.attrs["series_kind"] = resolve_semantic_series_kind(
-        request.asset_type,
-        return_basis=work_df.attrs["return_basis"],
-        attrs=work_df.attrs,
-    )
-    work_df.attrs["canonical_symbol"] = normalize_symbol_alias(request.asset_type, resolved_sym)
-    if not work_df.attrs.get("currency"):
-        work_df.attrs["currency"] = infer_asset_currency(
-            request.asset_type, resolved_sym, work_df.attrs
-        )
     work_df.attrs.setdefault("fetched_at", datetime.now(UTC).isoformat())
     work_df.attrs.setdefault("cache_hit", False)
 
@@ -222,6 +188,7 @@ def fetch_single_asset(
     for candidate in (
         *(prepared_df.attrs.get("fx_warnings") or ()),
         *(prepared_df.attrs.get("fallback_warnings") or ()),
+        *(prepared_df.attrs.get("quality_warnings") or ()),
     ):
         text = str(candidate).strip()
         if text and text not in all_warnings:
@@ -258,6 +225,7 @@ def fetch_single_asset(
             quality_report.has_anomalies
             or bool(prepared_df.attrs.get("fx_warnings"))
             or bool(prepared_df.attrs.get("fallback_warnings"))
+            or bool(prepared_df.attrs.get("quality_warnings"))
         )
         else "ok"
     )
@@ -352,6 +320,7 @@ def analyze_single_asset(
     for candidate in (
         *(featured_df.attrs.get("fx_warnings") or ()),
         *(featured_df.attrs.get("fallback_warnings") or ()),
+        *(featured_df.attrs.get("quality_warnings") or ()),
         *semantic_warnings,
     ):
         text = str(candidate).strip()
@@ -396,6 +365,7 @@ def analyze_single_asset(
             or has_degraded_metrics
             or bool(featured_df.attrs.get("fx_warnings"))
             or bool(featured_df.attrs.get("fallback_warnings"))
+            or bool(featured_df.attrs.get("quality_warnings"))
         )
         else "ok"
     )

@@ -193,7 +193,11 @@ def fetch_usdt_usd_ohlcv(
             ex = exchange_cls(cfg)
             rows = fetch_crypto_ohlcv_rows(ex, "USDT/USD", start_date, end_date)
             if rows:
-                return normalize_crypto_data(rows, start_date, end_date)
+                frame = normalize_crypto_data(rows, start_date, end_date)
+                frame.attrs.update(
+                    data_source=f"ccxt.{exchange_id}", symbol="USDT/USD", currency="USD"
+                )
+                return frame
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             continue

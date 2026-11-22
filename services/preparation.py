@@ -32,9 +32,53 @@ from contracts import (
 )
 from currency import infer_asset_currency
 from data_sources.errors import EmptySymbolDataError
+from data_sources.quality import annotate_quote_quality
 from ohlcv import compute_ohlcv_quality
 
 AssetLoaderFn = Callable[..., pd.DataFrame]
+
+
+def prepare_quote_metadata(
+    frame: pd.DataFrame, asset_type: str, symbol: str, adjust: str | None
+) -> str:
+    """Bind identity and actual economic conventions to an owned, date-sliced frame."""
+    annotate_quote_quality(frame, asset_type, adjust)
+    frame.attrs["asset_type"] = asset_type
+    requested_canonical = normalize_symbol_alias(asset_type, symbol)
+    raw_attr_symbol = str(frame.attrs.get("symbol") or "").strip()
+    if raw_attr_symbol and (
+        normalize_symbol_alias(asset_type, raw_attr_symbol) == requested_canonical
+    ):
+        resolved_sym = raw_attr_symbol
+    else:
+        resolved_sym = symbol
+    frame.attrs["symbol"] = resolved_sym
+    has_attr_adjust = "adjust" in frame.attrs and frame.attrs.get("adjust") is not None
+    raw_attr_adjust = str(frame.attrs.get("adjust") or "").strip() if has_attr_adjust else None
+    if raw_attr_adjust is not None:
+        if asset_type not in SUPPORTED_ADJUSTMENTS and raw_attr_adjust == "none":
+            effective_adjust = ""
+        elif asset_type in SUPPORTED_ADJUSTMENTS:
+            effective_adjust = resolve_adjustment(asset_type, raw_attr_adjust)
+        else:
+            effective_adjust = raw_attr_adjust
+    else:
+        effective_adjust = adjust
+    frame.attrs["adjust"] = effective_adjust
+    frame.attrs["return_basis"] = resolve_return_basis(
+        asset_type,
+        adjust=effective_adjust if asset_type in SUPPORTED_ADJUSTMENTS else None,
+        attrs=frame.attrs,
+    )
+    frame.attrs["series_kind"] = resolve_semantic_series_kind(
+        asset_type,
+        return_basis=frame.attrs["return_basis"],
+        attrs=frame.attrs,
+    )
+    frame.attrs["canonical_symbol"] = normalize_symbol_alias(asset_type, resolved_sym)
+    if not frame.attrs.get("currency"):
+        frame.attrs["currency"] = infer_asset_currency(asset_type, resolved_sym, frame.attrs)
+    return resolved_sym
 
 
 def slice_to_requested_window(
@@ -161,40 +205,7 @@ def _load_and_slice_spec(
         sliced = loaded.copy()
         sliced.attrs = dict(loaded.attrs)
 
-    sliced.attrs["asset_type"] = spec.asset_type
-    requested_canonical = normalize_symbol_alias(spec.asset_type, spec.symbol)
-    raw_attr_symbol = str(sliced.attrs.get("symbol") or "").strip()
-    if raw_attr_symbol and (
-        normalize_symbol_alias(spec.asset_type, raw_attr_symbol) == requested_canonical
-    ):
-        resolved_sym = raw_attr_symbol
-    else:
-        resolved_sym = spec.symbol
-    sliced.attrs["symbol"] = resolved_sym
-    has_attr_adjust = "adjust" in sliced.attrs and sliced.attrs.get("adjust") is not None
-    raw_attr_adjust = str(sliced.attrs.get("adjust") or "").strip() if has_attr_adjust else None
-    if raw_attr_adjust is not None:
-        if spec.asset_type not in SUPPORTED_ADJUSTMENTS and raw_attr_adjust == "none":
-            effective_adjust = ""
-        elif spec.asset_type in SUPPORTED_ADJUSTMENTS:
-            effective_adjust = resolve_adjustment(spec.asset_type, raw_attr_adjust)
-        else:
-            effective_adjust = raw_attr_adjust
-    else:
-        effective_adjust = spec.adjust
-    sliced.attrs["adjust"] = effective_adjust
-    basis = resolve_return_basis(
-        spec.asset_type,
-        adjust=effective_adjust if spec.asset_type in SUPPORTED_ADJUSTMENTS else None,
-        attrs=sliced.attrs,
-    )
-    sliced.attrs["return_basis"] = basis
-    sliced.attrs["series_kind"] = resolve_semantic_series_kind(
-        spec.asset_type, return_basis=basis, attrs=sliced.attrs
-    )
-    sliced.attrs["canonical_symbol"] = normalize_symbol_alias(spec.asset_type, resolved_sym)
-    if not sliced.attrs.get("currency"):
-        sliced.attrs["currency"] = infer_asset_currency(spec.asset_type, spec.symbol, sliced.attrs)
+    prepare_quote_metadata(sliced, spec.asset_type, spec.symbol, spec.adjust)
     return sliced
 
 
@@ -325,9 +336,11 @@ def collect_metadata_and_quality(
             fetched_at=base_meta.fetched_at,
             cache_hit=base_meta.cache_hit,
             warnings=base_meta.warnings,
+            volume_unit=base_meta.volume_unit,
         )
         quality_map[leg] = q
-        if q.dropped_invalid_rows > 0 or q.filled_price_rows > 0 or base_meta.warnings:
+        extra_warnings.extend(f"{leg}: {code}" for code in frame.attrs.get("quality_warnings", ()))
+        if q.has_anomalies or base_meta.warnings:
             degraded = True
 
     distinct_local_ccys = {

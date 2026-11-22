@@ -130,3 +130,53 @@ def test_failed_snapshot_publication_preserves_prior_selection(tmp_path, monkeyp
         store.publish_run({"other": {}})
     assert store.select(None) == (prior, {})
     assert not any(p.is_file() and p.name != "latest" for p in tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_stablecoin_rate_and_explicit_peg_replay(tmp_path, sample_ohlcv, available, capsys):
+    calls = []
+
+    def asset(**kwargs):
+        frame = sample_ohlcv.copy()
+        frame.attrs.update(
+            asset_type="crypto", symbol="BTC/USDT", currency="USDT", data_source="fixture"
+        )
+        return frame
+
+    def stablecoin(*args):
+        calls.append(1)
+        if not available:
+            raise ConnectionError("unavailable fixture")
+        return sample_ohlcv.assign(Close=0.99)
+
+    common = [
+        "fetch",
+        "crypto:BTC/USDT",
+        "--base-currency",
+        "USD",
+        "--allow-usdt-peg",
+        "--no-data",
+        "--start",
+        "2024-01-02",
+        "--end",
+        "2024-05-31",
+        "--snapshot-dir",
+        str(tmp_path),
+    ]
+    code, first = run_cli_command(
+        [*common, "--data-mode", "online"], loader=asset, usdt_usd_loader=stablecoin
+    )
+    assert code == 0, capsys.readouterr().err
+    code, replay = run_cli_command(
+        [*common, "--data-mode", "offline"], loader=forbidden, usdt_usd_loader=forbidden
+    )
+    assert code == 0, capsys.readouterr().err
+    assert calls == [1]
+    assert first.warnings == replay.warnings
+    pd.testing.assert_frame_equal(first.data_frame, replay.data_frame)
+    if available:
+        entries = SnapshotStore(tmp_path).select(first.data_summary["snapshot_id"])[1].values()
+        fx = next(entry for entry in entries if entry["query"]["role"] == "usdt_usd")
+        (tmp_path / "objects" / (fx["sha256"] + ".parquet")).unlink()
+        code, _ = run_cli_command([*common, "--data-mode", "offline"], loader=forbidden)
+        assert code == 1 and "Missing snapshot file" in capsys.readouterr().err

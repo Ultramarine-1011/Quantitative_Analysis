@@ -743,6 +743,7 @@ class SeriesMetadata:
     fetched_at: str | None
     cache_hit: bool
     warnings: tuple[str, ...] = ()
+    volume_unit: str | None = None
 
     def __post_init__(self) -> None:
         asset_key = str(self.asset_type or "").strip().lower()
@@ -821,6 +822,7 @@ class SeriesMetadata:
             data_source=raw.get("data_source"),
             fetched_at=raw.get("fetched_at"),
             cache_hit=bool(raw.get("cache_hit", False)),
+            volume_unit=raw.get("volume_unit"),
             warnings=tuple(str(w) for w in (raw.get("warnings") or ())),
         )
 
@@ -841,6 +843,7 @@ class SeriesMetadata:
             "fetched_at": self.fetched_at,
             "cache_hit": self.cache_hit,
             "warnings": list(self.warnings),
+            **({"volume_unit": self.volume_unit} if self.volume_unit else {}),
         }
 
 
@@ -1317,6 +1320,7 @@ def build_series_metadata(
     for item in (
         *(attrs.get("fx_warnings") or ()),
         *(attrs.get("fallback_warnings") or ()),
+        *(attrs.get("quality_warnings") or ()),
         *warnings,
     ):
         text = str(item).strip()
@@ -1338,6 +1342,7 @@ def build_series_metadata(
         data_source=resolved_source,
         fetched_at=resolved_fetched,
         cache_hit=resolved_cache_hit,
+        volume_unit=attrs.get("volume_unit"),
         warnings=tuple(merged_warnings),
     )
 
@@ -1365,6 +1370,8 @@ def sync_metadata_to_frame(
         df.attrs["data_source"] = metadata.data_source
     if metadata.fetched_at is not None:
         df.attrs["fetched_at"] = metadata.fetched_at
+    if metadata.volume_unit is not None:
+        df.attrs["volume_unit"] = metadata.volume_unit
     df.attrs["cache_hit"] = metadata.cache_hit
     if quality is not None:
         df.attrs["data_quality"] = quality.to_dict()
@@ -1379,6 +1386,7 @@ def validate_frame_metadata_consistency(
     attrs = df.attrs if isinstance(df, pd.DataFrame) else {}
     checks: list[tuple[str, Any, Any]] = [
         ("asset_type", attrs.get("asset_type"), metadata.asset_type),
+        ("volume_unit", attrs.get("volume_unit"), metadata.volume_unit),
         ("canonical_symbol", attrs.get("canonical_symbol"), metadata.canonical_symbol),
         (
             "adjust",

@@ -465,6 +465,7 @@ def test_load_reit_data_fallback_chain_and_all_fail_error(monkeypatch, sample_oh
     out_tx = data_fetcher.load_reit_data("sh508097", "2024-01-02", "2024-01-04")
     assert out_tx.attrs["symbol"] == "508097"
     assert out_tx.attrs["data_source"] == "akshare.stock_zh_a_hist_tx"
+    assert out_tx.attrs["adjust"] == "qfq" and out_tx.attrs["return_basis"] == "adjusted_price"
     assert list(out_tx["Volume"]) == list(sample_ohlcv.iloc[:3]["Volume"])
 
     # 2) Tencent fails -> fund_reits_hist_em fallback
@@ -475,6 +476,7 @@ def test_load_reit_data_fallback_chain_and_all_fail_error(monkeypatch, sample_oh
     monkeypatch.setattr(data_fetcher, "_import_akshare", lambda: api_em)
     out_em = data_fetcher.load_reit_data("508097", "2024-01-02", "2024-01-04")
     assert out_em.attrs["data_source"] == "akshare.fund_reits_hist_em"
+    assert "adjustment_unspecified" in out_em.attrs["quality_warnings"]
     assert any("stock_zh_a_hist_tx" in w for w in out_em.attrs["fallback_warnings"])
 
     # 3) Tencent & AKShare EM fail -> EastMoneyDirect fallback
@@ -489,6 +491,7 @@ def test_load_reit_data_fallback_chain_and_all_fail_error(monkeypatch, sample_oh
     monkeypatch.setattr(data_fetcher, "_import_akshare", lambda: api_no_em)
     out_direct = data_fetcher.load_reit_data("508097", "2024-01-02", "2024-01-04")
     assert out_direct.attrs["data_source"] == "eastmoney_direct"
+    assert out_direct.attrs["adjust"] == "qfq"
     assert len(out_direct.attrs["fallback_warnings"]) >= 2
 
     # 4) EastMoneyDirect also fails -> fund_etf_hist_sina unadjusted fallback
@@ -503,6 +506,7 @@ def test_load_reit_data_fallback_chain_and_all_fail_error(monkeypatch, sample_oh
     monkeypatch.setattr(data_fetcher, "_import_akshare", lambda: api_sina)
     out_sina = data_fetcher.load_reit_data("508097", "2024-01-02", "2024-01-04")
     assert out_sina.attrs["data_source"] == "akshare.fund_etf_hist_sina"
+    assert out_sina.attrs["adjust"] == "" and out_sina.attrs["return_basis"] == "unadjusted_price"
     assert any("不复权" in w for w in out_sina.attrs["fallback_warnings"])
 
     # 5) All sources raise -> explicit DataFetchError (never silent empty frame)

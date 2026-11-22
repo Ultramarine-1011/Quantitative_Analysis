@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from asset_catalog import (
+    DOLLAR_INDEX_ALIASES,
     FX_PAIR_ALIASES,
     US_TREASURY_YIELD_10Y_CN_COL,
     normalize_symbol_alias,
@@ -40,6 +41,7 @@ from data_sources.network import (
     import_akshare,
     resolve_akshare_callable,
 )
+from data_sources.quality import annotate_quote_quality
 
 # 兼容已有单测与外部调用对私有符号的 monkeypatch（新代码请使用公开符号）。
 _fetch_forex_hist_em_robust = fetch_forex_hist_em_robust
@@ -134,7 +136,6 @@ _GLOBAL_INDEX_GLOBAL_SINA_ALIASES: dict[str, str] = {
     "N225": "日经225指数",
     "日经225": "日经225指数",
 }
-_GLOBAL_INDEX_DXY_ALIASES: frozenset[str] = frozenset({"DXY", "UDI", "美元指数", "DINIW"})
 
 
 def _em_kline_frame_to_ohlcv_raw(df: pd.DataFrame) -> pd.DataFrame:
@@ -308,7 +309,7 @@ def _load_non_dot_global_index(
     else:
         warnings_list.append("akshare missing index_global_hist_em")
 
-    if upper in _GLOBAL_INDEX_DXY_ALIASES or em_name in _GLOBAL_INDEX_DXY_ALIASES:
+    if upper in DOLLAR_INDEX_ALIASES or em_name in DOLLAR_INDEX_ALIASES:
         try:
             raw_dxy = fetch_sina_kline_daily("DINIW", display_symbol=display_sym)
             raw2 = _em_kline_frame_to_ohlcv_raw(raw_dxy)
@@ -773,6 +774,7 @@ def load_reit_data(symbol: str, start_date: DateLike, end_date: DateLike) -> pd.
     out.attrs["data_source"] = data_source
     if fallback_warnings:
         out.attrs["fallback_warnings"] = fallback_warnings
+    annotate_quote_quality(out, "creit", None)
     return out
 
 

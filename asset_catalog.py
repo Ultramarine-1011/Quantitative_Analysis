@@ -111,6 +111,20 @@ FX_PAIR_ALIASES: dict[str, str] = {
 GOLD_SYMBOL_ALIASES: dict[str, str] = {"GC": "GC", "AU9999": "GC"}
 
 
+DOLLAR_INDEX_ALIASES = frozenset({"DXY", "UDI", "美元指数", "DINIW"})
+
+
+def check_index_conversion(asset_type: str, symbol: str, base_currency: str) -> None:
+    if (
+        asset_type == "global_index"
+        and symbol.upper() in DOLLAR_INDEX_ALIASES
+        and base_currency.upper() != "LOCAL"
+    ):
+        raise ValueError(
+            "index_points_not_currency: 美元指数为相对一篮子货币的指数点位，请使用 LOCAL。"
+        )
+
+
 def normalize_symbol_alias(asset_type: str, symbol: object) -> str:
     """Normalize asset symbol aliases to canonical cache and metadata identifiers."""
     asset_key = str(asset_type).strip().lower()

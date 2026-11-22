@@ -546,6 +546,8 @@ def analyze_portfolio(
         assets_meta[bench_key] = b_meta
         quality_map[bench_key] = b_qual
         extra_warnings.extend(b_warns)
+        if b_qual.has_anomalies or b_meta.warnings:
+            degraded = True
 
     sensitivity_tables: dict[str, Any] | None = None
     if request.include_sensitivity:
