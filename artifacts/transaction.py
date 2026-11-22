@@ -18,14 +18,19 @@ class FileTransaction(ExitStack):
     def __init__(self):
         super().__init__()
         self.staged: dict[Path, Path] = {}
+        self.retained_backups: set[Path] = set()
 
     def _temp(self, target: Path, suffix: str) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=suffix, dir=target.parent)
         os.close(fd)
         path = Path(name)
-        self.callback(path.unlink, missing_ok=True)
+        self.callback(self._cleanup, path)
         return path
+
+    def _cleanup(self, path: Path) -> None:
+        if path not in self.retained_backups:
+            path.unlink(missing_ok=True)
 
     def stage(self, target: Path, writer: Callable[[Path], object]) -> Path:
         try:
@@ -59,9 +64,20 @@ class FileTransaction(ExitStack):
                 target.unlink()
                 changed.append(target)
         except Exception as exc:
+            failures = []
             for target in reversed(changed):
-                if target in backups:
-                    os.replace(backups[target], target)
-                else:
-                    target.unlink(missing_ok=True)
+                backup = backups.get(target)
+                try:
+                    if backup is not None:
+                        os.replace(backup, target)
+                    else:
+                        target.unlink(missing_ok=True)
+                except OSError as restore_error:
+                    if backup is not None:
+                        self.retained_backups.add(backup)
+                    failures.append(f"{target}: {restore_error} (backup={backup})")
+            if failures:
+                raise ArtifactIOError(
+                    f"Commit failed ({exc}); incomplete rollback: {', '.join(failures)}"
+                ) from exc
             raise ArtifactIOError(f"Failed committing output artifacts cleanly: {exc}") from exc

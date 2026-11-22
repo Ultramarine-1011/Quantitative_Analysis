@@ -727,8 +727,10 @@ def test_cache_windows_msvcrt_lock_fallback(
             raise OSError(errno.EACCES, "temporarily locked")
 
     fake_msvcrt = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=0, locking=_fake_locking)
-    monkeypatch.setattr(cache_mod, "fcntl", None)
-    monkeypatch.setattr(cache_mod, "msvcrt", fake_msvcrt)
+    from artifacts import locking
+
+    monkeypatch.setattr(locking, "fcntl", None)
+    monkeypatch.setattr(locking, "msvcrt", fake_msvcrt)
 
     with cache_mod._cache_entry_lock(tmp_path, "win_key"):
         pass

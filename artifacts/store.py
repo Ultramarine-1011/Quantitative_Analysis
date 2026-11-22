@@ -6,14 +6,16 @@ import hashlib
 import json
 import math
 import re
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from artifacts.locking import entry_lock
 from artifacts.migration import (
     ArtifactError,
     SchemaMigrationRecord,
@@ -374,6 +376,12 @@ def collect_stale_managed_artifacts(
     )
 
 
+def _bundle_lock(root: Path):
+    # Keep persistent lock inodes outside portable, possibly read-only research directories.
+    key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+    return entry_lock(Path(tempfile.gettempdir()) / "quantitative-analysis-bundles", key)
+
+
 def write_result_outputs(
     result: AnalysisResult | MultiAssetResult,
     *,
@@ -418,7 +426,8 @@ def write_result_outputs(
                 stage(key, name, lambda tmp, data=payload: tmp.write_bytes(data))
 
         if export_csv is not None:
-            target = export_csv.expanduser().absolute()
+            export = export_csv.expanduser()
+            target = export.parent.resolve() / export.name
             if root and target.is_relative_to(root):
                 rel = target.relative_to(root).as_posix()
                 if rel == "data.csv" and "data_csv" in manifest_inputs:
@@ -447,12 +456,13 @@ def write_result_outputs(
                 tmp.write_text(payload + "\n", encoding="utf-8")
 
             txn.stage(root / "result.json", write_json)
-        stale = (
-            collect_stale_managed_artifacts(root, new_target_resolved=set(txn.staged))
-            if root and clean_stale
-            else ()
-        )
-        txn.commit(stale)
+        with _bundle_lock(root) if root is not None else nullcontext():
+            stale = (
+                collect_stale_managed_artifacts(root, new_target_resolved=set(txn.staged))
+                if root and clean_stale
+                else ()
+            )
+            txn.commit(stale)
     if root and clean_stale:
         charts = root / "charts"
         if not charts.is_symlink():
@@ -606,6 +616,13 @@ def load_result_with_migration_info(
 ) -> tuple[AnalysisResult | MultiAssetResult, SchemaMigrationRecord]:
     """Load, migrate, security-check, and integrity-verify an artifact directory offline."""
     out_dir = Path(output_dir).expanduser().resolve()
+    with _bundle_lock(out_dir):
+        return _load_bundle(out_dir, verify_integrity=verify_integrity)
+
+
+def _load_bundle(
+    out_dir: Path, *, verify_integrity: bool
+) -> tuple[AnalysisResult | MultiAssetResult, SchemaMigrationRecord]:
     result_path = resolve_safe_artifact_path(out_dir, "result.json", allow_legacy_absolute=False)
     if not result_path.is_file():
         raise FileNotFoundError(f"Result envelope not found: {result_path}")
