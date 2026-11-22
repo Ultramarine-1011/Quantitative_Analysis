@@ -11,13 +11,13 @@ from analysis_metrics import RISK_FREE_RATE
 from models.covariance import CovMethod, estimate_covariance_and_mean
 from models.optimization import (
     PortfolioSolution,
-    _greedy_extreme_return_weights,
-    _project_capped_simplex,
-    _solve_min_variance_core,
-    _solve_tangency_core,
-    _validate_weight_bounds,
+    greedy_extreme_return_weights,
+    project_capped_simplex,
+    solve_min_variance_core,
+    solve_tangency_core,
+    validate_weight_bounds,
 )
-from models.returns import _positive_integer
+from models.returns import positive_integer
 
 
 @dataclass
@@ -78,7 +78,7 @@ def _sample_constrained_dirichlet(
         if len(merged) >= num_portfolios:
             return merged[:num_portfolios].astype(float, copy=False)
     raw = rng.dirichlet(np.ones(n_assets), size=num_portfolios)
-    projected = np.vstack([_project_capped_simplex(row, lower, upper) for row in raw])
+    projected = np.vstack([project_capped_simplex(row, lower, upper) for row in raw])
     return projected.astype(float, copy=False)
 
 
@@ -96,7 +96,7 @@ def solve_exact_efficient_frontier(
     random_state: int | np.random.Generator | None = None,
 ) -> ExactEfficientFrontierResult:
     """使用 SLSQP 求解真实均值-方差有效前沿包络线、GMV 与最大夏普组合。"""
-    n_points = _positive_integer(n_points, "n_points", minimum=2)
+    n_points = positive_integer(n_points, "n_points", minimum=2)
     if not np.isfinite(risk_free_rate):
         raise ValueError("risk_free_rate must be finite.")
     est = estimate_covariance_and_mean(
@@ -106,11 +106,11 @@ def solve_exact_efficient_frontier(
         min_history=min_history,
     )
     n_assets = len(est.asset_names)
-    w_min, w_max = _validate_weight_bounds(n_assets, min_weight, max_weight)
+    w_min, w_max = validate_weight_bounds(n_assets, min_weight, max_weight)
     rf = float(risk_free_rate)
 
-    gmv = _solve_min_variance_core(est.mean_returns, est.cov_matrix, rf, w_min, w_max)
-    w_max_ret = _greedy_extreme_return_weights(est.mean_returns, w_min, w_max, maximize=True)
+    gmv = solve_min_variance_core(est.mean_returns, est.cov_matrix, rf, w_min, w_max)
+    w_max_ret = greedy_extreme_return_weights(est.mean_returns, w_min, w_max, maximize=True)
     max_ret = float(est.mean_returns @ w_max_ret)
 
     frontier_vols: list[float] = []
@@ -133,7 +133,7 @@ def solve_exact_efficient_frontier(
                 sol = gmv
             else:
                 try:
-                    sol = _solve_min_variance_core(
+                    sol = solve_min_variance_core(
                         est.mean_returns,
                         est.cov_matrix,
                         rf,
@@ -163,7 +163,7 @@ def solve_exact_efficient_frontier(
     rand_weights: np.ndarray | None = None
     extra_seeds: list[np.ndarray] = list(frontier_weights)
     if num_random_portfolios > 0:
-        num_rand = _positive_integer(num_random_portfolios, "num_random_portfolios")
+        num_rand = positive_integer(num_random_portfolios, "num_random_portfolios")
         rng = np.random.default_rng(random_state)
         rw = _sample_constrained_dirichlet(rng, num_rand, n_assets, w_min, w_max)
         r_ret = np.einsum("ij,j->i", rw, est.mean_returns)
@@ -177,7 +177,7 @@ def solve_exact_efficient_frontier(
         if np.any(np.isfinite(r_sharpe)):
             extra_seeds.append(rw[int(np.nanargmax(r_sharpe))])
 
-    max_sharpe = _solve_tangency_core(
+    max_sharpe = solve_tangency_core(
         est.mean_returns,
         est.cov_matrix,
         rf,
@@ -224,8 +224,8 @@ def generate_efficient_frontier(
     年化约定：组合日均乘以 ``trading_days``、日标准差乘以 ``sqrt(trading_days)``；
     夏普为 ``(年化收益 - risk_free_rate) / 年化波动``（统一默认 ``RISK_FREE_RATE = 0.016``）。
     """
-    num_portfolios = _positive_integer(num_portfolios, "num_portfolios")
-    trading_days = _positive_integer(trading_days, "trading_days")
+    num_portfolios = positive_integer(num_portfolios, "num_portfolios")
+    trading_days = positive_integer(trading_days, "trading_days")
     if not np.isfinite(risk_free_rate):
         raise ValueError("risk_free_rate must be finite.")
     if returns_df.shape[1] < 2:

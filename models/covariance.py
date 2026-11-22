@@ -9,7 +9,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from models.returns import _positive_integer, clean_joint_returns
+from models.returns import clean_joint_returns, positive_integer
 
 CovMethod = Literal["sample", "ledoit_wolf", "diagonal"]
 
@@ -55,7 +55,7 @@ def _ledoit_wolf_cov_daily(x: np.ndarray) -> tuple[np.ndarray, float]:
     return shrunk, shrinkage
 
 
-def _estimate_covariance_from_array(
+def estimate_covariance_from_array(
     x: np.ndarray,
     asset_names: list[str],
     *,
@@ -64,7 +64,7 @@ def _estimate_covariance_from_array(
 ) -> CovarianceEstimate:
     if cov_method not in ("sample", "ledoit_wolf", "diagonal"):
         raise ValueError(f"Unsupported cov_method: {cov_method!r}")
-    trading_days = _positive_integer(trading_days, "trading_days")
+    trading_days = positive_integer(trading_days, "trading_days")
     _, n_assets = x.shape
     if n_assets < 2:
         raise ValueError("Portfolio optimization requires at least 2 assets (columns).")
@@ -143,7 +143,7 @@ def estimate_covariance_and_mean(
     """估计年化收益向量与协方差矩阵，支持 sample、Ledoit-Wolf 收缩与对角估计。"""
     r = clean_joint_returns(returns_df, min_history=min_history)
     x = r.to_numpy(dtype=float, copy=False)
-    return _estimate_covariance_from_array(
+    return estimate_covariance_from_array(
         x,
         [str(c) for c in r.columns],
         cov_method=cov_method,

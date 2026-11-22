@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 
-def _resolve_price_column(df: pd.DataFrame, price_col: str | None) -> str:
+def resolve_price_column(df: pd.DataFrame, price_col: str | None) -> str:
     """解析价格列名：显式列名优先，否则 ``Close`` / ``close`` 二选一。"""
     if price_col is not None:
         if price_col not in df.columns:
@@ -44,7 +44,7 @@ def normalize_close_to_base_one(
     ValueError
         若首价为零、缺失或非有限值。
     """
-    col = _resolve_price_column(df, price_col)
+    col = resolve_price_column(df, price_col)
     close = pd.to_numeric(df[col], errors="coerce")
     if close.empty:
         raise ValueError("Close series is empty.")
@@ -57,7 +57,7 @@ def normalize_close_to_base_one(
     return close.astype(float) / float(first)
 
 
-def _positive_integer(value: int, field_name: str, minimum: int = 1) -> int:
+def positive_integer(value: int, field_name: str, minimum: int = 1) -> int:
     if (
         isinstance(value, bool)
         or not isinstance(value, Real)
@@ -76,7 +76,7 @@ def clean_joint_returns(returns_df: pd.DataFrame, min_history: int = 30) -> pd.D
     并在关键步骤校验 ``min_history`` 与至少 2 列资产。
     """
     # 多资产组合要求每个交易日都有所有资产收益，缺一个就无法正确相乘求组合收益。
-    min_history = _positive_integer(min_history, "min_history", minimum=2)
+    min_history = positive_integer(min_history, "min_history", minimum=2)
     if not isinstance(returns_df, pd.DataFrame):
         raise TypeError("returns_df must be a pandas DataFrame.")
     if not returns_df.columns.is_unique or not returns_df.index.is_unique:

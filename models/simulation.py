@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from asset_catalog import get_asset_trading_days
-from models.returns import _positive_integer, _resolve_price_column
+from models.returns import positive_integer, resolve_price_column
 
 
 @dataclass
@@ -45,12 +45,12 @@ def run_monte_carlo_gbm(
     则按 ``annual_drift / trading_days`` 设定日连续漂移率 ``mu_daily``。
     加密货币等 7×24 市场使用自然日（``freq="D"``）生成未来日期，其余使用工作日。
     """
-    days = _positive_integer(days, "days")
-    num_simulations = _positive_integer(num_simulations, "num_simulations")
-    num_sample_paths = _positive_integer(num_sample_paths, "num_sample_paths")
+    days = positive_integer(days, "days")
+    num_simulations = positive_integer(num_simulations, "num_simulations")
+    num_sample_paths = positive_integer(num_sample_paths, "num_sample_paths")
     asset_type = str(getattr(df, "attrs", {}).get("asset_type", "") or "").strip().lower()
     eff_trading_days = (
-        _positive_integer(trading_days, "trading_days")
+        positive_integer(trading_days, "trading_days")
         if trading_days is not None
         else get_asset_trading_days(asset_type or None)
     )
@@ -61,7 +61,7 @@ def run_monte_carlo_gbm(
     ):
         raise ValueError("annual_drift must be finite when provided.")
 
-    col = _resolve_price_column(df, price_col)
+    col = resolve_price_column(df, price_col)
     prices = pd.to_numeric(df[col], errors="coerce").astype(float)
     if not isinstance(df.index, pd.DatetimeIndex):
         idx = pd.to_datetime(df.index, errors="coerce")

@@ -16,8 +16,8 @@ import pandas as pd
 from analysis_metrics import RISK_FREE_RATE
 from models.covariance import (
     CovMethod,
-    _estimate_covariance_from_array,
     estimate_covariance_and_mean,
+    estimate_covariance_from_array,
 )
 
 OptimizerObjective = Literal[
@@ -41,7 +41,7 @@ class PortfolioSolution:
     solver_message: str
 
 
-def _validate_weight_bounds(
+def validate_weight_bounds(
     n_assets: int, min_weight: float, max_weight: float
 ) -> tuple[float, float]:
     for val, name in ((min_weight, "min_weight"), (max_weight, "max_weight")):
@@ -62,7 +62,7 @@ def _validate_weight_bounds(
     return w_min, w_max
 
 
-def _project_capped_simplex(
+def project_capped_simplex(
     vector: np.ndarray,
     lower: float,
     upper: float,
@@ -92,7 +92,7 @@ def _project_capped_simplex(
     return w.astype(float, copy=False)
 
 
-def _greedy_extreme_return_weights(
+def greedy_extreme_return_weights(
     mean_ret: np.ndarray,
     lower: float,
     upper: float,
@@ -110,7 +110,7 @@ def _greedy_extreme_return_weights(
         add = min(span, rem)
         w[idx] += add
         rem -= add
-    return _project_capped_simplex(w, lower, upper)
+    return project_capped_simplex(w, lower, upper)
 
 
 def _portfolio_stats(
@@ -151,7 +151,7 @@ def _deduplicate_starts(
 ) -> list[np.ndarray]:
     unique: list[np.ndarray] = []
     for cand in candidates:
-        proj = _project_capped_simplex(cand, lower, upper)
+        proj = project_capped_simplex(cand, lower, upper)
         if not any(np.allclose(proj, prev, atol=1e-6) for prev in unique):
             unique.append(proj)
     return unique
@@ -167,7 +167,7 @@ def _slsqp_minimize(scipy_optimize: object, *args: object, **kwargs: object) -> 
         return scipy_optimize.minimize(*args, **kwargs)  # type: ignore[attr-defined]
 
 
-def _solve_min_variance_core(
+def solve_min_variance_core(
     mean_ret: np.ndarray,
     cov_mat: np.ndarray,
     risk_free_rate: float,
@@ -209,7 +209,7 @@ def _solve_min_variance_core(
     w_eq = np.full(n, 1.0 / float(n), dtype=float)
     inv_std = 1.0 / np.sqrt(np.maximum(np.diag(cov_mat), 1e-12))
     w_inv = inv_std / float(np.sum(inv_std))
-    w_max_ret = _greedy_extreme_return_weights(mean_ret, lower, upper, maximize=True)
+    w_max_ret = greedy_extreme_return_weights(mean_ret, lower, upper, maximize=True)
     raw_starts = [s for s in (x0, w_eq, w_inv, w_max_ret) if s is not None]
     starts = _deduplicate_starts(raw_starts, lower, upper)
 
@@ -232,7 +232,7 @@ def _solve_min_variance_core(
         if res.success and _is_feasible_solution(
             res.x, lower, upper, mean_ret=mean_ret, target_return=target_return
         ):
-            cand = _project_capped_simplex(res.x, lower, upper)
+            cand = project_capped_simplex(res.x, lower, upper)
             if target_return is not None and float(mean_ret @ cand) < float(target_return) - 1e-5:
                 cand = np.asarray(res.x, dtype=float)
             var = float(cand @ cov_mat @ cand)
@@ -270,7 +270,7 @@ def _solve_min_variance_core(
     )
 
 
-def _solve_tangency_core(
+def solve_tangency_core(
     mean_ret: np.ndarray,
     cov_mat: np.ndarray,
     risk_free_rate: float,
@@ -299,7 +299,7 @@ def _solve_tangency_core(
     ]
 
     w_eq = np.full(n, 1.0 / float(n), dtype=float)
-    w_max_ret = _greedy_extreme_return_weights(mean_ret, lower, upper, maximize=True)
+    w_max_ret = greedy_extreme_return_weights(mean_ret, lower, upper, maximize=True)
     inv_std = 1.0 / np.sqrt(np.maximum(np.diag(cov_mat), 1e-12))
     w_inv = inv_std / float(np.sum(inv_std))
     single_sharpes = (mean_ret - risk_free_rate) / np.sqrt(np.maximum(np.diag(cov_mat), 1e-12))
@@ -341,7 +341,7 @@ def _solve_tangency_core(
         last_msg = str(res.message)
         if not res.success or not _is_feasible_solution(res.x, lower, upper):
             continue
-        w_cand = _project_capped_simplex(res.x, lower, upper)
+        w_cand = project_capped_simplex(res.x, lower, upper)
         ret, vol, sharpe = _portfolio_stats(w_cand, mean_ret, cov_mat, risk_free_rate)
         if not np.isfinite(sharpe):
             continue
@@ -386,8 +386,8 @@ def solve_minimum_variance_portfolio(
         trading_days=trading_days,
         min_history=min_history,
     )
-    w_min, w_max = _validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
-    return _solve_min_variance_core(
+    w_min, w_max = validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
+    return solve_min_variance_core(
         est.mean_returns,
         est.cov_matrix,
         float(risk_free_rate),
@@ -416,15 +416,15 @@ def solve_tangency_portfolio(
         trading_days=trading_days,
         min_history=min_history,
     )
-    w_min, w_max = _validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
-    gmv = _solve_min_variance_core(
+    w_min, w_max = validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
+    gmv = solve_min_variance_core(
         est.mean_returns,
         est.cov_matrix,
         float(risk_free_rate),
         w_min,
         w_max,
     )
-    return _solve_tangency_core(
+    return solve_tangency_core(
         est.mean_returns,
         est.cov_matrix,
         float(risk_free_rate),
@@ -523,7 +523,7 @@ def _solve_equal_weight_core(
     upper: float,
 ) -> PortfolioSolution:
     n = len(mean_ret)
-    weights = _project_capped_simplex(np.full(n, 1.0 / float(n), dtype=float), lower, upper)
+    weights = project_capped_simplex(np.full(n, 1.0 / float(n), dtype=float), lower, upper)
     ret, vol, sharpe = _portfolio_stats(weights, mean_ret, cov_mat, risk_free_rate)
     return PortfolioSolution(
         weights=weights,
@@ -550,7 +550,7 @@ def _solve_inverse_volatility_core(
     else:
         raw = 1.0 / diag_vol
     raw = raw / float(np.sum(raw))
-    weights = _project_capped_simplex(raw, lower, upper)
+    weights = project_capped_simplex(raw, lower, upper)
     ret, vol, sharpe = _portfolio_stats(weights, mean_ret, cov_mat, risk_free_rate)
     return PortfolioSolution(
         weights=weights,
@@ -575,7 +575,7 @@ def _solve_risk_parity_core(
     target_prc = np.full(n, 1.0 / float(n), dtype=float)
     inv_vol = _solve_inverse_volatility_core(mean_ret, sym_cov, risk_free_rate, lower, upper)
     eq_w = _solve_equal_weight_core(mean_ret, sym_cov, risk_free_rate, lower, upper)
-    gmv_w = _solve_min_variance_core(mean_ret, sym_cov, risk_free_rate, lower, upper)
+    gmv_w = solve_min_variance_core(mean_ret, sym_cov, risk_free_rate, lower, upper)
 
     if abs(upper - lower) <= 1e-12:
         return eq_w
@@ -614,7 +614,7 @@ def _solve_risk_parity_core(
         )
         cand = np.asarray(res.x, dtype=float)  # type: ignore[attr-defined]
         if _is_feasible_solution(cand, lower, upper):
-            cand = _project_capped_simplex(cand, lower, upper)
+            cand = project_capped_simplex(cand, lower, upper)
             val = objective(cand)
             if np.isfinite(val) and (best_w is None or val < best_obj):
                 best_w = cand
@@ -659,7 +659,7 @@ def solve_equal_weight_portfolio(
         trading_days=trading_days,
         min_history=min_history,
     )
-    w_min, w_max = _validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
+    w_min, w_max = validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
     return _solve_equal_weight_core(
         est.mean_returns,
         est.cov_matrix,
@@ -688,7 +688,7 @@ def solve_inverse_volatility_portfolio(
         trading_days=trading_days,
         min_history=min_history,
     )
-    w_min, w_max = _validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
+    w_min, w_max = validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
     return _solve_inverse_volatility_core(
         est.mean_returns,
         est.cov_matrix,
@@ -717,7 +717,7 @@ def solve_risk_parity_portfolio(
         trading_days=trading_days,
         min_history=min_history,
     )
-    w_min, w_max = _validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
+    w_min, w_max = validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
     return _solve_risk_parity_core(
         est.mean_returns,
         est.cov_matrix,
@@ -727,7 +727,7 @@ def solve_risk_parity_portfolio(
     )
 
 
-def _optimize_weights_for_window(
+def optimize_weights_for_window(
     window_df: pd.DataFrame,
     *,
     objective: OptimizerObjective,
@@ -745,13 +745,13 @@ def _optimize_weights_for_window(
         "equal_weight",
     ):
         raise ValueError(f"Unsupported objective: {objective!r}")
-    est = _estimate_covariance_from_array(
+    est = estimate_covariance_from_array(
         window_df.to_numpy(dtype=float, copy=False),
         [str(c) for c in window_df.columns],
         cov_method=cov_method,
         trading_days=trading_days,
     )
-    w_min, w_max = _validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
+    w_min, w_max = validate_weight_bounds(len(est.asset_names), min_weight, max_weight)
     if objective == "equal_weight":
         return _solve_equal_weight_core(
             est.mean_returns,
@@ -776,7 +776,7 @@ def _optimize_weights_for_window(
             w_min,
             w_max,
         )
-    gmv = _solve_min_variance_core(
+    gmv = solve_min_variance_core(
         est.mean_returns,
         est.cov_matrix,
         risk_free_rate,
@@ -785,7 +785,7 @@ def _optimize_weights_for_window(
     )
     if objective == "min_variance":
         return gmv
-    return _solve_tangency_core(
+    return solve_tangency_core(
         est.mean_returns,
         est.cov_matrix,
         risk_free_rate,

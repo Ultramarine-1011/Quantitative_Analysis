@@ -13,8 +13,8 @@ import pandas as pd
 
 from analysis_metrics import RISK_FREE_RATE
 from models.covariance import CovMethod
-from models.optimization import OptimizerObjective, PortfolioSolution, _optimize_weights_for_window
-from models.returns import _positive_integer, clean_joint_returns
+from models.optimization import OptimizerObjective, PortfolioSolution, optimize_weights_for_window
+from models.returns import clean_joint_returns, positive_integer
 
 RebalanceFreq = Literal["buy_and_hold", "daily", "monthly", "quarterly"]
 
@@ -343,8 +343,8 @@ def split_train_test_returns(
     periods_per_year: float = 252.0,
 ) -> TrainTestSplitResult:
     """严格拆分训练集与测试集：仅用样本内收益求解最优权重，再独立做样本外静态回测。"""
-    min_train_rows = _positive_integer(min_train_rows, "min_train_rows", minimum=5)
-    min_test_rows = _positive_integer(min_test_rows, "min_test_rows", minimum=2)
+    min_train_rows = positive_integer(min_train_rows, "min_train_rows", minimum=5)
+    min_test_rows = positive_integer(min_test_rows, "min_test_rows", minimum=2)
     r = clean_joint_returns(returns_df, min_history=min_train_rows + min_test_rows)
 
     if split_date is not None:
@@ -381,7 +381,7 @@ def split_train_test_returns(
 
     ann_days = max(int(round(float(periods_per_year))), 1)
     # 权重仅由 train_returns 拟合得出，测试集绝不参与协方差或均值估计。
-    in_sample_sol = _optimize_weights_for_window(
+    in_sample_sol = optimize_weights_for_window(
         train_returns,
         objective=objective,
         cov_method=cov_method,
@@ -455,8 +455,8 @@ def run_walk_forward_backtest(
     ):
         raise ValueError("transaction_cost_bps must be finite and non-negative.")
 
-    train_window = _positive_integer(train_window, "train_window", minimum=5)
-    min_test_rows = _positive_integer(min_test_rows, "min_test_rows", minimum=2)
+    train_window = positive_integer(train_window, "train_window", minimum=5)
+    min_test_rows = positive_integer(min_test_rows, "min_test_rows", minimum=2)
     r = clean_joint_returns(returns_df, min_history=train_window + min_test_rows)
     n_total, n_assets = r.shape
     ann_days = max(int(round(float(periods_per_year))), 1)
@@ -475,7 +475,7 @@ def run_walk_forward_backtest(
 
     # 首个 OOS 交易日 t_start 的建仓权重仅能看见 r.iloc[:t_start]，绝不包含 t_start 当日。
     init_start = 0 if window_mode == "expanding" else t_start - train_window
-    init_sol = _optimize_weights_for_window(
+    init_sol = optimize_weights_for_window(
         r.iloc[init_start:t_start],
         objective=objective,
         cov_method=cov_method,
@@ -512,7 +512,7 @@ def run_walk_forward_backtest(
                 if prev_equity <= 0.0:
                     raise ValueError("Portfolio equity fell to zero or below during backtest.")
                 win_start = 0 if window_mode == "expanding" else global_t - train_window
-                sol = _optimize_weights_for_window(
+                sol = optimize_weights_for_window(
                     r.iloc[win_start:global_t],
                     objective=objective,
                     cov_method=cov_method,
@@ -552,7 +552,7 @@ def run_walk_forward_backtest(
         tradable_mask=tradable_mask,
     )
 
-    in_sample_sol = _optimize_weights_for_window(
+    in_sample_sol = optimize_weights_for_window(
         r,
         objective=objective,
         cov_method=cov_method,
