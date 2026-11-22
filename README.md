@@ -294,7 +294,7 @@ Quantitative_Analysis/
 
 ### 环境与缓存配置
 
-- **Python 与核心依赖**：仅支持 Python **3.14.x**（本地主验证环境为 **3.14.5**，CI 仅运行 **3.14**）。`pyproject.toml` 动态读取 `requirements.txt`；Web 端要求 `streamlit>=1.50.0`（避免旧版前端与新版 Plotly 数组格式不兼容），`pyarrow` 保留 `<26.0.0` 约束。
+- **Python 与核心依赖**：仅支持 Python **3.14.x**（本地主验证环境为 **3.14.5**，CI 仅运行 **3.14**）。`pyproject.toml` 从 `requirements-core.txt` 安装核心依赖；`.[web]` 与 `.[charts]` 分别安装 Web 和图表依赖，`requirements.txt` 与 `.[dev]` 均包含完整渲染环境；Web 端要求 `streamlit>=1.50.0`（避免旧版前端与新版 Plotly 数组格式不兼容），`pyarrow` 保留 `<26.0.0` 约束。
 - **共享磁盘缓存**：默认写入 `~/.cache/quantitative_analysis/ohlcv`，可通过环境变量控制：
   - `QUANT_CACHE_DIR`：自定义缓存目录。
   - `QUANT_CACHE_TTL`：缓存有效期（秒，默认 `3600`）。

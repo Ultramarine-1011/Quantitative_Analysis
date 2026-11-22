@@ -4,21 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shutil
+import os as os
 import sys
-import tempfile
-from collections.abc import Callable, Sequence
-from dataclasses import replace
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-
-from artifacts import (
-    build_artifact_manifest,
-    prepare_export_frame,
-)
+from artifacts.store import collect_stale_managed_artifacts as _collect_stale_managed_artifacts  # noqa: F401 - compatibility
+from artifacts.transaction import ArtifactIOError
 from asset_catalog import (
     DEFAULT_SYMBOLS,
     SUPPORTED_ASSET_TYPES,
@@ -45,6 +38,7 @@ from contracts import (
 )
 from data_sources.errors import DataFetchError
 from data_sources.network import apply_default_network_proxy_policy, classify_network_exception
+from reporting.output import write_outputs
 from services.analysis_service import AssetLoaderFn, analyze_single_asset, fetch_single_asset
 from services.multi_asset_service import analyze_portfolio, compare_assets
 
@@ -80,53 +74,9 @@ _TRANSPORT_MODULES = (
     "socket",
 )
 
-_MANAGED_FRAME_BASENAMES: tuple[str, ...] = (
-    "prices",
-    "returns",
-    "correlation",
-    "covariance",
-    "rolling_metrics",
-    "weights",
-    "frontier",
-    "backtest",
-    "weight_history",
-)
-
-_MANAGED_OUTPUT_FILENAMES: frozenset[str] = frozenset(
-    {
-        "result.json",
-        "data.parquet",
-        "data.csv",
-        "report.md",
-        "report.html",
-        *(f"{name}.parquet" for name in _MANAGED_FRAME_BASENAMES),
-        *(f"{name}.csv" for name in _MANAGED_FRAME_BASENAMES),
-    }
-)
-
-_MANAGED_CHART_TYPES: frozenset[str] = frozenset(
-    {
-        "price",
-        "normalized",
-        "drawdown",
-        "rolling",
-        "correlation",
-        "backtest",
-        "weights",
-        "frontier",
-        "weight_history",
-    }
-)
-
-_MANAGED_CHART_SUFFIXES: frozenset[str] = frozenset({".html", ".png", ".svg"})
-
 
 class _CliUsageError(ValueError):
     """Raised when CLI syntax or flag parsing fails so stderr can emit structured JSON."""
-
-
-class _ArtifactIOError(OSError):
-    """Raised when writing output files fails after fetch/analysis succeeds."""
 
 
 class _QuantArgumentParser(argparse.ArgumentParser):
@@ -591,413 +541,10 @@ def _validate_output_targets(
     return out_dir, csv_path
 
 
-def _stage_temp_file(
-    target_path: Path,
-    writer: Callable[[Path], None],
-    *,
-    suffix: str = ".tmp",
-) -> Path:
-    parent = target_path.parent
-    try:
-        parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{target_path.name}.",
-            suffix=suffix,
-            dir=str(parent),
-        )
-    except OSError as exc:
-        raise _ArtifactIOError(f"Failed staging output file {target_path}: {exc}") from exc
-
-    tmp_path = Path(tmp_name)
-    try:
-        os.close(fd)
-        writer(tmp_path)
-        return tmp_path
-    except OSError as exc:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-        raise _ArtifactIOError(f"Failed writing staged output file {target_path}: {exc}") from exc
-    except Exception as exc:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-        raise _ArtifactIOError(f"Failed serializing output file {target_path}: {exc}") from exc
-
-
-def _atomic_write(target_path: Path, writer: Callable[[Path], None]) -> Path:
-    tmp_path = _stage_temp_file(target_path, writer, suffix=".tmp")
-    try:
-        os.replace(tmp_path, target_path)
-        return target_path.resolve()
-    except OSError as exc:
-        raise _ArtifactIOError(f"Failed writing output file {target_path}: {exc}") from exc
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-
-
-def _resolve_non_symlink_managed_file(resolved_dir: Path, candidate: Path) -> Path | None:
-    """Return ``candidate`` only when it is a regular non-symlink file inside ``resolved_dir``."""
-    if candidate.is_symlink() or not candidate.is_file():
-        return None
-    resolved_candidate = candidate.resolve()
-    if (
-        resolved_candidate != candidate
-        or resolved_candidate == resolved_dir
-        or not resolved_candidate.is_relative_to(resolved_dir)
-    ):
-        return None
-    return resolved_candidate
-
-
-def _collect_stale_managed_artifacts(
-    out_dir: Path,
-    *,
-    new_target_resolved: set[Path],
-) -> list[Path]:
-    """Identify previously generated quant artifacts in ``out_dir`` not produced by the current run."""
-    if not out_dir.exists() or not out_dir.is_dir():
-        return []
-    resolved_dir = out_dir.resolve()
-    charts_dir = resolved_dir / "charts"
-    candidates: set[Path] = set()
-
-    for name in _MANAGED_OUTPUT_FILENAMES:
-        resolved_item = _resolve_non_symlink_managed_file(resolved_dir, resolved_dir / name)
-        if resolved_item is not None:
-            candidates.add(resolved_item)
-
-    if not charts_dir.is_symlink() and charts_dir.is_dir() and charts_dir.resolve() == charts_dir:
-        for p in charts_dir.iterdir():
-            if p.stem in _MANAGED_CHART_TYPES and p.suffix.lower() in _MANAGED_CHART_SUFFIXES:
-                resolved_chart = _resolve_non_symlink_managed_file(resolved_dir, p)
-                if resolved_chart is not None and resolved_chart.parent == charts_dir:
-                    candidates.add(resolved_chart)
-
-    return sorted(
-        p
-        for p in candidates
-        if p not in new_target_resolved
-        and not p.is_symlink()
-        and p != resolved_dir
-        and p.is_relative_to(resolved_dir)
-    )
-
-
-def _write_outputs(
-    result: AnalysisResult | MultiAssetResult,
-    *,
-    out_dir: Path | None,
-    write_csv: bool,
-    export_csv: Path | None,
-    include_data: bool,
-    compact: bool,
-    report_formats: Sequence[str] = (),
-    chart_formats: Sequence[str] = (),
-    chart_types: Sequence[str] | None = None,
-) -> AnalysisResult | MultiAssetResult:
-    working_result: AnalysisResult | MultiAssetResult = result
-    artifacts: dict[str, str] = {}
-    write_tasks: list[tuple[Path, Callable[[Path], None]]] = []
-    seen_targets: set[Path] = set()
-    manifest_keys_by_target: dict[Path, tuple[str, str]] = {}
-
-    def _enqueue(
-        target: Path,
-        writer: Callable[[Path], None],
-        *,
-        artifact_key: str | None = None,
-        rel_path: str | None = None,
-    ) -> Path:
-        resolved = target.resolve()
-        if resolved not in seen_targets:
-            seen_targets.add(resolved)
-            write_tasks.append((target, writer))
-        if artifact_key is not None and rel_path is not None:
-            manifest_keys_by_target[resolved] = (artifact_key, rel_path)
-        return resolved
-
-    def _enqueue_bytes(target: Path, content: bytes) -> Path:
-        return _enqueue(target, lambda tmp, data=content: tmp.write_bytes(data))
-
-    def _parquet_writer(df: pd.DataFrame) -> Callable[[Path], None]:
-        write_idx = not isinstance(df.index, pd.RangeIndex)
-        return lambda tmp: df.to_parquet(tmp, engine="pyarrow", index=write_idx)
-
-    def _csv_writer(df: pd.DataFrame) -> Callable[[Path], None]:
-        write_idx = not isinstance(df.index, pd.RangeIndex)
-        return lambda tmp: df.to_csv(tmp, index=write_idx, encoding="utf-8-sig")
-
-    out_dir_resolved = out_dir.resolve() if out_dir is not None else None
-
-    if out_dir is not None and out_dir_resolved is not None:
-        result_target = out_dir / "result.json"
-        parquet_target = out_dir / "data.parquet"
-        primary_df = prepare_export_frame(working_result.data_frame)
-
-        artifacts["output_dir"] = "."
-        artifacts["result_json"] = "result.json"
-        artifacts["data_parquet"] = "data.parquet"
-        _enqueue(
-            parquet_target,
-            _parquet_writer(primary_df),
-            artifact_key="data_parquet",
-            rel_path="data.parquet",
-        )
-
-        if write_csv:
-            csv_target = out_dir / "data.csv"
-            artifacts["data_csv"] = "data.csv"
-            _enqueue(
-                csv_target,
-                _csv_writer(primary_df),
-                artifact_key="data_csv",
-                rel_path="data.csv",
-            )
-
-        if isinstance(working_result, MultiAssetResult):
-            for frame_name, raw_frame in working_result.frames.items():
-                prep = prepare_export_frame(raw_frame)
-                pq_rel = f"{frame_name}.parquet"
-                pq_path = out_dir / pq_rel
-                artifacts[f"{frame_name}_parquet"] = pq_rel
-                _enqueue(
-                    pq_path,
-                    _parquet_writer(prep),
-                    artifact_key=f"{frame_name}_parquet",
-                    rel_path=pq_rel,
-                )
-                if write_csv:
-                    cs_rel = f"{frame_name}.csv"
-                    cs_path = out_dir / cs_rel
-                    artifacts[f"{frame_name}_csv"] = cs_rel
-                    _enqueue(
-                        cs_path,
-                        _csv_writer(prep),
-                        artifact_key=f"{frame_name}_csv",
-                        rel_path=cs_rel,
-                    )
-
-        chart_artifacts: tuple[Any, ...] = ()
-        skipped_charts: dict[str, str] = {}
-        if chart_formats:
-            from reporting.chart_renderer import render_charts
-
-            chart_out = render_charts(
-                working_result,
-                out_dir,
-                formats=chart_formats,
-                chart_types=chart_types,
-                file_writer=_enqueue_bytes,
-            )
-            chart_artifacts = chart_out.charts
-            skipped_charts = dict(chart_out.skipped)
-            for ch in chart_artifacts:
-                ch_resolved = Path(ch.path).resolve()
-                ch_rel = ch_resolved.relative_to(out_dir_resolved).as_posix()
-                artifacts[ch.artifact_key] = ch_rel
-                manifest_keys_by_target[ch_resolved] = (ch.artifact_key, ch_rel)
-            if chart_out.warnings:
-                merged_warns = list(working_result.warnings)
-                for warn_msg in chart_out.warnings:
-                    if warn_msg not in merged_warns:
-                        merged_warns.append(warn_msg)
-                working_result = replace(working_result, warnings=tuple(merged_warns))
-
-        if report_formats:
-            from reporting.report_renderer import render_report
-
-            rep_out = render_report(
-                working_result,
-                out_dir,
-                formats=report_formats,
-                charts=chart_artifacts,
-                skipped_charts=skipped_charts,
-                file_writer=_enqueue_bytes,
-            )
-            for rep in rep_out.reports:
-                rep_resolved = Path(rep.path).resolve()
-                rep_rel = rep_resolved.relative_to(out_dir_resolved).as_posix()
-                artifacts[rep.artifact_key] = rep_rel
-                manifest_keys_by_target[rep_resolved] = (rep.artifact_key, rep_rel)
-
-    if export_csv is not None:
-        primary_csv_df = prepare_export_frame(working_result.data_frame)
-        csv_resolved = _enqueue(export_csv, _csv_writer(primary_csv_df))
-        if out_dir_resolved is None:
-            artifacts["export_csv"] = str(csv_resolved)
-        elif csv_resolved.is_relative_to(out_dir_resolved):
-            csv_rel = csv_resolved.relative_to(out_dir_resolved).as_posix()
-            artifacts["export_csv"] = csv_rel
-            manifest_keys_by_target[csv_resolved] = ("export_csv", csv_rel)
-
-    if out_dir is not None:
-        seen_targets.add((out_dir / "result.json").resolve())
-        final_result = working_result.with_artifacts(artifacts)
-    else:
-        final_result = working_result.with_artifacts(artifacts)
-        if not write_tasks:
-            return final_result
-
-    stale_paths = (
-        _collect_stale_managed_artifacts(out_dir, new_target_resolved=seen_targets)
-        if out_dir is not None
-        else []
-    )
-
-    staged_pairs: list[tuple[Path, Path]] = []
-    staged_by_resolved: dict[Path, Path] = {}
-    backups: dict[Path, Path] = {}
-    preexisting_targets: set[Path] = set()
-    committed_targets: list[Path] = []
-    removed_stale: list[Path] = []
-
-    try:
-        # Phase 1: stage data/chart/report files first, compute SHA-256 manifest, stage result.json last.
-        for target, writer in write_tasks:
-            tmp_path = _stage_temp_file(target, writer, suffix=".stage.tmp")
-            staged_pairs.append((tmp_path, target))
-            staged_by_resolved[target.resolve()] = tmp_path
-
-        if out_dir is not None:
-            manifest_inputs = {
-                art_key: (rel_path, staged_by_resolved[res_path])
-                for res_path, (art_key, rel_path) in manifest_keys_by_target.items()
-                if res_path in staged_by_resolved
-            }
-            manifest = build_artifact_manifest(manifest_inputs)
-            final_result = working_result.with_artifacts(artifacts, artifact_manifest=manifest)
-            result_target = out_dir / "result.json"
-            try:
-                payload = final_result.to_dict(include_data=include_data)
-                serialized = json.dumps(
-                    payload,
-                    ensure_ascii=False,
-                    indent=None if compact else 2,
-                    allow_nan=False,
-                )
-            except Exception as exc:
-                raise _ArtifactIOError(f"Failed serializing result.json payload: {exc}") from exc
-            result_tmp = _stage_temp_file(
-                result_target,
-                lambda tmp, text=serialized + "\n": tmp.write_text(text, encoding="utf-8"),
-                suffix=".stage.tmp",
-            )
-            staged_pairs.append((result_tmp, result_target))
-
-        # Phase 2: back up pre-existing targets and stale artifacts on same filesystem.
-        staged_resolved = {t.resolve() for _, t in staged_pairs}
-        all_paths = [target for _, target in staged_pairs] + stale_paths
-        for path in all_paths:
-            if path.is_file():
-                resolved_p = path.resolve()
-                if resolved_p in staged_resolved:
-                    preexisting_targets.add(resolved_p)
-                if resolved_p not in backups:
-                    bak_path = _stage_temp_file(
-                        path,
-                        lambda tmp, src=path: shutil.copy2(src, tmp),
-                        suffix=".bak.tmp",
-                    )
-                    backups[resolved_p] = bak_path
-
-        # Phase 3: commit staged replacements and purge stale managed artifacts atomically.
-        for idx, (tmp_path, target) in enumerate(staged_pairs):
-            os.replace(tmp_path, target)
-            staged_pairs[idx] = (Path(""), target)
-            committed_targets.append(target)
-
-        for stale in stale_paths:
-            if stale.exists():
-                stale.unlink()
-                removed_stale.append(stale)
-
-        if out_dir is not None:
-            charts_dir = out_dir / "charts"
-            if not charts_dir.is_symlink() and charts_dir.is_dir():
-                try:
-                    if not any(charts_dir.iterdir()):
-                        charts_dir.rmdir()
-                except OSError:
-                    pass
-
-        return final_result
-    except _ArtifactIOError:
-        # Roll back only files that were actually committed/unlinked.
-        _rollback_multi_file_commit(
-            committed_targets=committed_targets,
-            removed_stale=removed_stale,
-            preexisting_targets=preexisting_targets,
-            backups=backups,
-        )
-        raise
-    except Exception as exc:
-        _rollback_multi_file_commit(
-            committed_targets=committed_targets,
-            removed_stale=removed_stale,
-            preexisting_targets=preexisting_targets,
-            backups=backups,
-        )
-        raise _ArtifactIOError(f"Failed committing output artifacts cleanly: {exc}") from exc
-    finally:
-        for tmp_path, _ in staged_pairs:
-            if tmp_path != Path("") and tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-        for bak_path in backups.values():
-            if bak_path.exists():
-                try:
-                    bak_path.unlink()
-                except OSError:
-                    pass
-
-
-def _rollback_multi_file_commit(
-    *,
-    committed_targets: Sequence[Path],
-    removed_stale: Sequence[Path],
-    preexisting_targets: set[Path],
-    backups: dict[Path, Path],
-) -> None:
-    """Restore any modified or deleted files from same-filesystem backups on commit failure."""
-    for target in reversed(committed_targets):
-        resolved_t = target.resolve()
-        try:
-            if resolved_t in preexisting_targets:
-                bak = backups.get(resolved_t)
-                if bak is not None and bak.exists():
-                    os.replace(bak, target)
-                    backups.pop(resolved_t, None)
-            elif target.exists():
-                target.unlink()
-        except OSError:
-            pass
-
-    for stale in removed_stale:
-        resolved_s = stale.resolve()
-        bak = backups.get(resolved_s)
-        if bak is not None and bak.exists():
-            try:
-                os.replace(bak, stale)
-                backups.pop(resolved_s, None)
-            except OSError:
-                pass
-
-
 def _classify_cli_exception(exc: BaseException) -> tuple[str, int]:
     if isinstance(exc, _CliUsageError):
         return "caller", EXIT_USAGE_OR_CALLER
-    if isinstance(exc, _ArtifactIOError):
+    if isinstance(exc, ArtifactIOError):
         return "io_error", EXIT_UNEXPECTED
     if isinstance(exc, DataFetchError):
         category = classify_network_exception(exc)
@@ -1274,7 +821,7 @@ def run_cli_command(
         else:
             include_data = bool(args.include_data)
 
-        final_result = _write_outputs(
+        final_result = write_outputs(
             result,
             out_dir=out_dir,
             write_csv=bool(args.csv),

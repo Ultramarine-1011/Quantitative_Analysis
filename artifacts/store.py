@@ -5,11 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
-import shutil
-import tempfile
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +19,7 @@ from artifacts.migration import (
     SchemaMigrationRecord,
     migrate_result_payload,
 )
+from artifacts.transaction import ArtifactIOError, FileTransaction
 from contracts import (
     SOFTWARE_VERSION,
     AnalysisResult,
@@ -298,25 +297,168 @@ def _csv_writer(df: pd.DataFrame) -> Callable[[Path], None]:
     return lambda tmp: df.to_csv(tmp, index=write_idx, encoding="utf-8-sig")
 
 
-def _stage_temp_file(target_path: Path, writer: Callable[[Path], None], *, suffix: str) -> Path:
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{target_path.name}.",
-        suffix=suffix,
-        dir=str(target_path.parent),
+_MANAGED_OUTPUT_FILENAMES: frozenset[str] = frozenset(
+    {
+        "result.json",
+        "data.parquet",
+        "data.csv",
+        "report.md",
+        "report.html",
+        *(f"{name}.parquet" for name in KNOWN_MULTI_ASSET_FRAMES),
+        *(f"{name}.csv" for name in KNOWN_MULTI_ASSET_FRAMES),
+    }
+)
+
+_MANAGED_CHART_TYPES: frozenset[str] = frozenset(
+    {
+        "price",
+        "normalized",
+        "drawdown",
+        "rolling",
+        "correlation",
+        "backtest",
+        "weights",
+        "frontier",
+        "weight_history",
+    }
+)
+
+_MANAGED_CHART_SUFFIXES: frozenset[str] = frozenset({".html", ".png", ".svg"})
+
+
+def _resolve_non_symlink_managed_file(resolved_dir: Path, candidate: Path) -> Path | None:
+    """Return ``candidate`` only when it is a regular non-symlink file inside ``resolved_dir``."""
+    if candidate.is_symlink() or not candidate.is_file():
+        return None
+    resolved_candidate = candidate.resolve()
+    if (
+        resolved_candidate != candidate
+        or resolved_candidate == resolved_dir
+        or not resolved_candidate.is_relative_to(resolved_dir)
+    ):
+        return None
+    return resolved_candidate
+
+
+def collect_stale_managed_artifacts(
+    out_dir: Path,
+    *,
+    new_target_resolved: set[Path],
+) -> list[Path]:
+    """Identify previously generated quant artifacts in ``out_dir`` not produced by the current run."""
+    if not out_dir.exists() or not out_dir.is_dir():
+        return []
+    resolved_dir = out_dir.resolve()
+    charts_dir = resolved_dir / "charts"
+    candidates: set[Path] = set()
+
+    for name in _MANAGED_OUTPUT_FILENAMES:
+        resolved_item = _resolve_non_symlink_managed_file(resolved_dir, resolved_dir / name)
+        if resolved_item is not None:
+            candidates.add(resolved_item)
+
+    if not charts_dir.is_symlink() and charts_dir.is_dir() and charts_dir.resolve() == charts_dir:
+        for p in charts_dir.iterdir():
+            if p.stem in _MANAGED_CHART_TYPES and p.suffix.lower() in _MANAGED_CHART_SUFFIXES:
+                resolved_chart = _resolve_non_symlink_managed_file(resolved_dir, p)
+                if resolved_chart is not None and resolved_chart.parent == charts_dir:
+                    candidates.add(resolved_chart)
+
+    return sorted(
+        p
+        for p in candidates
+        if p not in new_target_resolved
+        and not p.is_symlink()
+        and p != resolved_dir
+        and p.is_relative_to(resolved_dir)
     )
-    tmp_path = Path(tmp_name)
-    try:
-        os.close(fd)
-        writer(tmp_path)
-        return tmp_path
-    except Exception:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-        raise
+
+
+def write_result_outputs(
+    result: AnalysisResult | MultiAssetResult,
+    *,
+    out_dir: Path | None,
+    write_csv: bool = False,
+    export_csv: Path | None = None,
+    include_data: bool = False,
+    compact: bool = False,
+    attachments: Mapping[str, tuple[str, bytes]] | None = None,
+    clean_stale: bool = True,
+) -> AnalysisResult | MultiAssetResult:
+    """Commit data, optional presentation files and their strict-JSON manifest together."""
+    validate_result_invariants(result)
+    root = out_dir.resolve() if out_dir is not None else None
+    paths: dict[str, str] = {}
+    manifest_inputs: dict[str, tuple[str, Path]] = {}
+
+    with FileTransaction() as txn:
+
+        def stage(key: str, name: str, writer: Callable[[Path], object]) -> None:
+            assert root is not None
+            target = resolve_safe_artifact_path(root, name, allow_legacy_absolute=False)
+            if target != root / name:
+                raise ArtifactIOError(f"Refusing redirected output: {name}")
+            paths[key] = name
+            manifest_inputs[key] = (name, txn.stage(target, writer))
+
+        if root is not None:
+            paths.update(output_dir=".", result_json="result.json")
+            frames = {"data": result.data_frame} if result.data_frame is not None else {}
+            if isinstance(result, MultiAssetResult):
+                for name, frame in result.frames.items():
+                    if not re.fullmatch(r"[\w-]+", name) or name == "data":
+                        raise ArtifactIOError(f"Invalid output frame name: {name!r}")
+                    frames[name] = frame
+            for name, raw in frames.items():
+                frame = prepare_export_frame(raw)
+                stage(f"{name}_parquet", f"{name}.parquet", _parquet_writer(frame))
+                if write_csv:
+                    stage(f"{name}_csv", f"{name}.csv", _csv_writer(frame))
+            for key, (name, payload) in (attachments or {}).items():
+                stage(key, name, lambda tmp, data=payload: tmp.write_bytes(data))
+
+        if export_csv is not None:
+            target = export_csv.expanduser().absolute()
+            if root and target.is_relative_to(root):
+                rel = target.relative_to(root).as_posix()
+                if rel == "data.csv" and "data_csv" in manifest_inputs:
+                    paths["export_csv"] = rel
+                    manifest_inputs["export_csv"] = manifest_inputs["data_csv"]
+                elif rel == "result.json" or target in txn.staged:
+                    raise ValueError(f"CSV export conflicts with bundle output: {rel}")
+                else:
+                    stage("export_csv", rel, _csv_writer(prepare_export_frame(result.data_frame)))
+            else:
+                txn.stage(target, _csv_writer(prepare_export_frame(result.data_frame)))
+                if root is None:
+                    paths["export_csv"] = str(target)
+
+        manifest = build_artifact_manifest(manifest_inputs) if root is not None else None
+        final = result.with_artifacts(paths, artifact_manifest=manifest)
+        if root is not None:
+
+            def write_json(tmp: Path) -> None:
+                payload = json.dumps(
+                    final.to_dict(include_data=include_data),
+                    ensure_ascii=False,
+                    indent=None if compact else 2,
+                    allow_nan=False,
+                )
+                tmp.write_text(payload + "\n", encoding="utf-8")
+
+            txn.stage(root / "result.json", write_json)
+        stale = (
+            collect_stale_managed_artifacts(root, new_target_resolved=set(txn.staged))
+            if root and clean_stale
+            else ()
+        )
+        txn.commit(stale)
+    if root and clean_stale:
+        charts = root / "charts"
+        if not charts.is_symlink():
+            with suppress(OSError):
+                charts.rmdir()
+    return final
 
 
 def save_result_bundle(
@@ -327,115 +469,15 @@ def save_result_bundle(
     include_data: bool = False,
     compact: bool = False,
 ) -> AnalysisResult | MultiAssetResult:
-    """Serialize a typed result and its DataFrames into ``output_dir`` with portable relative paths."""
-    validate_result_invariants(result)
-    out_dir = Path(output_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    artifacts: dict[str, str] = {
-        "output_dir": ".",
-        "result_json": "result.json",
-    }
-    write_tasks: list[tuple[str | None, str, Path, Callable[[Path], None]]] = []
-
-    if result.data_frame is not None:
-        primary_df = prepare_export_frame(result.data_frame)
-        artifacts["data_parquet"] = "data.parquet"
-        write_tasks.append(
-            ("data_parquet", "data.parquet", out_dir / "data.parquet", _parquet_writer(primary_df))
-        )
-        if write_csv:
-            artifacts["data_csv"] = "data.csv"
-            write_tasks.append(
-                ("data_csv", "data.csv", out_dir / "data.csv", _csv_writer(primary_df))
-            )
-
-    if isinstance(result, MultiAssetResult):
-        for frame_name, raw_frame in result.frames.items():
-            prep = prepare_export_frame(raw_frame)
-            pq_rel = f"{frame_name}.parquet"
-            artifacts[f"{frame_name}_parquet"] = pq_rel
-            write_tasks.append(
-                (f"{frame_name}_parquet", pq_rel, out_dir / pq_rel, _parquet_writer(prep))
-            )
-            if write_csv:
-                cs_rel = f"{frame_name}.csv"
-                artifacts[f"{frame_name}_csv"] = cs_rel
-                write_tasks.append(
-                    (f"{frame_name}_csv", cs_rel, out_dir / cs_rel, _csv_writer(prep))
-                )
-
-    staged_pairs: list[tuple[Path, Path]] = []
-    backups: dict[Path, Path] = {}
-    preexisting_targets: set[Path] = set()
-    committed_targets: list[Path] = []
-    manifest_inputs: dict[str, tuple[str, Path]] = {}
-
-    try:
-        for art_key, rel_path, target, writer in write_tasks:
-            tmp_path = _stage_temp_file(target, writer, suffix=".stage.tmp")
-            staged_pairs.append((tmp_path, target))
-            if art_key is not None:
-                manifest_inputs[art_key] = (rel_path, tmp_path)
-
-        manifest = build_artifact_manifest(manifest_inputs)
-        final_result = result.with_artifacts(artifacts, artifact_manifest=manifest)
-        payload = final_result.to_dict(include_data=include_data)
-        serialized = json.dumps(
-            payload,
-            ensure_ascii=False,
-            indent=None if compact else 2,
-            allow_nan=False,
-        )
-        result_target = out_dir / "result.json"
-        result_tmp = _stage_temp_file(
-            result_target,
-            lambda tmp, text=serialized + "\n": tmp.write_text(text, encoding="utf-8"),
-            suffix=".stage.tmp",
-        )
-        staged_pairs.append((result_tmp, result_target))
-
-        for _, target in staged_pairs:
-            if target.is_file():
-                resolved_t = target.resolve()
-                preexisting_targets.add(resolved_t)
-                if resolved_t not in backups:
-                    backups[resolved_t] = _stage_temp_file(
-                        target,
-                        lambda tmp, src=target: shutil.copy2(src, tmp),
-                        suffix=".bak.tmp",
-                    )
-
-        for idx, (tmp_path, target) in enumerate(staged_pairs):
-            os.replace(tmp_path, target)
-            staged_pairs[idx] = (Path(""), target)
-            committed_targets.append(target)
-
-        return final_result
-    except Exception:
-        for target in reversed(committed_targets):
-            resolved_t = target.resolve()
-            try:
-                if resolved_t in preexisting_targets and resolved_t in backups:
-                    os.replace(backups[resolved_t], resolved_t)
-                elif target.exists():
-                    target.unlink()
-            except OSError:
-                pass
-        raise
-    finally:
-        for tmp_path, _ in staged_pairs:
-            if tmp_path != Path("") and tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-        for bak_path in backups.values():
-            if bak_path.exists():
-                try:
-                    bak_path.unlink()
-                except OSError:
-                    pass
+    """Serialize a portable bundle, preserving unrelated existing outputs."""
+    return write_result_outputs(
+        result,
+        out_dir=Path(output_dir).expanduser(),
+        write_csv=write_csv,
+        include_data=include_data,
+        compact=compact,
+        clean_stale=False,
+    )
 
 
 def _read_frame_from_disk(

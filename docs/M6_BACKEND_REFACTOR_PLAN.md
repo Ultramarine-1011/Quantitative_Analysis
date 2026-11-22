@@ -105,12 +105,14 @@
 
 ### M6-4：输出编排与展示接口收敛（P2，前端仍不重写）
 
-- [ ] 将 `quant_cli.py` 的事务性落盘器/manifest 交给 `artifacts` 层复用，保持原有多文件 staging → backup → commit → rollback 语义和退出码。
-- [ ] 可把重复的指标表格字段/格式化规则提炼为 Presentation Model，但 `reporting/report_renderer.py` 已有 `_ReportDocument`，应复用而非重造第二套 AST。
-- [ ] `main.py` 是历史兼容入口：保留命令，渐进委托统一服务和报告层；不为“纯粹”直接删除。
-- [ ] 分离真正可选的渲染依赖（如 `[web]` / `[charts]`），但须先验证打包、CI 和已发布入口可用性；顶层包命名空间迁移可延后独立提交。
+- [x] 将 `quant_cli.py` 的事务性落盘器/manifest 交给 `artifacts` 层复用，保持原有多文件 staging → backup → commit → rollback 语义和退出码。
+- [x] 可把重复的指标表格字段/格式化规则提炼为 Presentation Model，但 `reporting/report_renderer.py` 已有 `_ReportDocument`，应复用而非重造第二套 AST。
+- [x] `main.py` 是历史兼容入口：保留命令，渐进委托统一服务和报告层；不为“纯粹”直接删除。
+- [x] 分离真正可选的渲染依赖（如 `[web]` / `[charts]`），但须先验证打包、CI 和已发布入口可用性；顶层包命名空间迁移可延后独立提交。
 
 **通过条件：** 渲染只消费结果、离线可重放、无必要时不导入绘图库、原子输出和受管旧文件清理仍安全、Web 只做兼容修复。
+
+CLI 与 Python 产物共用 `artifacts/store.py` 和 `artifacts/transaction.py`，报告调度位于 `reporting/output.py`。
 
 ### M6-5：数据源与研究快照隔离（后端最后一项，可拆独立 PR）
 

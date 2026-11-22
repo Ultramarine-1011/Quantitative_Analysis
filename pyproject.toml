@@ -11,7 +11,9 @@ requires-python = ">=3.14,<3.15"
 dynamic = ["dependencies"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "ruff>=0.6"]
+web = ["streamlit>=1.50.0", "plotly>=5.18.0"]
+charts = ["plotly>=5.18.0", "matplotlib>=3.7.0", "mplfinance>=0.12.10b0"]
+dev = ["pytest>=7.4", "ruff>=0.6", "quantitative-analysis[web,charts]"]
 
 [project.scripts]
 quant = "quant_cli:main"
@@ -29,7 +31,7 @@ py-modules = [
 include = ["data_sources*", "services*", "models*", "reporting*", "artifacts*"]
 
 [tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
+dependencies = {file = ["requirements-core.txt"]}
 
 [tool.ruff]
 target-version = "py314"
