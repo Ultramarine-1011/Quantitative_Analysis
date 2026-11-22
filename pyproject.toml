@@ -28,7 +28,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["data_sources*", "services*", "models*", "reporting*", "artifacts*"]
+include = ["data_sources*", "services*", "models*", "reporting*", "artifacts*", "ui*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements-core.txt"]}

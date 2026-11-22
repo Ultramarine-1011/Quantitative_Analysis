@@ -1,4 +1,8 @@
 # 本地与云端通用默认项；Streamlit Community Cloud 可在控制台覆盖 Python 版本等。
+[theme]
+primaryColor = "#2563eb"
+font = "sans serif"
+
 [server]
 headless = true
 
