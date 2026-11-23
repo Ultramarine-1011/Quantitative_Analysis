@@ -33,7 +33,7 @@ def render_single_asset_audit_and_preview(st_module: Any, result: AnalysisResult
     """Render data quality diagnostics, return-basis disclosure, recent OHLCV rows, and disclaimers."""
     if st_module is None:
         return
-    with st_module.expander("🔍 数据质量审计、收益率口径与最近样本预览", expanded=False):
+    with st_module.expander("数据质量审计、收益率口径与最近样本预览", expanded=False):
         basis_note = ASSET_RETURN_BASIS_NOTES.get(result.asset.return_basis, "")
         if basis_note:
             st_module.markdown(f"- **价格/收益口径 (`{result.asset.return_basis}`)**: {basis_note}")
@@ -74,7 +74,7 @@ def render_compare_performance_table(st_module: Any, result: MultiAssetResult) -
         return
     render_section_heading(
         st_module,
-        "📊 历史实现绩效对照",
+        "历史实现绩效对照",
         "Historical Realized Performance · 统一货币与周期口径",
     )
     per_asset = result.metrics.get("per_asset") or {}
@@ -107,7 +107,7 @@ def render_compare_distribution_table(st_module: Any, result: MultiAssetResult) 
         return
     render_section_heading(
         st_module,
-        "🔬 收益分布统计推断",
+        "收益分布统计推断",
         "Statistical Inference · Jarque-Bera 正态性检验",
     )
     dist_rows = []
@@ -145,7 +145,7 @@ def render_compare_benchmark_table(st_module: Any, result: MultiAssetResult) -> 
     bench_name = result.benchmark.get("leg_name", "Benchmark")
     render_section_heading(
         st_module,
-        "🧭 相对基准归因与 Memmel Sharpe 检验",
+        "相对基准归因与 Memmel Sharpe 检验",
         f"对比基准：{bench_name}",
     )
     rel_rows = []
@@ -172,7 +172,7 @@ def render_compare_matrices_audit(st_module: Any, result: MultiAssetResult) -> N
     """Render correlation/covariance matrices and methodology JSON in an expander."""
     if st_module is None:
         return
-    with st_module.expander("📐 相关性 / 协方差矩阵与方法学审计", expanded=False):
+    with st_module.expander("相关性 / 协方差矩阵与方法学审计", expanded=False):
         c1, c2 = st_module.columns(2)
         corr_df = result.frames.get("correlation")
         cov_df = result.frames.get("covariance")
@@ -254,7 +254,7 @@ def render_portfolio_backtest_table(
         )
     render_section_heading(
         st_module,
-        "📈 组合回测与基准绩效对比",
+        "组合回测与基准绩效对比",
         "策略表现与等权/外部基准对照组",
     )
     st_module.dataframe(pd.DataFrame(perf_comp_rows), width="stretch", hide_index=True)
@@ -269,7 +269,7 @@ def render_portfolio_weights_table(st_module: Any, result: MultiAssetResult) -> 
         return
     render_section_heading(
         st_module,
-        "⚖️ 资产权重与 Euler 风险贡献拆解",
+        "资产权重与 Euler 风险贡献拆解",
         "资金配比与边际风险占比对照",
     )
     disp_w = pd.DataFrame(
@@ -322,7 +322,7 @@ def render_portfolio_sensitivity_drawer(st_module: Any, result: MultiAssetResult
     sens = result.metrics.get("sensitivity") or {}
     if not sens:
         return
-    with st_module.expander("🔬 参数与交易成本敏感性分析", expanded=False):
+    with st_module.expander("参数与交易成本敏感性分析", expanded=False):
         for sens_key, sens_title in (
             ("covariance_method", "协方差估计方法敏感性"),
             ("transaction_cost_bps", "交易成本敏感性 (bps)"),
@@ -340,7 +340,7 @@ def render_portfolio_methodology_audit(st_module: Any, result: MultiAssetResult)
     """Render portfolio covariance matrix, relative benchmark test, and methodology JSON."""
     if st_module is None:
         return
-    with st_module.expander("📐 协方差矩阵、基准归因检验与方法学审计", expanded=False):
+    with st_module.expander("协方差矩阵、基准归因检验与方法学审计", expanded=False):
         if result.benchmark and isinstance(result.benchmark.get("relative_to_strategy"), Mapping):
             rel = result.benchmark["relative_to_strategy"]
             mem = rel.get("memmel_sharpe_test") or {}

@@ -47,7 +47,8 @@ def test_app_renders_ohlcv_data_quality_warning(
     monkeypatch.setattr(asset_loader, "_fetch_etf_data", lambda **kwargs: cleaned.copy())
 
     page = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
-    page.sidebar.button[0].click().run()
+    page.button("nav_btn_single").click().run()
+    page.button("single_run_btn").click().run()
     assert not page.exception
     warnings = [w.value for w in page.warning]
     assert any(
@@ -73,7 +74,8 @@ def test_app_renders_ffill_quality_warning_and_legacy_fallback(
     monkeypatch.setattr(asset_loader, "_fetch_etf_data", lambda **kwargs: ffilled.copy())
 
     page = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
-    page.sidebar.button[0].click().run()
+    page.button("nav_btn_single").click().run()
+    page.button("single_run_btn").click().run()
     assert not page.exception
     warnings = [w.value for w in page.warning]
     assert any("数据质量提示" in msg and "前向填补价格 1 行" in msg for msg in warnings)

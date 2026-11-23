@@ -162,7 +162,9 @@ def test_app_split_is_thin_and_backend_does_not_import_ui() -> None:
         "ui.theme",
         "ui.errors",
         "ui.state",
+        "ui.asset_directory",
         "ui.services_bridge",
+        "ui.components.asset_picker",
         "ui.components.header",
         "ui.components.sidebar",
         "ui.components.alerts",
@@ -170,6 +172,7 @@ def test_app_split_is_thin_and_backend_does_not_import_ui() -> None:
         "ui.components.charts",
         "ui.components.tables",
         "ui.components.exports",
+        "ui.workspaces.home",
         "ui.workspaces.single_asset",
         "ui.workspaces.compare",
         "ui.workspaces.portfolio",
@@ -201,8 +204,8 @@ def test_theme_css_and_plotly_harmonization_preserve_data_and_heatmap_contrast()
     css_light = build_theme_css("light")
     assert "prefers-color-scheme: dark" in css_auto
     assert "--qa-text: inherit" in css_auto
-    assert "color-scheme: dark;" in css_dark and "#090e1a" in css_dark
-    assert "color-scheme: light;" in css_light and "#f4f6fa" in css_light
+    assert "color-scheme: dark;" in css_dark and "#111214" in css_dark
+    assert "color-scheme: light;" in css_light and "#f7f7f8" in css_light
 
     dates = pd.bdate_range("2024-01-02", periods=30)
     df = pd.DataFrame({"A": np.linspace(100, 120, 30)}, index=dates)
@@ -213,8 +216,8 @@ def test_theme_css_and_plotly_harmonization_preserve_data_and_heatmap_contrast()
     assert themed_dark.layout.paper_bgcolor == "rgba(0,0,0,0)"
     assert themed_dark.layout.plot_bgcolor == "rgba(0,0,0,0)"
     assert isinstance(themed_dark.data[0].y, np.ndarray)
-    assert themed_dark.layout.font.color == "#e2e8f0"
-    assert themed_light.layout.font.color == "#0f172a"
+    assert themed_dark.layout.font.color == "#eceef2"
+    assert themed_light.layout.font.color == "#181a1f"
 
     # Heatmap cell contrast annotations must retain explicit #111111 / #fafafa colors.
     corr = pd.DataFrame([[1.0, -0.9], [-0.9, 1.0]], columns=["A", "B"], index=["A", "B"])
@@ -236,6 +239,7 @@ def test_theme_switch_in_apptest_rethemes_figures_without_refetch(
 ) -> None:
     calls = _install_offline_market(monkeypatch)
     page = _open_windowed_page()
+    page.button("nav_btn_single").click().run()
     page.button("single_run_btn").click().run()
     assert not page.exception
     assert not page.error
@@ -249,14 +253,14 @@ def test_theme_switch_in_apptest_rethemes_figures_without_refetch(
     assert len(calls) == 1
     ws_dark = page.session_state[WORKSPACE_SINGLE_KEY]
     assert ws_dark["figures_cache_key"][2] == "dark"
-    assert ws_dark["figures"]["price"][2].layout.font.color == "#e2e8f0"
+    assert ws_dark["figures"]["price"][2].layout.font.color == "#eceef2"
 
     page.get("segmented_control")[0].set_value("light").run()
     assert not page.exception
     assert len(calls) == 1
     ws_light = page.session_state[WORKSPACE_SINGLE_KEY]
     assert ws_light["figures_cache_key"][2] == "light"
-    assert ws_light["figures"]["price"][2].layout.font.color == "#0f172a"
+    assert ws_light["figures"]["price"][2].layout.font.color == "#181a1f"
 
     app.load_asset_data.clear()
     app.load_multi_leg_close_wide.clear()
@@ -300,12 +304,14 @@ def test_apptest_distinguishes_market_empty_validation_and_negative_return(
     # 1) Normal negative-drift market returns should NOT trigger error banners.
     _install_offline_market(monkeypatch, drift=-0.004)
     page = _open_windowed_page()
+    page.button("nav_btn_single").click().run()
     page.button("single_run_btn").click().run()
     assert not page.exception
     assert not page.error
     assert page.session_state[WORKSPACE_SINGLE_KEY]["result"] is not None
 
     # 2) Validation error (SMA short >= SMA long) clearly labeled as validation.
+    page.button("single_toggle_editor_btn").click().run()
     page.number_input("sma_short_input").set_value(80).run()
     page.number_input("sma_long_input").set_value(60).run()
     page.button("single_run_btn").click().run()
@@ -349,12 +355,19 @@ def test_state_and_export_cache_invalidate_on_skipped_charts_and_workspace_edits
 ) -> None:
     calls = _install_offline_market(monkeypatch)
     page = _open_windowed_page()
-    page.text_area("compare_assets_input").set_value("etf:510300\netf:510500\nus_stock:AAPL").run()
-    page.text_area("tab3_ef_legs_input").set_value("etf:510300\netf:510500\nus_stock:AAPL").run()
 
-    # Run all 3 workspaces.
+    # Run all 3 workspaces sequentially via navigation rail.
+    page.button("nav_btn_single").click().run()
     page.button("single_run_btn").click().run()
+    assert len(page.get("plotly_chart")) == 4
+
+    page.button("nav_btn_compare").click().run()
+    page.text_area("compare_assets_input").set_value("etf:510300\netf:510500\nus_stock:AAPL").run()
     page.button("compare_run_btn").click().run()
+    assert len(page.get("plotly_chart")) == 4
+
+    page.button("nav_btn_portfolio").click().run()
+    page.text_area("tab3_ef_legs_input").set_value("etf:510300\netf:510500\nus_stock:AAPL").run()
     page.button("tab3_btn_ef").click().run()
     assert not page.exception
     assert not page.error
@@ -363,14 +376,15 @@ def test_state_and_export_cache_invalidate_on_skipped_charts_and_workspace_edits
     ws_port = page.session_state[WORKSPACE_PORTFOLIO_KEY]
     assert ws_port["exports_cache_key"] is not None
     ver_initial = ws_port["result_version"]
-    assert len(page.get("plotly_chart")) == 4 + 4 + 4  # single 4 + compare 4 + portfolio 4
+    assert len(page.get("plotly_chart")) == 4
 
     # Toggling extra charts in Portfolio rebuilds figures without refetching or recomputing.
+    page.button("portfolio_toggle_editor_btn").click().run()
     page.checkbox("tab3_show_extra_charts").set_value(True).run()
     assert len(calls) == calls_after_run
     ws_port_after = page.session_state[WORKSPACE_PORTFOLIO_KEY]
     assert ws_port_after["result_version"] == ver_initial
-    assert len(page.get("plotly_chart")) == 4 + 4 + 6  # train_test adds normalized + drawdown
+    assert len(page.get("plotly_chart")) == 6  # train_test adds normalized + drawdown
     assert ws_port_after["figures_cache_key"][1] is not None
     assert len(ws_port_after["figures_cache_key"][1]) == 6
 
@@ -379,9 +393,11 @@ def test_state_and_export_cache_invalidate_on_skipped_charts_and_workspace_edits
     page.number_input("portfolio_train_window").set_value(35).run()
     page.button("tab3_btn_ef").click().run()
     assert not page.error
-    assert len(page.get("plotly_chart")) == 4 + 4 + 7
+    assert len(page.get("plotly_chart")) == 7
 
     # Edit compare cov_method: only compare invalidates; single & portfolio remain intact.
+    page.button("nav_btn_compare").click().run()
+    page.button("compare_toggle_editor_btn").click().run()
     page.selectbox("compare_cov_method").set_value("sample").run()
     assert page.session_state[WORKSPACE_COMPARE_KEY]["result"] is None
     assert page.session_state[WORKSPACE_SINGLE_KEY]["result"] is not None
@@ -428,8 +444,8 @@ def test_unit_export_cache_invalidation_when_skipped_charts_or_version_changes(
     figs_dark, _ = get_or_build_figures(state, res, theme_mode="dark")
     figs_light, _ = get_or_build_figures(state, res, theme_mode="light")
     assert figs_dark is not None and figs_light is not None
-    assert figs_dark["price"][2].layout.font.color == "#e2e8f0"
-    assert figs_light["price"][2].layout.font.color == "#0f172a"
+    assert figs_dark["price"][2].layout.font.color == "#eceef2"
+    assert figs_light["price"][2].layout.font.color == "#181a1f"
 
     assert invalidate_if_signature_changed(state, ("sig2",)) is True
     assert state["result"] is None

@@ -1,8 +1,8 @@
-"""Streamlit Web UI entrypoint for Quant Insight (M7).
+"""Streamlit Web UI entrypoint for Quant Insight.
 
 Thin interactive presentation shell delegating all analytics to ``services/`` and
-``reporting/``, with modularized styling, state/cache invalidation, error taxonomy,
-reusable UI components, and three isolated research workspaces under ``ui/``.
+``reporting/``, with task-driven navigation (Home, Single Asset, Compare, Portfolio),
+cross-workspace context continuity, neutral desktop styling, and cache invalidation.
 """
 
 from __future__ import annotations
@@ -25,18 +25,26 @@ from asset_loader import multi_asset_leg_column_name, parse_multi_asset_legs
 from charts import build_tab3_correlation_heatmap
 from contracts import AssetSpec
 from data_sources.errors import DataFetchError, EmptySymbolDataError
-from ui.components.header import render_masthead, render_methodology_drawer
 from ui.components.sidebar import render_sidebar
-from ui.labels import WORKSPACE_TAB_LABELS
 from ui.services_bridge import (
     cleaned_ohlcv_to_csv_bytes_and_filename as _cleaned_ohlcv_to_csv_bytes_and_filename,
     format_data_quality_warning as _format_data_quality_warning,
 )
-from ui.state import sync_legacy_analysis_results
+from ui.state import apply_pending_transitions, sync_legacy_analysis_results
 from ui.theme import inject_ui_theme_css, normalize_theme_mode
-from ui.workspaces.compare import render_compare_workspace
-from ui.workspaces.portfolio import render_portfolio_workspace
-from ui.workspaces.single_asset import render_single_asset_workspace
+from ui.workspaces.compare import (
+    invalidate_compare_from_persisted,
+    render_compare_workspace,
+)
+from ui.workspaces.home import render_home_workspace
+from ui.workspaces.portfolio import (
+    invalidate_portfolio_from_persisted,
+    render_portfolio_workspace,
+)
+from ui.workspaces.single_asset import (
+    invalidate_single_from_persisted,
+    render_single_asset_workspace,
+)
 
 __all__ = [
     "DataFetchError",
@@ -70,7 +78,6 @@ def _cache_data(ttl: int = 3600) -> Callable[[Callable[..., Any]], Callable[...,
     return st.cache_data(ttl=ttl, show_spinner=False)
 
 
-# Bind cache directly onto asset_loader functions so __module__ matches in both `import app` and AppTest.
 load_asset_data = _cache_data(ttl=3600)(_asset_loader_mod.load_asset_data)
 load_multiple_etfs_close = _cache_data(ttl=3600)(_asset_loader_mod.load_multiple_etfs_close)
 
@@ -110,16 +117,18 @@ def _parse_ui_custom_weights(raw: str) -> tuple[float, ...] | None:
 
 
 def main() -> None:
-    """Render the modular M7 Streamlit quantitative analysis platform."""
+    """Render the task-driven Quant Insight Streamlit workbench."""
     if st is None:
         raise ImportError("缺少运行依赖 `streamlit`，请先安装：`pip install streamlit`。")
 
     st.set_page_config(
-        page_title="Quant Insight · 量化金融分析工作台",
+        page_title="Quant Insight · 量化研究工作台",
         page_icon="📈",
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
+    apply_pending_transitions(st)
 
     active_theme = normalize_theme_mode(st.session_state.get("ui_theme_mode", "auto"))
     inject_ui_theme_css(st, active_theme)
@@ -128,17 +137,24 @@ def main() -> None:
     if cfg["theme_mode"] != active_theme:
         inject_ui_theme_css(st, cfg["theme_mode"])
 
-    render_masthead(st, cfg, theme_mode=cfg["theme_mode"])
+    active_view = cfg["active_view"]
+    invalidated_any = False
+    invalidated_any |= invalidate_single_from_persisted(st, cfg)
+    invalidated_any |= invalidate_compare_from_persisted(st, cfg)
+    invalidated_any |= invalidate_portfolio_from_persisted(st, cfg)
+    if invalidated_any:
+        st.rerun()
+
     if cfg.get("date_error"):
         st.error(str(cfg["date_error"]))
-    render_methodology_drawer(st)
 
-    tab_single, tab_compare, tab_portfolio = st.tabs(list(WORKSPACE_TAB_LABELS))
-    with tab_single:
+    if active_view == "home":
+        render_home_workspace(st, cfg)
+    elif active_view == "single":
         render_single_asset_workspace(st, cfg, cached_loader=load_asset_data)
-    with tab_compare:
+    elif active_view == "compare":
         render_compare_workspace(st, cfg, cached_loader=load_asset_data)
-    with tab_portfolio:
+    else:
         render_portfolio_workspace(st, cfg, cached_loader=load_asset_data)
 
     sync_legacy_analysis_results(st)

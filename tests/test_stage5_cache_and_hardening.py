@@ -234,20 +234,23 @@ def test_app_force_refresh_checkbox_bypasses_streamlit_and_disk_cache(
     monkeypatch.setattr(asset_loader, "_fetch_etf_data", fake_fetch)
 
     page1 = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
-    page1.sidebar.button[0].click().run()
+    page1.button("nav_btn_single").click().run()
+    page1.button("single_run_btn").click().run()
     assert fetches == 1
     assert not page1.exception
 
     # Fresh UI session clears @st.cache_data but still hits shared Parquet disk cache.
     app.load_asset_data.clear()
     page2 = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
-    page2.sidebar.button[0].click().run()
+    page2.button("nav_btn_single").click().run()
+    page2.button("single_run_btn").click().run()
     assert fetches == 1
     assert any("本地缓存命中" in cap.value for cap in page2.caption)
 
     # Checking force_refresh_input forces upstream re-fetch even with warm disk + memory cache.
     page2.checkbox("force_refresh_input").set_value(True).run()
-    page2.sidebar.button[0].click().run()
+    page2.button("single_toggle_editor_btn").click().run()
+    page2.button("single_run_btn").click().run()
     assert fetches == 2
     assert not any("本地缓存命中" in cap.value for cap in page2.caption)
 

@@ -188,6 +188,7 @@ def _build_offline_apptest(monkeypatch, sample_ohlcv):
 
 def test_app_proxy_persists_and_adjust_matches_capability(monkeypatch, sample_ohlcv):
     page = _build_offline_apptest(monkeypatch, sample_ohlcv)
+    page.button("nav_btn_single").click().run()
     page.text_input("proxy_url_input").set_value("http://127.0.0.1:7890").run()
     page.selectbox("asset_type").set_value("us_stock").run()
     assert page.text_input("proxy_url_input").value == "http://127.0.0.1:7890"
@@ -208,6 +209,7 @@ def test_app_proxy_persists_and_adjust_matches_capability(monkeypatch, sample_oh
 
 def test_app_tab3_walk_forward_extra_charts_and_yield_rejection(monkeypatch, sample_ohlcv):
     page = _build_offline_apptest(monkeypatch, sample_ohlcv)
+    page.button("nav_btn_portfolio").click().run()
     page.selectbox("tab3_val_mode").set_value(app._VAL_MODE_ROLLING).run()
     page.checkbox("tab3_show_extra_charts").set_value(True).run()
     page.button("tab3_btn_ef").click().run()
@@ -217,6 +219,7 @@ def test_app_tab3_walk_forward_extra_charts_and_yield_rejection(monkeypatch, sam
     assert len(page.get("plotly_chart")) == 7
 
     # Switching preset template updates legs cleanly.
+    page.button("portfolio_toggle_editor_btn").click().run()
     page.selectbox("tab3_preset_template").set_value("境内大类股债均衡").run()
     assert "etf,511010" in page.text_area("tab3_ef_legs_input").value
 

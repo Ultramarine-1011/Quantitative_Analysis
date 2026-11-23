@@ -188,8 +188,10 @@ def test_streamlit_app_renders_and_diagnoses_offline(monkeypatch, sample_ohlcv):
     monkeypatch.setattr(asset_loader, "_fetch_etf_data", lambda **kwargs: sample_ohlcv.copy())
     page = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
     assert not page.exception
-    assert len(page.tabs) == 3
-    page.sidebar.button[0].click().run()
+    for nav_key in ("nav_btn_home", "nav_btn_single", "nav_btn_compare", "nav_btn_portfolio"):
+        assert page.button(nav_key) is not None
+    page.button("nav_btn_single").click().run()
+    page.button("single_run_btn").click().run()
     assert not page.exception
     assert not page.error
     assert len(page.metric) == 3
@@ -225,9 +227,20 @@ def test_streamlit_advanced_algorithms_run_offline(monkeypatch, sample_ohlcv):
     )
     monkeypatch.setattr(asset_loader, "load_fx_data", fake_fx)
     page = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
-    for key in ("single_btn_normalize", "single_btn_gbm", "compare_run_btn", "tab3_btn_ef"):
+    page.button("nav_btn_single").click().run()
+    for key in ("single_btn_normalize", "single_btn_gbm"):
         page.button(key).click().run()
         assert not page.exception
         assert not page.error
+
+    page.button("nav_btn_compare").click().run()
+    page.button("compare_run_btn").click().run()
+    assert not page.exception
+    assert not page.error
+
+    page.button("nav_btn_portfolio").click().run()
+    page.button("tab3_btn_ef").click().run()
+    assert not page.exception
+    assert not page.error
     app.load_asset_data.clear()
     app.load_multi_leg_close_wide.clear()

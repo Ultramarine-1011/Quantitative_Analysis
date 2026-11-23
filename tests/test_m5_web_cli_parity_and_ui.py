@@ -278,6 +278,7 @@ def test_web_cli_parity_single_asset_us_stock_cny_conversion(
 ) -> None:
     loader_fn, fx_fn, _ = _install_deterministic_market(monkeypatch)
     page = _open_page()
+    page.button("nav_btn_single").click().run()
     page.selectbox("asset_type").set_value("us_stock").run()
     page.text_input("symbol_input").set_value("AAPL").run()
     page.selectbox("single_base_currency_input").set_value("CNY").run()
@@ -358,6 +359,7 @@ def test_web_cli_parity_multi_asset_compare_with_benchmark(
 ) -> None:
     loader_fn, fx_fn, _ = _install_deterministic_market(monkeypatch)
     page = _open_page()
+    page.button("nav_btn_compare").click().run()
     page.text_area("compare_assets_input").set_value("etf:510300\nus_stock:AAPL\ngold:GC").run()
     page.text_input("compare_benchmark_input").set_value("etf:510500").run()
     page.selectbox("compare_calendar_mode").set_value("common_trading_dates").run()
@@ -448,6 +450,7 @@ def test_web_cli_parity_portfolio_walk_forward_custom_and_lookahead(
 ) -> None:
     loader_fn, fx_fn, _ = _install_deterministic_market(monkeypatch)
     page = _open_page()
+    page.button("nav_btn_portfolio").click().run()
     page.text_area("tab3_ef_legs_input").set_value("etf:510300\nus_stock:AAPL\ngold:GC").run()
     page.text_input("portfolio_benchmark_input").set_value("etf:510500").run()
     page.selectbox("portfolio_strategy_input").set_value("max_sharpe").run()
@@ -505,6 +508,7 @@ def test_web_cli_parity_portfolio_walk_forward_custom_and_lookahead(
     assert "In_Sample_Portfolio" in web_payload["metrics"]["backtest"]
 
     # Custom weights parity
+    page.button("portfolio_toggle_editor_btn").click().run()
     page.selectbox("portfolio_strategy_input").set_value("custom").run()
     page.selectbox("tab3_val_mode").set_value("train_test").run()
     page.text_input("portfolio_custom_weights_input").set_value("0.5, 0.3, 0.2").run()
@@ -545,6 +549,7 @@ def test_web_cli_parity_portfolio_walk_forward_custom_and_lookahead(
     )
 
     # In-sample lookahead disclosure warning (fitted optimizer triggers has_lookahead_bias)
+    page.button("portfolio_toggle_editor_btn").click().run()
     page.selectbox("portfolio_strategy_input").set_value("max_sharpe").run()
     page.selectbox("tab3_val_mode").set_value("in_sample").run()
     page.button("tab3_btn_ef").click().run()
@@ -558,6 +563,7 @@ def test_yield_level_semantic_blocking_across_all_three_workspaces(
 ) -> None:
     _install_deterministic_market(monkeypatch)
     page = _open_page()
+    page.button("nav_btn_single").click().run()
     page.selectbox("asset_type").set_value("bond_us_yield").run()
     page.button("single_run_btn").click().run()
 
@@ -578,11 +584,13 @@ def test_yield_level_semantic_blocking_across_all_three_workspaces(
     assert any("利率水平" in err.value for err in page.error)
 
     # Compare & Portfolio also reject yield_level inputs.
+    page.button("nav_btn_compare").click().run()
     page.text_area("compare_assets_input").set_value("etf,510300\nbond_us_yield,10Y").run()
     page.button("compare_run_btn").click().run()
     assert not page.exception
     assert any("利率水平" in err.value or "yield_level" in err.value for err in page.error)
 
+    page.button("nav_btn_portfolio").click().run()
     page.text_area("tab3_ef_legs_input").set_value("etf,510300\nbond_us_yield,10Y").run()
     page.button("tab3_btn_ef").click().run()
     assert not page.exception
@@ -594,6 +602,7 @@ def test_crypto_adaptive_trading_days_and_gbm_execution(
 ) -> None:
     _install_deterministic_market(monkeypatch)
     page = _open_page()
+    page.button("nav_btn_single").click().run()
     page.selectbox("asset_type").set_value("crypto").run()
     assert page.text_input("symbol_input").value == "BTC/USDT"
     assert int(page.number_input("single_trading_days_input").value) == 365
@@ -616,16 +625,20 @@ def test_cache_reuse_force_refresh_custom_weight_errors_and_exports_integrity(
 ) -> None:
     _, _, calls = _install_deterministic_market(monkeypatch)
     page = _open_page()
+    page.button("nav_btn_single").click().run()
     page.button("single_run_btn").click().run()
     assert len(calls) == 1
+    page.button("single_toggle_editor_btn").click().run()
     page.button("single_run_btn").click().run()
     assert len(calls) == 1  # Hit Streamlit @st.cache_data
 
     page.checkbox("force_refresh_input").set_value(True).run()
+    page.button("single_toggle_editor_btn").click().run()
     page.button("single_run_btn").click().run()
     assert len(calls) == 2
 
     # Invalid custom weights fail gracefully in Portfolio while Single-Asset output stays intact.
+    page.button("nav_btn_portfolio").click().run()
     page.selectbox("portfolio_strategy_input").set_value("custom").run()
     page.text_input("portfolio_custom_weights_input").set_value("0.5, 0.5").run()
     page.button("tab3_btn_ef").click().run()
@@ -671,6 +684,7 @@ def test_custom_in_sample_labels_distinguish_non_oos_from_lookahead_and_oos(
 ) -> None:
     _install_deterministic_market(monkeypatch)
     page = _open_page()
+    page.button("nav_btn_portfolio").click().run()
     page.text_area("tab3_ef_legs_input").set_value("etf:510300\nus_stock:AAPL\ngold:GC").run()
     page.selectbox("portfolio_strategy_input").set_value("custom").run()
     page.text_input("portfolio_custom_weights_input").set_value("0.5, 0.3, 0.2").run()
@@ -703,6 +717,7 @@ def test_compare_summary_reads_effective_dates_currency_and_periods_per_year(
 ) -> None:
     _install_deterministic_market(monkeypatch)
     page = _open_page()
+    page.button("nav_btn_compare").click().run()
     page.text_area("compare_assets_input").set_value("etf:510300\nus_stock:AAPL\ngold:GC").run()
     page.selectbox("compare_base_currency").set_value("CNY").run()
     page.button("compare_run_btn").click().run()
@@ -731,6 +746,7 @@ def test_single_advanced_explorer_respects_force_refresh_flag(
 ) -> None:
     _, _, calls = _install_deterministic_market(monkeypatch)
     page = _open_page()
+    page.button("nav_btn_single").click().run()
     page.button("single_run_btn").click().run()
     assert len(calls) == 1
 

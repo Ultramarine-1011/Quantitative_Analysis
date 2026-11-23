@@ -1,4 +1,4 @@
-"""Design system, responsive Light/Dark/Auto CSS, and Plotly theme harmonization."""
+"""Neutral desktop-inspired Light/Dark/Auto CSS design system and Plotly theme harmonization."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ ThemeMode = Literal["auto", "dark", "light"]
 THEME_MODES: tuple[ThemeMode, ...] = ("auto", "dark", "light")
 THEME_MODE_LABELS: dict[str, str] = {
     "auto": "跟随系统",
-    "dark": "深色终端",
-    "light": "浅色研报",
+    "dark": "深色模式",
+    "light": "浅色模式",
 }
 THEME_SIDEBAR_LABELS: dict[str, str] = {
     "auto": "自动",
@@ -38,31 +38,30 @@ def normalize_theme_mode(value: object) -> ThemeMode:
 
 
 def _auto_adaptive_tokens() -> str:
-    """Theme-neutral translucent tokens that inherit Streamlit's active Light/Dark canvas."""
+    """Theme-neutral tokens inheriting Streamlit's active Light/Dark canvas."""
     return """
         --qa-bg: transparent;
-        --qa-bg-elevated: rgba(148, 163, 184, 0.06);
-        --qa-surface: rgba(148, 163, 184, 0.07);
-        --qa-surface-solid: var(--background-color, rgba(148, 163, 184, 0.08));
-        --qa-surface-alt: rgba(148, 163, 184, 0.11);
+        --qa-bg-elevated: rgba(128, 134, 145, 0.05);
+        --qa-surface: rgba(128, 134, 145, 0.055);
+        --qa-surface-solid: var(--background-color, rgba(128, 134, 145, 0.06));
+        --qa-surface-alt: rgba(128, 134, 145, 0.09);
         --qa-sidebar-bg: transparent;
         --qa-header-bg: transparent;
-        --qa-border: rgba(128, 138, 152, 0.24);
-        --qa-border-strong: rgba(128, 138, 152, 0.38);
+        --qa-border: rgba(128, 134, 145, 0.20);
+        --qa-border-strong: rgba(128, 134, 145, 0.34);
         --qa-text: inherit;
         --qa-text-secondary: inherit;
-        --qa-text-muted: rgba(110, 122, 138, 0.95);
+        --qa-text-muted: rgba(113, 120, 132, 0.96);
         --qa-accent: #2563eb;
         --qa-accent-hover: #3b82f6;
-        --qa-accent-soft: rgba(37, 99, 235, 0.12);
+        --qa-accent-soft: rgba(37, 99, 235, 0.11);
         --qa-positive: #059669;
-        --qa-positive-soft: rgba(16, 185, 129, 0.14);
-        --qa-negative: #e11d48;
-        --qa-negative-soft: rgba(225, 29, 72, 0.14);
+        --qa-positive-soft: rgba(16, 185, 129, 0.13);
+        --qa-negative: #dc2626;
+        --qa-negative-soft: rgba(220, 38, 38, 0.13);
         --qa-warning: #d97706;
-        --qa-warning-soft: rgba(245, 158, 11, 0.14);
-        --qa-shadow: 0 4px 16px -8px rgba(15, 23, 42, 0.12);
-        --qa-hero-grad: linear-gradient(135deg, rgba(37, 99, 235, 0.10) 0%, rgba(148, 163, 184, 0.05) 55%, rgba(8, 145, 178, 0.08) 100%);
+        --qa-warning-soft: rgba(245, 158, 11, 0.13);
+        --qa-shadow: none;
         --qa-input-bg: transparent;
     """
 
@@ -70,55 +69,53 @@ def _auto_adaptive_tokens() -> str:
 def _token_vars(*, dark: bool) -> str:
     if dark:
         return """
-        --qa-bg: #090e1a;
-        --qa-bg-elevated: #0f172a;
-        --qa-surface: rgba(15, 23, 42, 0.88);
-        --qa-surface-solid: #111b2e;
-        --qa-surface-alt: #17233a;
-        --qa-sidebar-bg: #0c1322;
-        --qa-header-bg: rgba(9, 14, 26, 0.82);
-        --qa-border: rgba(148, 163, 184, 0.18);
-        --qa-border-strong: rgba(148, 163, 184, 0.34);
-        --qa-text: #f1f5f9;
-        --qa-text-secondary: #cbd5e1;
-        --qa-text-muted: #94a3b8;
-        --qa-accent: #3b82f6;
-        --qa-accent-hover: #60a5fa;
-        --qa-accent-soft: rgba(59, 130, 246, 0.16);
+        --qa-bg: #111214;
+        --qa-bg-elevated: #16171a;
+        --qa-surface: #181a1e;
+        --qa-surface-solid: #1a1c20;
+        --qa-surface-alt: #202227;
+        --qa-sidebar-bg: #141518;
+        --qa-header-bg: rgba(17, 18, 20, 0.88);
+        --qa-border: rgba(255, 255, 255, 0.09);
+        --qa-border-strong: rgba(255, 255, 255, 0.18);
+        --qa-text: #eceef2;
+        --qa-text-secondary: #c8ccd4;
+        --qa-text-muted: #8b919d;
+        --qa-accent: #60a5fa;
+        --qa-accent-hover: #93c5fd;
+        --qa-accent-soft: rgba(96, 165, 250, 0.14);
         --qa-positive: #34d399;
-        --qa-positive-soft: rgba(16, 185, 129, 0.16);
+        --qa-positive-soft: rgba(16, 185, 129, 0.15);
         --qa-negative: #fb7185;
-        --qa-negative-soft: rgba(244, 63, 94, 0.16);
+        --qa-negative-soft: rgba(244, 63, 94, 0.15);
         --qa-warning: #fbbf24;
-        --qa-warning-soft: rgba(245, 158, 11, 0.15);
-        --qa-shadow: 0 10px 28px -12px rgba(2, 6, 23, 0.65);
-        --qa-hero-grad: linear-gradient(135deg, rgba(30, 58, 138, 0.32) 0%, rgba(15, 23, 42, 0.94) 55%, rgba(14, 116, 144, 0.18) 100%);
-        --qa-input-bg: #131f35;
+        --qa-warning-soft: rgba(245, 158, 11, 0.14);
+        --qa-shadow: none;
+        --qa-input-bg: #16181c;
         """
     return """
-        --qa-bg: #f4f6fa;
+        --qa-bg: #f7f7f8;
         --qa-bg-elevated: #ffffff;
         --qa-surface: #ffffff;
         --qa-surface-solid: #ffffff;
-        --qa-surface-alt: #f8fafc;
-        --qa-sidebar-bg: #eef2f8;
-        --qa-header-bg: rgba(244, 246, 250, 0.86);
-        --qa-border: rgba(15, 23, 42, 0.10);
-        --qa-border-strong: rgba(15, 23, 42, 0.22);
-        --qa-text: #0f172a;
-        --qa-text-secondary: #334155;
-        --qa-text-muted: #64748b;
+        --qa-surface-alt: #f1f2f4;
+        --qa-sidebar-bg: #f2f3f5;
+        --qa-header-bg: rgba(247, 247, 248, 0.90);
+        --qa-border: rgba(17, 20, 28, 0.09);
+        --qa-border-strong: rgba(17, 20, 28, 0.18);
+        --qa-text: #181a1f;
+        --qa-text-secondary: #374151;
+        --qa-text-muted: #6b7280;
         --qa-accent: #2563eb;
         --qa-accent-hover: #1d4ed8;
-        --qa-accent-soft: rgba(37, 99, 235, 0.10);
+        --qa-accent-soft: rgba(37, 99, 235, 0.09);
         --qa-positive: #059669;
         --qa-positive-soft: rgba(5, 150, 105, 0.10);
         --qa-negative: #dc2626;
         --qa-negative-soft: rgba(220, 38, 38, 0.10);
         --qa-warning: #b45309;
         --qa-warning-soft: rgba(217, 119, 6, 0.12);
-        --qa-shadow: 0 8px 24px -12px rgba(15, 23, 42, 0.12);
-        --qa-hero-grad: linear-gradient(135deg, rgba(37, 99, 235, 0.08) 0%, rgba(255, 255, 255, 0.96) 55%, rgba(8, 145, 178, 0.06) 100%);
+        --qa-shadow: none;
         --qa-input-bg: #ffffff;
     """
 
@@ -142,7 +139,7 @@ def _explicit_surface_overrides(
     *,
     resolved_auto: ThemeMode | None = None,
 ) -> str:
-    """Force consistent Streamlit container, sidebar, and input surfaces in explicit dark/light modes."""
+    """Force consistent Streamlit container, sidebar, popover, and input surfaces in explicit modes."""
     if theme_mode == "auto":
         if resolved_auto == "dark":
             return """
@@ -159,14 +156,15 @@ def _explicit_surface_overrides(
         return """
         @media (prefers-color-scheme: dark) {
             :root {
-                --qa-shadow: 0 8px 24px -10px rgba(2, 6, 23, 0.45);
+                --qa-border: rgba(255, 255, 255, 0.11);
+                --qa-border-strong: rgba(255, 255, 255, 0.22);
             }
         }
         """
     scheme = "dark" if theme_mode == "dark" else "light"
-    st_bg = "#090e1a" if theme_mode == "dark" else "#f4f6fa"
-    st_sbg = "#0c1322" if theme_mode == "dark" else "#eef2f8"
-    st_txt = "#f1f5f9" if theme_mode == "dark" else "#0f172a"
+    st_bg = "#111214" if theme_mode == "dark" else "#f7f7f8"
+    st_sbg = "#141518" if theme_mode == "dark" else "#f2f3f5"
+    st_txt = "#eceef2" if theme_mode == "dark" else "#181a1f"
     df_dark_rule = (
         """
         [data-testid="stDataFrame"] > div {
@@ -229,12 +227,75 @@ def _explicit_surface_overrides(
         [data-testid="stDateInput"] input,
         [data-testid="stTextArea"] textarea,
         [data-baseweb="popover"],
+        [data-baseweb="popover"] > div,
+        [data-baseweb="popover"] [role="dialog"],
         [data-baseweb="popover"] ul,
-        [data-baseweb="popover"] li {{
+        [data-baseweb="popover"] li,
+        [data-baseweb="calendar"],
+        [data-baseweb="calendar"] div,
+        [data-baseweb="calendar"] button,
+        [data-baseweb="calendar"] select,
+        [data-baseweb="calendar"] [role="gridcell"],
+        [data-testid="stPopoverBody"] {{
             background-color: var(--qa-input-bg) !important;
             color: var(--qa-text) !important;
             border-color: var(--qa-border-strong) !important;
             -webkit-text-fill-color: var(--qa-text) !important;
+        }}
+        [data-baseweb="calendar"] [role="gridcell"]::before,
+        [data-baseweb="calendar"] [role="gridcell"]::after {{
+            background-color: transparent !important;
+        }}
+        [data-baseweb="calendar"] [aria-selected="true"],
+        [data-baseweb="calendar"] [aria-selected="true"]::after {{
+            background-color: #2563eb !important;
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+            border-radius: 8px !important;
+        }}
+        [data-baseweb="calendar"] svg {{
+            color: var(--qa-text-muted) !important;
+            fill: var(--qa-text-muted) !important;
+        }}
+        [data-testid="stDateInputCalendar"],
+        [data-testid="stDateInputCalendar"] [role="application"],
+        [data-testid="stDateInputCalendar"] div,
+        [data-testid="stDateInputCalendar"] span,
+        [data-testid="stDateInputCalendar"] table,
+        [data-testid="stDateInputCalendar"] th,
+        [data-testid="stDateInputCalendar"] td,
+        [data-testid="stDateInputCalendar"] button,
+        [data-testid="stDateInputCalendar"] select,
+        [data-testid="stDateInputCalendar"] [role="gridcell"],
+        [data-testid="stDateInputCalendar"] [role="button"] {{
+            background-color: var(--qa-input-bg) !important;
+            color: var(--qa-text) !important;
+            border-color: var(--qa-border-strong) !important;
+            -webkit-text-fill-color: var(--qa-text) !important;
+        }}
+        [data-testid="stDateInputCalendar"] {{
+            border: 1px solid var(--qa-border-strong) !important;
+        }}
+        [data-testid="stDateInputCalendar"] [role="button"]:hover {{
+            background-color: var(--qa-surface-alt) !important;
+        }}
+        [data-testid="stDateInputCalendar"] [aria-selected="true"],
+        [data-testid="stDateInputCalendar"] [aria-selected="true"] [role="button"],
+        [data-testid="stDateInputCalendar"] [data-selected="true"] {{
+            background-color: #2563eb !important;
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+            border-radius: 6px !important;
+        }}
+        [data-testid="stDateInputCalendar"] [aria-disabled="true"],
+        [data-testid="stDateInputCalendar"] [data-outside-month="true"] {{
+            color: var(--qa-text-muted) !important;
+            -webkit-text-fill-color: var(--qa-text-muted) !important;
+            opacity: 0.55;
+        }}
+        [data-testid="stDateInputCalendar"] svg {{
+            color: var(--qa-text-muted) !important;
+            fill: var(--qa-text-muted) !important;
         }}
         [data-testid="stMain"] code,
         section[data-testid="stSidebar"] code {{
@@ -274,26 +335,49 @@ def _explicit_surface_overrides(
         [data-testid="stButtonGroup"] button * {{
             color: inherit !important;
         }}
-        [data-testid="stExpander"] {{
-            background-color: var(--qa-surface) !important;
-            border: 1px solid var(--qa-border) !important;
-            border-radius: 12px !important;
-        }}
+        [data-testid="stExpander"],
+        [data-testid="stExpander"] details,
         [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] details > summary {{
+            background-color: var(--qa-surface) !important;
+            color: var(--qa-text) !important;
+            border-color: var(--qa-border) !important;
+            border-radius: 10px !important;
+        }}
+        [data-testid="stExpander"] summary:hover {{
+            background-color: var(--qa-surface-alt) !important;
+        }}
+        [data-testid="stExpander"] summary *,
         [data-testid="stExpander"] summary span,
         [data-testid="stExpander"] summary p {{
             color: var(--qa-text) !important;
         }}
-        [data-testid="stButton"] > button:not([kind="primary"]),
-        [data-testid="stDownloadButton"] > button {{
+        [data-testid="stExpander"] summary svg {{
+            color: var(--qa-text-muted) !important;
+            fill: var(--qa-text-muted) !important;
+        }}
+        [data-testid="stVerticalBlockBorderWrapper"] {{
+            background-color: var(--qa-surface) !important;
+            border-color: var(--qa-border) !important;
+        }}
+        [data-testid="stButton"] button:not([kind="primary"]),
+        [data-testid="stDownloadButton"] button,
+        [data-testid="stPopover"] button {{
             background-color: var(--qa-surface-solid) !important;
             color: var(--qa-text) !important;
             border: 1px solid var(--qa-border-strong) !important;
         }}
-        [data-testid="stButton"] > button:not([kind="primary"]):hover,
-        [data-testid="stDownloadButton"] > button:hover {{
+        [data-testid="stPopover"] button *,
+        [data-testid="stPopover"] button svg {{
+            color: var(--qa-text) !important;
+            fill: var(--qa-text-muted) !important;
+        }}
+        [data-testid="stButton"] button:not([kind="primary"]):hover,
+        [data-testid="stDownloadButton"] button:hover,
+        [data-testid="stPopover"] button:hover {{
             border-color: var(--qa-accent) !important;
             color: var(--qa-accent) !important;
+            background-color: var(--qa-surface-alt) !important;
         }}
         [data-baseweb="tab-list"] [role="tab"] {{
             color: var(--qa-text-muted) !important;
@@ -306,7 +390,7 @@ def _explicit_surface_overrides(
         [data-testid="stAlertContainer"] {{
             background-color: var(--qa-surface-alt) !important;
             color: var(--qa-text) !important;
-            border-radius: 10px !important;
+            border-radius: 8px !important;
         }}
         [data-testid="stAlertContainer"] {{
             border: 1px solid var(--qa-border-strong) !important;
@@ -323,7 +407,7 @@ def build_theme_css(
     *,
     resolved_auto: ThemeMode | None = None,
 ) -> str:
-    """Compile complete CSS stylesheet for the chosen theme mode."""
+    """Compile complete neutral desktop CSS stylesheet for the chosen theme mode."""
     mode = normalize_theme_mode(theme_mode)
     if mode == "auto" and resolved_auto not in {"dark", "light"}:
         base_tokens = _auto_adaptive_tokens()
@@ -340,9 +424,9 @@ def build_theme_css(
     :root {{
         --qa-font-sans: {_FONT_STACK};
         --qa-font-mono: {_MONO_STACK};
-        --qa-radius-lg: 14px;
-        --qa-radius-md: 10px;
-        --qa-radius-sm: 8px;
+        --qa-radius-lg: 12px;
+        --qa-radius-md: 8px;
+        --qa-radius-sm: 6px;
         {base_tokens}
     }}
     {overrides}
@@ -351,7 +435,7 @@ def build_theme_css(
         font-family: var(--qa-font-sans);
     }}
 
-    /* Scroll stability & desktop canvas spacing */
+    /* Scroll stability & clean desktop canvas spacing */
     [data-testid="stMain"] {{
         overflow-y: auto;
         overflow-anchor: none;
@@ -359,11 +443,11 @@ def build_theme_css(
     }}
     [data-testid="stMainBlockContainer"] {{
         flex-shrink: 0;
-        max-width: 1520px;
-        padding-top: 1.45rem !important;
+        max-width: 1440px;
+        padding-top: 3.45rem !important;
         padding-bottom: 2.5rem !important;
-        padding-left: 2rem !important;
-        padding-right: 2rem !important;
+        padding-left: 1.75rem !important;
+        padding-right: 1.75rem !important;
     }}
 
     /* Preserve clickable Streamlit header toolbar controls */
@@ -381,108 +465,116 @@ def build_theme_css(
         pointer-events: auto;
     }}
 
-    /* Sidebar visual refinement */
+    /* Lightweight Desktop Rail Sidebar */
     section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {{
-        padding-top: 0.65rem;
+        padding-top: 0.75rem;
     }}
     .qa-sidebar-brand {{
-        padding: 0.62rem 0.8rem;
+        padding: 0.45rem 0.65rem;
         border-radius: var(--qa-radius-md);
         border: 1px solid var(--qa-border);
         background: var(--qa-surface);
-        margin-bottom: 0.55rem;
+        margin-bottom: 0.6rem;
     }}
     .qa-sidebar-brand-title {{
-        font-size: 0.96rem;
+        font-size: 0.94rem;
         font-weight: 700;
-        letter-spacing: -0.01em;
+        letter-spacing: -0.015em;
         margin: 0;
         color: var(--qa-text);
     }}
     .qa-sidebar-brand-sub {{
-        font-size: 0.74rem;
+        font-size: 0.72rem;
         color: var(--qa-text-muted);
-        margin: 0.14rem 0 0 0;
+        margin: 0.1rem 0 0 0;
     }}
     .qa-sidebar-section {{
-        font-size: 0.72rem;
-        font-weight: 700;
+        font-size: 0.7rem;
+        font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
         color: var(--qa-text-muted);
-        margin: 0.55rem 0 0.28rem 0;
-        padding-bottom: 0.2rem;
+        margin: 0.65rem 0 0.3rem 0;
+        padding-bottom: 0.18rem;
         border-bottom: 1px solid var(--qa-border);
     }}
+    section[data-testid="stSidebar"] [data-testid="stButton"] > button {{
+        justify-content: flex-start !important;
+        text-align: left !important;
+        font-size: 0.85rem !important;
+        padding: 0.38rem 0.68rem !important;
+        border-radius: var(--qa-radius-sm) !important;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stButton"] > button[kind="primary"] {{
+        background: var(--qa-accent-soft) !important;
+        color: var(--qa-accent) !important;
+        border: 1px solid rgba(37, 99, 235, 0.38) !important;
+        font-weight: 650 !important;
+        box-shadow: none !important;
+    }}
 
-    /* Masthead / Hero Bar */
-    .qa-masthead {{
-        padding: 0.95rem 1.25rem;
-        border-radius: var(--qa-radius-lg);
-        border: 1px solid var(--qa-border);
-        background: var(--qa-hero-grad);
-        box-shadow: var(--qa-shadow);
-        margin-bottom: 0.75rem;
+    /* Slim Workspace Topbar */
+    .qa-topbar {{
         display: flex;
         flex-wrap: wrap;
-        justify-content: space-between;
         align-items: center;
-        gap: 0.85rem;
+        justify-content: space-between;
+        gap: 0.5rem 0.9rem;
+        padding: 0.48rem 0.85rem;
+        border-radius: var(--qa-radius-md);
+        border: 1px solid var(--qa-border);
+        background: var(--qa-surface);
+        margin-bottom: 0.75rem;
     }}
-    .qa-masthead-left {{
-        min-width: 260px;
-        flex: 1 1 520px;
+    .qa-topbar-left {{
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        flex-wrap: wrap;
+        min-width: 0;
     }}
-    .qa-masthead-kicker {{
-        font-size: 0.72rem;
+    .qa-topbar-title {{
+        font-size: 0.98rem;
         font-weight: 700;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--qa-accent);
-        margin-bottom: 0.2rem;
-    }}
-    .qa-masthead-title {{
-        font-size: 1.42rem;
-        font-weight: 750;
-        letter-spacing: -0.02em;
-        line-height: 1.22;
-        margin: 0 0 0.28rem 0;
+        letter-spacing: -0.01em;
         color: var(--qa-text);
     }}
-    .qa-masthead-sub {{
-        font-size: 0.86rem;
+    .qa-topbar-sep {{
         color: var(--qa-text-muted);
-        margin: 0;
-        line-height: 1.45;
+        font-size: 0.86rem;
     }}
-    .qa-masthead-badges {{
+    .qa-topbar-context {{
+        font-size: 0.86rem;
+        font-weight: 500;
+        color: var(--qa-text-muted);
+    }}
+    .qa-topbar-badges {{
         display: flex;
         flex-wrap: wrap;
-        gap: 0.42rem;
+        gap: 0.38rem;
         align-items: center;
-        justify-content: flex-end;
     }}
     .qa-pill {{
         display: inline-flex;
         align-items: center;
-        gap: 0.35rem;
-        padding: 0.26rem 0.62rem;
+        gap: 0.3rem;
+        padding: 0.18rem 0.52rem;
         border-radius: 999px;
-        font-size: 0.76rem;
+        font-size: 0.74rem;
         font-weight: 600;
         border: 1px solid var(--qa-border);
-        background: var(--qa-surface);
+        background: var(--qa-surface-alt);
         color: var(--qa-text-secondary);
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
     }}
     .qa-pill--accent {{
-        border-color: rgba(59, 130, 246, 0.35);
+        border-color: rgba(37, 99, 235, 0.32);
         background: var(--qa-accent-soft);
         color: var(--qa-accent);
     }}
     .qa-pill--ok {{
-        border-color: rgba(16, 185, 129, 0.35);
+        border-color: rgba(16, 185, 129, 0.32);
         background: var(--qa-positive-soft);
         color: var(--qa-positive);
     }}
@@ -491,73 +583,229 @@ def build_theme_css(
         background: var(--qa-warning-soft);
         color: var(--qa-warning);
     }}
+    .qa-pill--danger {{
+        border-color: rgba(220, 38, 38, 0.35);
+        background: var(--qa-negative-soft);
+        color: var(--qa-negative);
+    }}
 
-    /* Workspace Navigation Tabs & Nested Chart Tabs */
-    [data-testid="stMain"] [data-baseweb="tab-list"] {{
-        gap: 0.4rem;
-        border-bottom: 1px solid var(--qa-border);
-        padding-bottom: 0.15rem;
-        margin-bottom: 0.65rem;
+    /* Home Screen */
+    .qa-home-hero {{
+        padding: 0.9rem 0 0.8rem 0;
     }}
-    [data-testid="stMain"] [data-baseweb="tab-list"] [role="tab"] {{
-        border-radius: var(--qa-radius-sm) var(--qa-radius-sm) 0 0;
-        padding: 0.5rem 0.95rem;
+    .qa-home-title {{
+        font-size: 1.72rem;
+        font-weight: 720;
+        letter-spacing: -0.025em;
+        color: var(--qa-text);
+        margin: 0 0 0.25rem 0;
+    }}
+    .qa-home-sub {{
+        font-size: 0.92rem;
+        color: var(--qa-text-muted);
+        margin: 0;
+        line-height: 1.5;
+    }}
+    .qa-btn-spacer {{
+        height: 1.68rem;
+    }}
+    .qa-resume-title {{
+        font-size: 0.72rem;
         font-weight: 600;
-        font-size: 0.9rem;
-        transition: background-color 0.15s ease, color 0.15s ease;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--qa-text-muted);
+        margin-bottom: 0.15rem;
     }}
-    [data-testid="stMain"] [data-baseweb="tab-list"] [role="tab"]:hover {{
-        background: var(--qa-accent-soft);
+    .qa-resume-main {{
+        font-size: 0.95rem;
+        font-weight: 650;
+        color: var(--qa-text);
     }}
-    [data-testid="stMain"] [data-baseweb="tab-list"] [role="tab"][aria-selected="true"] {{
-        background: var(--qa-accent-soft);
-        color: var(--qa-accent);
+    .qa-resume-meta {{
+        font-size: 0.8rem;
+        color: var(--qa-text-muted);
+        margin: 0.12rem 0 0.5rem 0;
+        font-variant-numeric: tabular-nums;
     }}
-    [data-testid="stTabs"] [data-testid="stTabs"] [data-baseweb="tab-list"] {{
+
+    /* Results-First Summary Bar & Takeaway & Delta Strip */
+    .qa-summary-inline {{
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.42rem 0.65rem;
+        border-radius: var(--qa-radius-sm);
+        border: 1px solid var(--qa-border);
+        background: var(--qa-surface);
+        min-height: 2.38rem;
+    }}
+    .qa-summary-strong {{
+        font-size: 0.86rem;
+        font-weight: 650;
+        color: var(--qa-text);
+    }}
+    .qa-summary-meta {{
+        font-size: 0.78rem;
+        color: var(--qa-text-muted);
+        font-variant-numeric: tabular-nums;
+    }}
+    .qa-takeaway {{
+        border: 1px solid var(--qa-border);
+        border-left: 3px solid var(--qa-accent);
+        background: var(--qa-surface);
+        border-radius: var(--qa-radius-md);
+        padding: 0.68rem 0.95rem;
+        margin: 0.45rem 0 0.75rem 0;
+    }}
+    .qa-takeaway-head {{
+        font-size: 0.94rem;
+        font-weight: 650;
+        color: var(--qa-text);
+        line-height: 1.45;
+    }}
+    .qa-takeaway-detail {{
+        font-size: 0.78rem;
+        color: var(--qa-text-muted);
+        margin-top: 0.18rem;
+        font-variant-numeric: tabular-nums;
+    }}
+    .qa-delta-strip {{
+        border: 1px solid var(--qa-border);
+        background: var(--qa-surface);
+        border-radius: var(--qa-radius-md);
+        padding: 0.62rem 0.85rem;
+        margin: 0.35rem 0 0.75rem 0;
+    }}
+    .qa-delta-header {{
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.35rem;
+        margin-bottom: 0.45rem;
+    }}
+    .qa-delta-title {{
+        font-size: 0.82rem;
+        font-weight: 700;
+        color: var(--qa-text);
+    }}
+    .qa-delta-meta {{
+        font-size: 0.75rem;
+        color: var(--qa-text-muted);
+        font-variant-numeric: tabular-nums;
+    }}
+    .qa-delta-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+        gap: 0.5rem;
+    }}
+    .qa-delta-item {{
+        border: 1px solid var(--qa-border);
+        border-radius: var(--qa-radius-sm);
+        background: var(--qa-surface-alt);
+        padding: 0.45rem 0.6rem;
+    }}
+    .qa-delta-label {{
+        font-size: 0.72rem;
+        color: var(--qa-text-muted);
+        font-weight: 600;
+    }}
+    .qa-delta-values {{
+        font-family: var(--qa-font-mono);
+        font-variant-numeric: tabular-nums;
+        font-size: 0.84rem;
+        color: var(--qa-text);
+        margin-top: 0.12rem;
+    }}
+    .qa-delta-diff {{
+        font-family: var(--qa-font-mono);
+        font-variant-numeric: tabular-nums;
+        font-size: 0.75rem;
+        font-weight: 650;
+        margin-top: 0.1rem;
+    }}
+
+    /* Visual Asset Picker */
+    .qa-picker-label {{
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--qa-text-muted);
+        margin-bottom: 0.35rem;
+    }}
+    .qa-picker-empty {{
+        border: 1px dashed var(--qa-border-strong);
+        border-radius: var(--qa-radius-sm);
+        padding: 0.55rem 0.75rem;
+        font-size: 0.82rem;
+        color: var(--qa-text-muted);
+        margin-bottom: 0.45rem;
+    }}
+    .qa-asset-pill {{
+        border: 1px solid var(--qa-border);
+        border-radius: var(--qa-radius-sm);
+        background: var(--qa-surface-alt);
+        padding: 0.35rem 0.55rem;
+        display: flex;
+        flex-direction: column;
+        min-height: 2.38rem;
+        justify-content: center;
+    }}
+    .qa-asset-pill-name {{
+        font-size: 0.81rem;
+        font-weight: 600;
+        color: var(--qa-text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }}
+    .qa-asset-pill-code {{
+        font-family: var(--qa-font-mono);
+        font-size: 0.69rem;
+        color: var(--qa-text-muted);
+    }}
+
+    /* Chart Sub-Tabs */
+    [data-testid="stTabs"] [data-baseweb="tab-list"] {{
         border-bottom: none;
         background: var(--qa-surface-alt);
         border: 1px solid var(--qa-border);
         border-radius: var(--qa-radius-md);
-        padding: 0.25rem;
-        gap: 0.25rem;
+        padding: 0.22rem;
+        gap: 0.22rem;
         flex-wrap: wrap;
+        margin-bottom: 0.55rem;
     }}
-    [data-testid="stTabs"] [data-testid="stTabs"] [data-baseweb="tab-list"] [role="tab"] {{
+    [data-testid="stTabs"] [data-baseweb="tab-list"] [role="tab"] {{
         border-radius: var(--qa-radius-sm);
-        padding: 0.36rem 0.78rem;
-        font-size: 0.83rem;
+        padding: 0.32rem 0.75rem;
+        font-size: 0.82rem;
+        font-weight: 600;
         border: none !important;
     }}
-    [data-testid="stTabs"] [data-testid="stTabs"] [data-baseweb="tab-list"] [role="tab"][aria-selected="true"] {{
-        background: var(--qa-accent);
-        color: #ffffff !important;
-    }}
-    [data-testid="stTabs"] [data-testid="stTabs"] [data-baseweb="tab-list"] [role="tab"][aria-selected="true"] * {{
-        color: #ffffff !important;
+    [data-testid="stTabs"] [data-baseweb="tab-list"] [role="tab"][aria-selected="true"] {{
+        background: var(--qa-surface);
+        color: var(--qa-text) !important;
+        border: 1px solid var(--qa-border) !important;
     }}
 
     /* Primary Metrics (st.metric) */
     div[data-testid="stMetric"] {{
         border: 1px solid var(--qa-border);
         border-radius: var(--qa-radius-md);
-        padding: 0.8rem 1rem;
+        padding: 0.72rem 0.92rem;
         background: var(--qa-surface);
-        box-shadow: var(--qa-shadow);
-        transition: border-color 0.15s ease, transform 0.15s ease;
-    }}
-    div[data-testid="stMetric"]:hover {{
-        border-color: var(--qa-border-strong);
     }}
     div[data-testid="stMetric"] [data-testid="stMetricLabel"] {{
-        font-size: 0.8rem;
+        font-size: 0.78rem;
         font-weight: 600;
         color: var(--qa-text-muted);
-        letter-spacing: 0.01em;
     }}
     div[data-testid="stMetric"] [data-testid="stMetricValue"] {{
         font-family: var(--qa-font-mono);
         font-variant-numeric: tabular-nums;
-        font-size: 1.55rem;
+        font-size: 1.48rem;
         font-weight: 700;
         letter-spacing: -0.02em;
         color: var(--qa-text);
@@ -567,21 +815,21 @@ def build_theme_css(
     .qa-kpi-grid {{
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(156px, 1fr));
-        gap: 0.65rem;
-        margin: 0.65rem 0 0.9rem 0;
+        gap: 0.55rem;
+        margin: 0.55rem 0 0.8rem 0;
     }}
     .qa-kpi-card {{
         border: 1px solid var(--qa-border);
         background: var(--qa-surface);
         border-radius: var(--qa-radius-md);
-        padding: 0.68rem 0.82rem;
+        padding: 0.6rem 0.78rem;
         min-width: 0;
     }}
     .qa-kpi-label {{
-        font-size: 0.75rem;
+        font-size: 0.74rem;
         font-weight: 600;
         color: var(--qa-text-muted);
-        margin-bottom: 0.22rem;
+        margin-bottom: 0.18rem;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -589,7 +837,7 @@ def build_theme_css(
     .qa-kpi-value {{
         font-family: var(--qa-font-mono);
         font-variant-numeric: tabular-nums;
-        font-size: 1.05rem;
+        font-size: 1.02rem;
         font-weight: 700;
         color: var(--qa-text);
         line-height: 1.25;
@@ -600,130 +848,92 @@ def build_theme_css(
     .qa-kpi-value--warn {{ color: var(--qa-warning); }}
     .qa-kpi-value--muted {{ color: var(--qa-text-muted); }}
     .qa-kpi-sub {{
-        font-size: 0.72rem;
+        font-size: 0.71rem;
         color: var(--qa-text-muted);
-        margin-top: 0.16rem;
+        margin-top: 0.14rem;
     }}
 
-    /* Context Strip & Section Headings */
-    .qa-context-strip {{
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.5rem 0.9rem;
-        padding: 0.65rem 0.9rem;
-        border-radius: var(--qa-radius-md);
-        border: 1px solid var(--qa-border);
-        background: var(--qa-surface);
-        margin-bottom: 0.65rem;
-    }}
-    .qa-context-title {{
-        font-weight: 700;
-        font-size: 0.98rem;
-        color: var(--qa-text);
-        display: flex;
-        align-items: center;
-        gap: 0.45rem;
-        flex-wrap: wrap;
-    }}
-    .qa-code-tag {{
-        font-family: var(--qa-font-mono);
-        font-size: 0.82rem;
-        padding: 0.12rem 0.45rem;
-        border-radius: 6px;
-        background: var(--qa-accent-soft);
-        color: var(--qa-accent);
-        font-weight: 600;
-    }}
+    /* Section Headings, Empty State & Chips */
     .qa-section-head {{
         display: flex;
         align-items: baseline;
         justify-content: space-between;
         flex-wrap: wrap;
         gap: 0.4rem;
-        margin: 0.9rem 0 0.45rem 0;
-        padding-bottom: 0.28rem;
+        margin: 0.95rem 0 0.45rem 0;
+        padding-bottom: 0.25rem;
         border-bottom: 1px solid var(--qa-border);
     }}
     .qa-section-title {{
-        font-size: 1.02rem;
+        font-size: 0.98rem;
         font-weight: 700;
         color: var(--qa-text);
         margin: 0;
     }}
     .qa-section-sub {{
-        font-size: 0.78rem;
+        font-size: 0.76rem;
         color: var(--qa-text-muted);
         margin: 0;
     }}
-
-    /* Empty State & Preview Badges */
     .qa-empty-card {{
         border: 1px dashed var(--qa-border-strong);
-        border-radius: var(--qa-radius-lg);
+        border-radius: var(--qa-radius-md);
         background: var(--qa-surface);
-        padding: 1.25rem 1.35rem;
-        margin: 0.5rem 0 0.85rem 0;
+        padding: 1rem 1.15rem;
+        margin: 0.45rem 0 0.75rem 0;
     }}
     .qa-empty-title {{
-        font-size: 1.04rem;
-        font-weight: 700;
+        font-size: 0.98rem;
+        font-weight: 680;
         color: var(--qa-text);
-        margin: 0 0 0.35rem 0;
+        margin: 0 0 0.28rem 0;
     }}
     .qa-empty-sub {{
-        font-size: 0.86rem;
+        font-size: 0.84rem;
         color: var(--qa-text-muted);
-        margin: 0 0 0.65rem 0;
+        margin: 0 0 0.55rem 0;
         line-height: 1.5;
     }}
     .qa-chip-row {{
         display: flex;
         flex-wrap: wrap;
-        gap: 0.35rem;
-        margin: 0.25rem 0 0.5rem 0;
+        gap: 0.32rem;
+        margin: 0.25rem 0 0.4rem 0;
     }}
     .qa-chip {{
         font-family: var(--qa-font-mono);
-        font-size: 0.74rem;
-        padding: 0.16rem 0.5rem;
-        border-radius: 6px;
+        font-size: 0.72rem;
+        padding: 0.14rem 0.46rem;
+        border-radius: var(--qa-radius-sm);
         border: 1px solid var(--qa-border);
         background: var(--qa-surface-alt);
         color: var(--qa-text-secondary);
     }}
-
-    /* Chart & Export Panels */
     .qa-chart-note {{
-        font-size: 0.8rem;
+        font-size: 0.78rem;
         color: var(--qa-text-muted);
-        margin: 0.15rem 0 0.35rem 0;
-    }}
-    .qa-export-head {{
-        padding: 0.65rem 0.9rem;
-        border-radius: var(--qa-radius-md);
-        border: 1px solid var(--qa-border);
-        background: var(--qa-surface);
-        margin: 0.8rem 0 0.55rem 0;
+        margin: 0.1rem 0 0.3rem 0;
     }}
 
-    /* Buttons & Dataframes */
-    [data-testid="stButton"] > button[kind="primary"] {{
-        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
-        border: 1px solid rgba(37, 99, 235, 0.8) !important;
+    /* Flat Primary Buttons & Clean Dataframes */
+    [data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"] {{
+        background: #2563eb !important;
+        border: 1px solid #1d4ed8 !important;
         color: #ffffff !important;
         font-weight: 600 !important;
         border-radius: var(--qa-radius-sm) !important;
-        box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.45);
+        box-shadow: none !important;
     }}
-    [data-testid="stButton"] > button[kind="primary"]:hover:not(:disabled) {{
-        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
-        border-color: #60a5fa !important;
+    [data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]:hover:not(:disabled) {{
+        background: #1d4ed8 !important;
+        border-color: #1e40af !important;
     }}
     [data-testid="stButton"] > button[kind="primary"]:disabled {{
-        opacity: 0.48 !important;
-        box-shadow: none !important;
+        opacity: 0.45 !important;
+    }}
+    [data-testid="stMain"] [data-testid="stHorizontalBlock"] [data-testid="stButton"] button {{
+        padding-inline: 0.45rem !important;
+        font-size: 0.84rem !important;
     }}
     [data-testid="stDataFrame"] {{
         border: 1px solid var(--qa-border);
@@ -735,16 +945,10 @@ def build_theme_css(
         [data-testid="stMainBlockContainer"] {{
             padding-left: 1rem !important;
             padding-right: 1rem !important;
-            padding-top: 1.1rem !important;
+            padding-top: 3.1rem !important;
         }}
-        .qa-masthead {{
-            padding: 0.8rem 0.95rem;
-        }}
-        .qa-masthead-title {{
-            font-size: 1.18rem;
-        }}
-        .qa-masthead-badges {{
-            justify-content: flex-start;
+        .qa-btn-spacer {{
+            display: none;
         }}
         .qa-kpi-grid {{
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -759,37 +963,65 @@ def build_theme_css(
     """
 
 
-def apply_ui_plotly_theme(figure: Any, theme_mode: ThemeMode = "auto") -> Any:
-    """Adapt a Plotly Figure's typography, grids, and hoverlabel to the active UI theme.
+def _separate_legend_and_rangeselector(fig: Any) -> None:
+    """Prevent horizontal legend from colliding with rangeselector buttons on narrower panes."""
+    if not hasattr(fig, "layout") or not hasattr(fig, "update_layout"):
+        return
+    xaxis = getattr(fig.layout, "xaxis", None)
+    rs = getattr(xaxis, "rangeselector", None) if xaxis is not None else None
+    rs_buttons = getattr(rs, "buttons", None) if rs is not None else None
+    if not rs_buttons or len(getattr(fig, "data", ()) or ()) < 4:
+        return
+    cur_margin = fig.layout.margin.to_plotly_json() if getattr(fig.layout, "margin", None) else {}
+    has_xtitle = False
+    for ax_name in ("xaxis", "xaxis2", "xaxis3"):
+        ax = getattr(fig.layout, ax_name, None)
+        t = getattr(getattr(ax, "title", None), "text", None) if ax is not None else None
+        if t:
+            has_xtitle = True
+    cur_b = int(cur_margin.get("b") or 38)
+    cur_t = int(cur_margin.get("t") or 62)
+    cur_margin["b"] = max(cur_b, 92 if has_xtitle else 76)
+    cur_margin["t"] = max(cur_t, 56)
+    fig.update_layout(
+        margin=cur_margin,
+        legend={
+            "orientation": "h",
+            "yanchor": "top",
+            "y": -0.18 if has_xtitle else -0.12,
+            "x": 0.0,
+            "xanchor": "left",
+        },
+    )
 
-    Preserves transparent ``paper_bgcolor`` and ``plot_bgcolor`` so charts seamlessly
-    match cards and existing figure invariants.
-    """
+
+def apply_ui_plotly_theme(figure: Any, theme_mode: ThemeMode = "auto") -> Any:
+    """Adapt a Plotly Figure's typography, grids, and hoverlabel to the active UI theme."""
     mode = normalize_theme_mode(theme_mode)
     fig = figure.__class__(figure) if hasattr(figure, "update_layout") else figure
+    _separate_legend_and_rangeselector(fig)
 
     if mode == "dark":
-        font_color = "#e2e8f0"
-        muted_color = "#94a3b8"
-        grid_color = "rgba(148, 163, 184, 0.16)"
-        zero_color = "rgba(148, 163, 184, 0.30)"
-        hover_bg = "rgba(15, 23, 42, 0.94)"
-        hover_border = "rgba(96, 165, 250, 0.55)"
+        font_color = "#eceef2"
+        muted_color = "#8b919d"
+        grid_color = "rgba(255, 255, 255, 0.08)"
+        zero_color = "rgba(255, 255, 255, 0.18)"
+        hover_bg = "rgba(22, 24, 28, 0.96)"
+        hover_border = "rgba(96, 165, 250, 0.50)"
         hover_text = "#f8fafc"
-        rs_bg = "rgba(30, 41, 59, 0.85)"
+        rs_bg = "rgba(32, 34, 39, 0.92)"
         rs_active = "rgba(37, 99, 235, 0.85)"
     elif mode == "light":
-        font_color = "#0f172a"
-        muted_color = "#475569"
-        grid_color = "rgba(100, 116, 139, 0.18)"
-        zero_color = "rgba(100, 116, 139, 0.32)"
-        hover_bg = "rgba(255, 255, 255, 0.96)"
-        hover_border = "rgba(37, 99, 235, 0.45)"
-        hover_text = "#0f172a"
-        rs_bg = "rgba(241, 245, 249, 0.95)"
-        rs_active = "rgba(37, 99, 235, 0.16)"
+        font_color = "#181a1f"
+        muted_color = "#6b7280"
+        grid_color = "rgba(17, 20, 28, 0.08)"
+        zero_color = "rgba(17, 20, 28, 0.18)"
+        hover_bg = "rgba(255, 255, 255, 0.97)"
+        hover_border = "rgba(37, 99, 235, 0.40)"
+        hover_text = "#181a1f"
+        rs_bg = "rgba(241, 242, 244, 0.95)"
+        rs_active = "rgba(37, 99, 235, 0.14)"
     else:
-        # Auto keeps font color inherited from Streamlit theme while polishing hover & controls.
         fig.update_layout(
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
@@ -826,33 +1058,38 @@ def apply_ui_plotly_theme(figure: Any, theme_mode: ThemeMode = "auto") -> Any:
         tickfont={"color": muted_color},
         title_font={"color": font_color},
     )
-    # Apply rangeselector theme only when an xaxis already defines rangeselector buttons.
-    for axis_name in ("xaxis", "xaxis2", "xaxis3", "xaxis4"):
-        axis_obj = getattr(fig.layout, axis_name, None)
-        if axis_obj is not None and getattr(axis_obj, "rangeselector", None) is not None:
-            rs = axis_obj.rangeselector
-            if getattr(rs, "buttons", None):
-                axis_obj.rangeselector.update(
-                    bgcolor=rs_bg,
-                    activecolor=rs_active,
-                    font={"color": font_color, "size": 11},
-                )
-
-    # Update subplot titles without overwriting explicit cell annotation colors (e.g. heatmap).
-    if fig.layout.annotations:
+    if (
+        getattr(fig.layout, "xaxis", None) is not None
+        and getattr(fig.layout.xaxis, "rangeselector", None) is not None
+    ):
+        fig.update_xaxes(
+            rangeselector={
+                "bgcolor": rs_bg,
+                "activecolor": rs_active,
+                "font": {"color": font_color, "size": 11},
+            }
+        )
+    if getattr(fig.layout, "annotations", None):
+        updated_annotations = []
         for ann in fig.layout.annotations:
-            ann_font = getattr(ann, "font", None)
-            existing_color = getattr(ann_font, "color", None) if ann_font is not None else None
-            if not existing_color:
-                ann.update(font={"color": font_color})
+            ann_font = dict(ann.font.to_plotly_json()) if ann.font else {}
+            if not ann_font.get("color"):
+                ann_font["color"] = muted_color
+            ann_dict = ann.to_plotly_json()
+            ann_dict["font"] = ann_font
+            updated_annotations.append(ann_dict)
+        fig.update_layout(annotations=updated_annotations)
     return fig
 
 
 def inject_ui_theme_css(st_module: Any, theme_mode: ThemeMode = "auto") -> None:
-    """Inject compiled theme CSS into the active Streamlit session."""
+    """Inject responsive UI theme CSS into the active Streamlit document."""
     if st_module is None:
         return
+    mode = normalize_theme_mode(theme_mode)
+    # In 'auto' mode, keep translucent theme-neutral tokens so text always inherits
+    # Streamlit's actual active canvas color without dark-text/light-canvas mismatches.
     st_module.markdown(
-        build_theme_css(theme_mode, resolved_auto=None),
+        build_theme_css(mode, resolved_auto=None),
         unsafe_allow_html=True,
     )

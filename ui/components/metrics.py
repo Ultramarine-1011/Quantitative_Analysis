@@ -1,4 +1,4 @@
-"""Metric cards and responsive secondary KPI grids with semantic tone coding."""
+"""Metric cards and responsive secondary KPI grids with plain-language tooltips."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from reporting import (
     format_reason_label,
     is_valid_number,
 )
+from ui.labels import KPI_HELP_TEXTS
 
 MetricTone = Literal["neutral", "pos", "neg", "warn", "muted"]
 
@@ -44,13 +45,21 @@ def tone_for_signed_number(value: Any, *, invert: bool = False) -> MetricTone:
     return "pos" if is_good else "neg"
 
 
-def render_metric_cards(st_module: Any, items: Sequence[tuple[str, str]]) -> None:
-    """Render primary ``st.metric`` headline cards (3 columns by default)."""
+def render_metric_cards(
+    st_module: Any,
+    items: Sequence[tuple[str, str] | tuple[str, str, str]],
+) -> None:
+    """Render primary ``st.metric`` headline cards with optional help tooltips."""
     if st_module is None or not items:
         return
     cols = st_module.columns(len(items))
-    for col, (label, val) in zip(cols, items, strict=False):
-        col.metric(label, val)
+    for col, entry in zip(cols, items, strict=False):
+        if len(entry) == 3:
+            label, val, help_txt = entry
+            col.metric(label, val, help=help_txt or None)
+        else:
+            label, val = entry
+            col.metric(label, val)
 
 
 def render_secondary_kpi_strip(st_module: Any, items: Sequence[KPIItem]) -> None:
@@ -156,18 +165,21 @@ def render_single_asset_kpis(st_module: Any, result: AnalysisResult) -> None:
                 format_percent(cagr_val)
                 if is_valid_number(cagr_val)
                 else format_reason_label(reasons.get("cagr")),
+                KPI_HELP_TEXTS["cagr"],
             ),
             (
                 "最大回撤",
                 format_drawdown_percent(mdd_val)
                 if is_valid_number(mdd_val)
                 else format_reason_label(reasons.get("max_drawdown")),
+                KPI_HELP_TEXTS["max_drawdown"],
             ),
             (
                 "夏普比率",
                 format_ratio(sharpe_val, decimals=3)
                 if is_valid_number(sharpe_val)
                 else format_reason_label(reasons.get("sharpe_ratio")),
+                KPI_HELP_TEXTS["sharpe"],
             ),
         ],
     )

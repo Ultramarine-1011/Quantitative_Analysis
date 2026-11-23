@@ -1,4 +1,4 @@
-"""Masthead banner and collapsible methodology/reference drawer."""
+"""Compact workspace topbar and collapsible methodology/reference content."""
 
 from __future__ import annotations
 
@@ -8,7 +8,63 @@ from typing import Any
 
 from asset_catalog import _TAB2_SYSTEM_MATH_MARKDOWN, build_ef_multi_asset_codes_reference_df
 from contracts import SOFTWARE_VERSION
-from ui.theme import THEME_MODE_LABELS, normalize_theme_mode
+
+_STATUS_PILL_STYLE: dict[str, tuple[str, str]] = {
+    "ready": ("qa-pill qa-pill--ok", "已计算"),
+    "pending_rerun": ("qa-pill qa-pill--warn", "待重新计算"),
+    "incomplete": ("qa-pill", "待补充输入"),
+    "empty_data": ("qa-pill qa-pill--warn", "暂无行情数据"),
+    "error": ("qa-pill qa-pill--danger", "计算或数据异常"),
+    "idle": ("qa-pill", "准备就绪"),
+}
+
+
+def render_workspace_topbar(
+    st_module: Any,
+    *,
+    view_title: str,
+    context_label: str = "",
+    status_kind: str = "idle",
+    status_text: str | None = None,
+    cfg: Mapping[str, Any],
+) -> None:
+    """Render a minimal single-line header bar with status pill and active window context."""
+    if st_module is None:
+        return
+
+    if cfg.get("dates_valid") and cfg.get("start_str") and cfg.get("end_str"):
+        window_text = f"{cfg['start_str']} ~ {cfg['end_str']}"
+        window_cls = "qa-pill"
+    else:
+        window_text = "日期区间待修正"
+        window_cls = "qa-pill qa-pill--warn"
+
+    rf_pct = float(cfg.get("rf_rate", 0.016)) * 100.0
+    pill_cls, default_status = _STATUS_PILL_STYLE.get(status_kind, ("qa-pill", "准备就绪"))
+    pill_label = status_text or default_status
+    ctx_html = (
+        f'<span class="qa-topbar-sep">/</span>'
+        f'<span class="qa-topbar-context">{html.escape(context_label)}</span>'
+        if context_label
+        else ""
+    )
+
+    st_module.markdown(
+        f"""
+        <div class="qa-topbar">
+          <div class="qa-topbar-left">
+            <span class="qa-topbar-title">{html.escape(view_title)}</span>
+            {ctx_html}
+          </div>
+          <div class="qa-topbar-badges">
+            <span class="{pill_cls}">{html.escape(pill_label)}</span>
+            <span class="{window_cls}">{html.escape(window_text)}</span>
+            <span class="qa-pill">Rf {rf_pct:.2f}%</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_masthead(
@@ -17,63 +73,39 @@ def render_masthead(
     *,
     theme_mode: str = "auto",
 ) -> None:
-    """Render the compact terminal masthead with live global runtime badges."""
+    """Backward-compatible alias rendering the compact workspace topbar."""
+    render_workspace_topbar(
+        st_module,
+        view_title="Quant Insight",
+        context_label=f"V{SOFTWARE_VERSION}",
+        status_kind="idle",
+        cfg=cfg,
+    )
+
+
+def render_methodology_content(st_module: Any) -> None:
+    """Render financial conventions, formulas, and 13-class asset code reference."""
     if st_module is None:
         return
-
-    mode = normalize_theme_mode(theme_mode)
-    theme_label = THEME_MODE_LABELS.get(mode, mode)
-
-    if cfg.get("dates_valid") and cfg.get("start_str") and cfg.get("end_str"):
-        window_text = f"{cfg['start_str']} ~ {cfg['end_str']}"
-        window_cls = "qa-pill qa-pill--accent"
-    else:
-        window_text = "日期区间待修正"
-        window_cls = "qa-pill qa-pill--warn"
-
-    rf_pct = float(cfg.get("rf_rate", 0.016)) * 100.0
-    cache_text = "实时刷新" if cfg.get("force_refresh") else "共享缓存"
-    cache_cls = "qa-pill qa-pill--warn" if cfg.get("force_refresh") else "qa-pill qa-pill--ok"
-
-    masthead_html = f"""
-    <div class="qa-masthead">
-      <div class="qa-masthead-left">
-        <div class="qa-masthead-kicker">QUANT INSIGHT · MULTI-ASSET RESEARCH TERMINAL</div>
-        <div class="qa-masthead-title">多资产量化分析与组合研究工作台</div>
-        <p class="qa-masthead-sub">
-          与 <code>quant</code> CLI 共用统一金融内核、语义防线、跨市场日历对齐与无前视样本外回测引擎。
-        </p>
-      </div>
-      <div class="qa-masthead-badges">
-        <span class="{window_cls}">窗口 {html.escape(window_text)}</span>
-        <span class="qa-pill">Rf {rf_pct:.2f}%</span>
-        <span class="{cache_cls}">{html.escape(cache_text)}</span>
-        <span class="qa-pill">主题 {html.escape(theme_label)}</span>
-        <span class="qa-pill">V{html.escape(str(SOFTWARE_VERSION))}</span>
-      </div>
-    </div>
-    """
-    st_module.markdown(masthead_html, unsafe_allow_html=True)
+    st_module.markdown(
+        "- **口径说明**：单资产探索默认保留资产原生货币 (`LOCAL`) 与对数收益率 (`log`)；"
+        "多资产比较与投资组合默认折算为人民币 (`CNY`) 与简单收益率 (`simple`，保证权重加和线性性)。\n"
+        "- **验证区分**：界面显式区分 **历史已实现绩效**、**正态性/Memmel 检验**、"
+        "**样本内拟合（含前视偏差警告）** 与 **严格因果样本外回测（OOS）**。"
+    )
+    st_module.markdown(_TAB2_SYSTEM_MATH_MARKDOWN)
+    ref_df = build_ef_multi_asset_codes_reference_df()
+    st_module.dataframe(
+        ref_df,
+        width="stretch",
+        hide_index=True,
+        height=min(420, 42 + 36 * len(ref_df)),
+    )
 
 
 def render_methodology_drawer(st_module: Any) -> None:
-    """Render collapsible financial conventions, mathematical formulas, and symbol reference."""
+    """Backward-compatible collapsible methodology drawer."""
     if st_module is None:
         return
-    with st_module.expander(
-        "📐 计算口径、数学原理与 13 类资产代码参考（点击展开）", expanded=False
-    ):
-        st_module.markdown(
-            "- **单资产与多资产默认口径差异**：单资产探索默认保留原生货币 (`LOCAL`) 与对数收益率 (`log`)；"
-            "多资产比较与组合研究默认折算为统一货币 (`CNY`) 与离散简单收益率 (`simple`，保证组合加权线性性)。\n"
-            "- **统计严格区分**：界面与导出报告均显式区分 **历史已实现绩效**、**正态性/Memmel 统计推断**、"
-            "**样本内拟合（含前视偏差警告）** 与 **严格因果样本外回测（OOS）**。"
-        )
-        st_module.markdown(_TAB2_SYSTEM_MATH_MARKDOWN)
-        ref_df = build_ef_multi_asset_codes_reference_df()
-        st_module.dataframe(
-            ref_df,
-            width="stretch",
-            hide_index=True,
-            height=min(560, 42 + 36 * len(ref_df)),
-        )
+    with st_module.expander("计算口径、数学原理与 13 类资产代码参考", expanded=False):
+        render_methodology_content(st_module)
