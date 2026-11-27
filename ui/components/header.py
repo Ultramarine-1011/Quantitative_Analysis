@@ -70,8 +70,6 @@ def render_workspace_topbar(
 def render_masthead(
     st_module: Any,
     cfg: Mapping[str, Any],
-    *,
-    theme_mode: str = "auto",
 ) -> None:
     """Backward-compatible alias rendering the compact workspace topbar."""
     render_workspace_topbar(

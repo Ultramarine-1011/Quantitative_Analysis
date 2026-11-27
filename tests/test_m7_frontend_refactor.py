@@ -39,7 +39,7 @@ from ui.state import (
     store_workspace_result,
     workspace_state,
 )
-from ui.theme import apply_ui_plotly_theme, build_theme_css
+from ui.theme import CLAUDE_DARK_TOKENS, apply_ui_plotly_theme, build_theme_css
 
 
 def _install_offline_market(
@@ -199,30 +199,37 @@ def test_app_split_is_thin_and_backend_does_not_import_ui() -> None:
 
 
 def test_theme_css_and_plotly_harmonization_preserve_data_and_heatmap_contrast() -> None:
-    css_auto = build_theme_css("auto")
-    css_dark = build_theme_css("dark")
-    css_light = build_theme_css("light")
-    assert "prefers-color-scheme: dark" in css_auto
-    assert "--qa-text: inherit" in css_auto
-    assert "color-scheme: dark;" in css_dark and "#111214" in css_dark
-    assert "color-scheme: light;" in css_light and "#f7f7f8" in css_light
+    css = build_theme_css()
+    assert "color-scheme: dark;" in css
+    assert CLAUDE_DARK_TOKENS["bg_primary"] in css and "#262624" in css
+    assert "#30302e" in css and "#1f1e1d" in css
+    assert "#faf9f5" in css and "#e8e6dc" in css and "#d97757" in css
+    assert "Lora" in css and "Source Sans 3" in css and "JetBrains Mono" in css
+    assert "filter: invert(" not in css
+
+    config_text = (Path(__file__).resolve().parents[1] / ".streamlit" / "config.toml").read_text(
+        encoding="utf-8"
+    )
+    assert 'base = "dark"' in config_text
+    assert 'backgroundColor = "#262624"' in config_text
+    assert 'primaryColor = "#D97757"' in config_text
 
     dates = pd.bdate_range("2024-01-02", periods=30)
     df = pd.DataFrame({"A": np.linspace(100, 120, 30)}, index=dates)
     raw_dd = charts.build_drawdown_figure(df, from_nav=True)
-    themed_dark = apply_ui_plotly_theme(raw_dd, "dark")
-    themed_light = apply_ui_plotly_theme(raw_dd, "light")
+    themed = apply_ui_plotly_theme(raw_dd)
 
-    assert themed_dark.layout.paper_bgcolor == "rgba(0,0,0,0)"
-    assert themed_dark.layout.plot_bgcolor == "rgba(0,0,0,0)"
-    assert isinstance(themed_dark.data[0].y, np.ndarray)
-    assert themed_dark.layout.font.color == "#eceef2"
-    assert themed_light.layout.font.color == "#181a1f"
+    assert themed.layout.paper_bgcolor == "rgba(0,0,0,0)"
+    assert themed.layout.plot_bgcolor == "rgba(0,0,0,0)"
+    assert isinstance(themed.data[0].y, np.ndarray)
+    assert themed.layout.font.color == "#e8e6dc"
+    assert themed.layout.title.font.color == "#faf9f5"
+    assert themed.layout.hoverlabel.bgcolor == "#30302e"
 
     # Heatmap cell contrast annotations must retain explicit #111111 / #fafafa colors.
     corr = pd.DataFrame([[1.0, -0.9], [-0.9, 1.0]], columns=["A", "B"], index=["A", "B"])
     hm = charts.build_tab3_correlation_heatmap(corr)
-    hm_dark = apply_ui_plotly_theme(hm, "dark")
+    hm_dark = apply_ui_plotly_theme(hm)
     ann_colors = {ann.font.color for ann in hm_dark.layout.annotations}
     assert ann_colors <= {"#111111", "#fafafa"}
 
@@ -234,33 +241,22 @@ def _open_windowed_page() -> AppTest:
     return page.run()
 
 
-def test_theme_switch_in_apptest_rethemes_figures_without_refetch(
+def test_single_claude_dark_theme_has_no_switcher_and_styles_figures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _install_offline_market(monkeypatch)
     page = _open_windowed_page()
+    assert not list(page.get("segmented_control"))
+    assert "ui_theme_mode" not in page.session_state
+
     page.button("nav_btn_single").click().run()
     page.button("single_run_btn").click().run()
     assert not page.exception
     assert not page.error
     assert len(calls) == 1
-    ws_before = page.session_state[WORKSPACE_SINGLE_KEY]
-    assert ws_before["figures_cache_key"][2] == "auto"
-
-    page.get("segmented_control")[0].set_value("dark").run()
-    assert not page.exception
-    assert not page.error
-    assert len(calls) == 1
-    ws_dark = page.session_state[WORKSPACE_SINGLE_KEY]
-    assert ws_dark["figures_cache_key"][2] == "dark"
-    assert ws_dark["figures"]["price"][2].layout.font.color == "#eceef2"
-
-    page.get("segmented_control")[0].set_value("light").run()
-    assert not page.exception
-    assert len(calls) == 1
-    ws_light = page.session_state[WORKSPACE_SINGLE_KEY]
-    assert ws_light["figures_cache_key"][2] == "light"
-    assert ws_light["figures"]["price"][2].layout.font.color == "#181a1f"
+    ws_single = page.session_state[WORKSPACE_SINGLE_KEY]
+    assert len(ws_single["figures_cache_key"]) == 2
+    assert ws_single["figures"]["price"][2].layout.font.color == "#e8e6dc"
 
     app.load_asset_data.clear()
     app.load_multi_leg_close_wide.clear()
@@ -440,12 +436,11 @@ def test_unit_export_cache_invalidation_when_skipped_charts_or_version_changes(
     assert exp3 is not exp1
     assert "口径限制" in exp3["md"]
 
-    # Changing figures theme reuses result_version and keeps figures cache keyed by theme.
-    figs_dark, _ = get_or_build_figures(state, res, theme_mode="dark")
-    figs_light, _ = get_or_build_figures(state, res, theme_mode="light")
-    assert figs_dark is not None and figs_light is not None
-    assert figs_dark["price"][2].layout.font.color == "#eceef2"
-    assert figs_light["price"][2].layout.font.color == "#181a1f"
+    # Figures cache reuses result_version and applies Claude Dark palette.
+    figs1, _ = get_or_build_figures(state, res)
+    figs2, _ = get_or_build_figures(state, res)
+    assert figs1 is not None and figs1 is figs2
+    assert figs1["price"][2].layout.font.color == "#e8e6dc"
 
     assert invalidate_if_signature_changed(state, ("sig2",)) is True
     assert state["result"] is None

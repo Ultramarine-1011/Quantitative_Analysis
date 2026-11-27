@@ -67,7 +67,7 @@ from ui.state import (
     workspace_state,
     workspace_status,
 )
-from ui.theme import apply_ui_plotly_theme, normalize_theme_mode
+from ui.theme import apply_ui_plotly_theme
 
 SINGLE_INPUT_DEFAULTS: dict[str, Any] = {
     "asset_type": "etf",
@@ -377,21 +377,15 @@ def _render_single_advanced_explorer(
         )
         if state.get("advanced_sig") != sub_sig:
             state["advanced_sig"] = sub_sig
-            state["norm_fig_raw"] = None
             state["norm_fig"] = None
-            state["norm_fig_theme"] = None
             state["norm_error"] = None
             state["gbm_result"] = None
-            state["gbm_fig_raw"] = None
             state["gbm_fig"] = None
-            state["gbm_fig_theme"] = None
             state["gbm_error"] = None
         if state.get("gbm_params") != (gbm_days, gbm_sims):
             state["gbm_params"] = (gbm_days, gbm_sims)
             state["gbm_result"] = None
-            state["gbm_fig_raw"] = None
             state["gbm_fig"] = None
-            state["gbm_fig_theme"] = None
 
         def _obtain_price_frame() -> pd.DataFrame:
             existing: AnalysisResult | None = state.get("result")
@@ -438,24 +432,16 @@ def _render_single_advanced_explorer(
                 raise ValueError("利率水平序列不支持净值归一化或 GBM 价格路径模拟。")
             return fetched.data_frame
 
-        theme_mode = normalize_theme_mode(
-            cfg.get("resolved_theme_mode") or cfg.get("theme_mode", "auto")
-        )
-
         if norm_clicked:
             with st_module.spinner("正在计算归一化净值曲线..."):
                 try:
                     df_norm = _obtain_price_frame()
                     norm_s = normalize_close_to_base_one(df_norm)
                     raw_fig = build_tab3_normalize_figure(df_norm.index, norm_s)
-                    state["norm_fig_raw"] = raw_fig
-                    state["norm_fig"] = apply_ui_plotly_theme(raw_fig, theme_mode)
-                    state["norm_fig_theme"] = theme_mode
+                    state["norm_fig"] = apply_ui_plotly_theme(raw_fig)
                     state["norm_error"] = None
                 except Exception as exc:
-                    state["norm_fig_raw"] = None
                     state["norm_fig"] = None
-                    state["norm_fig_theme"] = None
                     state["norm_error"] = format_ui_error_markdown(classify_exception(exc))
 
         if gbm_clicked:
@@ -472,23 +458,12 @@ def _render_single_advanced_explorer(
                     )
                     raw_gbm = build_tab3_gbm_figure(gbm_res)
                     state["gbm_result"] = gbm_res
-                    state["gbm_fig_raw"] = raw_gbm
-                    state["gbm_fig"] = apply_ui_plotly_theme(raw_gbm, theme_mode)
-                    state["gbm_fig_theme"] = theme_mode
+                    state["gbm_fig"] = apply_ui_plotly_theme(raw_gbm)
                     state["gbm_error"] = None
                 except Exception as exc:
                     state["gbm_result"] = None
-                    state["gbm_fig_raw"] = None
                     state["gbm_fig"] = None
-                    state["gbm_fig_theme"] = None
                     state["gbm_error"] = format_ui_error_markdown(classify_exception(exc))
-
-        if state.get("norm_fig_raw") is not None and state.get("norm_fig_theme") != theme_mode:
-            state["norm_fig"] = apply_ui_plotly_theme(state["norm_fig_raw"], theme_mode)
-            state["norm_fig_theme"] = theme_mode
-        if state.get("gbm_fig_raw") is not None and state.get("gbm_fig_theme") != theme_mode:
-            state["gbm_fig"] = apply_ui_plotly_theme(state["gbm_fig_raw"], theme_mode)
-            state["gbm_fig_theme"] = theme_mode
 
         with col_r:
             if state.get("norm_error"):
@@ -571,7 +546,7 @@ def render_single_asset_workspace(
     if show_editor:
         hydrate_widget_inputs(st_module, SINGLE_INPUT_DEFAULTS)
         adv_expanded = bool(state.pop("_keep_adv_open", False))
-        with st_module.container(border=True):
+        with st_module.container(border=True, key="single_editor_panel"):
             st_module.selectbox(
                 "快速按名称搜索常用标的（可选）",
                 options=(None, *POPULAR_ASSETS),
@@ -839,7 +814,6 @@ def render_single_asset_workspace(
     figs, skipped = get_or_build_figures(
         state,
         result,
-        theme_mode=cfg.get("resolved_theme_mode") or cfg.get("theme_mode", "auto"),
         on_error=lambda exc: render_error_banner(st_module, classify_exception(exc)),
     )
 

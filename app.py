@@ -2,7 +2,7 @@
 
 Thin interactive presentation shell delegating all analytics to ``services/`` and
 ``reporting/``, with task-driven navigation (Home, Single Asset, Compare, Portfolio),
-cross-workspace context continuity, neutral desktop styling, and cache invalidation.
+cross-workspace context continuity, unified Claude Dark styling, and cache invalidation.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from ui.services_bridge import (
     format_data_quality_warning as _format_data_quality_warning,
 )
 from ui.state import apply_pending_transitions, sync_legacy_analysis_results
-from ui.theme import inject_ui_theme_css, normalize_theme_mode
+from ui.theme import inject_ui_theme_css
 from ui.workspaces.compare import (
     invalidate_compare_from_persisted,
     render_compare_workspace,
@@ -129,13 +129,9 @@ def main() -> None:
     )
 
     apply_pending_transitions(st)
-
-    active_theme = normalize_theme_mode(st.session_state.get("ui_theme_mode", "auto"))
-    inject_ui_theme_css(st, active_theme)
+    inject_ui_theme_css(st)
 
     cfg = render_sidebar(st)
-    if cfg["theme_mode"] != active_theme:
-        inject_ui_theme_css(st, cfg["theme_mode"])
 
     active_view = cfg["active_view"]
     invalidated_any = False
@@ -148,14 +144,15 @@ def main() -> None:
     if cfg.get("date_error"):
         st.error(str(cfg["date_error"]))
 
-    if active_view == "home":
-        render_home_workspace(st, cfg)
-    elif active_view == "single":
-        render_single_asset_workspace(st, cfg, cached_loader=load_asset_data)
-    elif active_view == "compare":
-        render_compare_workspace(st, cfg, cached_loader=load_asset_data)
-    else:
-        render_portfolio_workspace(st, cfg, cached_loader=load_asset_data)
+    with st.container(key=f"qa_workspace_{active_view}"):
+        if active_view == "home":
+            render_home_workspace(st, cfg)
+        elif active_view == "single":
+            render_single_asset_workspace(st, cfg, cached_loader=load_asset_data)
+        elif active_view == "compare":
+            render_compare_workspace(st, cfg, cached_loader=load_asset_data)
+        else:
+            render_portfolio_workspace(st, cfg, cached_loader=load_asset_data)
 
     sync_legacy_analysis_results(st)
 

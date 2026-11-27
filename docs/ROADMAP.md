@@ -179,10 +179,10 @@ M6-0/1 固定离线黄金基线并完成契约迁移。M6-2/3 将输入解析、
 
 **工作内容（已在 M7 落地）**
 - [x] **组件化与工作区拆分**：将 [app.py](../app.py) 精简为兼容门面入口，按职责拆分为 [ui/theme.py](../ui/theme.py)、[ui/labels.py](../ui/labels.py)、[ui/errors.py](../ui/errors.py)、[ui/state.py](../ui/state.py)、[ui/services_bridge.py](../ui/services_bridge.py)、可复用组件包 [ui/components/](../ui/components/)（顶栏、侧边栏、告警与空状态、指标卡与次级 KPI 网格、标签页图表浏览器、财务表格与统一导出面板）以及三大工作区 [ui/workspaces/](../ui/workspaces/)（单资产探索、多资产比较、投资组合研究）。
-- [x] **视觉设计系统与双主题支持**：引入金融终端级自适应（`auto`）/ 深色终端（`dark`）/ 浅色研报（`light`）主题系统、`tabular-nums` 等宽数字排版、响应式 KPI 网格与平滑暗色表格适配，并通过 `apply_ui_plotly_theme` 同步适配 Plotly 图表字色、网格与悬停提示框。
-- [x] **状态隔离与缓存失效加固**：引入单调递增 `result_version`、`figures_cache_key = (result_version, chart_types, theme_mode)` 与 `exports_cache_key = (result_version, sorted_skipped_charts)`，修复切换附加图表或 `proxy_url` 等参数时的缓存失效边界；切换主题仅重绘图表而不重复触发后端拉数与计算。
+- [x] **视觉设计系统与 Claude Dark 统一**：引入统一 Claude Dark 暖深色设计系统（`#262624` / `#30302e` / `#1f1e1d` 背景层次、`Lora` / `Source Sans 3` / `JetBrains Mono` 字体栈、`#d97757` 强调色与 `.streamlit/config.toml` 原生暗色同步）、`tabular-nums` 等宽数字排版、响应式 KPI 网格与原生暗色表格适配，并通过 `apply_ui_plotly_theme` 同步适配 Plotly 图表字色、网格与悬停提示框。
+- [x] **状态隔离与缓存失效加固**：引入单调递增 `result_version`、`figures_cache_key = (result_version, chart_types)` 与 `exports_cache_key = (result_version, sorted_skipped_charts)`，修复切换附加图表或 `proxy_url` 等参数时的缓存失效边界。
 - [x] **结构化错误分类与 Plotly 图表升级**：区分 `validation`（校验/金融语义拦截）、`empty_data`、`market_data`（网络/上游）、`dependency` 与 `computation` 五类故障提示，避免与正常负收益结果混淆；升级 [charts.py](../charts.py) 配色、十字准星、`rangeselector` 快捷区间切换与带单位 `hovertemplate`。
-- [x] **回归与浏览器视觉验收**：新增 [tests/test_m7_frontend_refactor.py](../tests/test_m7_frontend_refactor.py)，完成全量 354 项 `pytest`、Ruff、依赖检查、Streamlit 冒烟测试及 Chrome CDP 双主题/三工作区/多视口（1440/1280/768）实际界面验收。
+- [x] **回归与浏览器视觉验收**：新增 [tests/test_m7_frontend_refactor.py](../tests/test_m7_frontend_refactor.py)，完成全量 `pytest`、Ruff、依赖检查、Streamlit 冒烟测试及 Chrome CDP 首页与三大工作区实际界面验收。
 
 ## 5. 版本与交付重点
 

@@ -1,7 +1,47 @@
-# 本地与云端通用默认项；Streamlit Community Cloud 可在控制台覆盖 Python 版本等。
+# 本地与云端通用默认项；统一采用 Claude Dark 主题。
 [theme]
-primaryColor = "#2563eb"
-font = "sans serif"
+base = "dark"
+primaryColor = "#D97757"
+backgroundColor = "#262624"
+secondaryBackgroundColor = "#30302E"
+textColor = "#E8E6DC"
+linkColor = "#8FB4D6"
+linkUnderline = false
+codeBackgroundColor = "#1F1E1D"
+codeTextColor = "#F0D7CC"
+borderColor = "#3D3D3A"
+dataframeBorderColor = "#3D3D3A"
+dataframeHeaderBackgroundColor = "#30302E"
+dataframeHeaderTextColor = "#FAF9F5"
+baseRadius = "4px"
+buttonRadius = "4px"
+showSidebarBorder = true
+showWidgetBorder = true
+baseFontSize = 16
+baseFontWeight = 400
+codeFontSize = "13px"
+headingFontWeights = 550
+font = "Lora:https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&display=swap"
+headingFont = "Source Sans 3:https://fonts.googleapis.com/css2?family=Source+Sans+3:ital,wght@0,400..700;1,400..700&display=swap"
+codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap"
+redColor = "#C46A5A"
+yellowColor = "#D4A574"
+greenColor = "#8FA67A"
+blueColor = "#6A9BCC"
+orangeColor = "#D97757"
+violetColor = "#C4A484"
+grayColor = "#9C9A92"
+
+[theme.sidebar]
+backgroundColor = "#30302E"
+secondaryBackgroundColor = "#1F1E1D"
+textColor = "#E8E6DC"
+borderColor = "#3D3D3A"
+codeBackgroundColor = "#1F1E1D"
+codeTextColor = "#F0D7CC"
+baseRadius = "4px"
+buttonRadius = "4px"
+showWidgetBorder = true
 
 [server]
 headless = true

@@ -347,7 +347,7 @@ def render_portfolio_workspace(
         hydrate_widget_inputs(st_module, PORTFOLIO_INPUT_DEFAULTS)
         st_module.session_state["portfolio_rf_pct_input"] = float(cfg.get("rf_pct", 1.6))
         adv_expanded = bool(state.pop("_keep_adv_open", False))
-        with st_module.container(border=True):
+        with st_module.container(border=True, key="portfolio_editor_panel"):
             parsed_items, parse_error = render_visual_asset_picker(
                 st_module,
                 text_key="tab3_ef_legs_input",
@@ -711,7 +711,6 @@ def render_portfolio_workspace(
         state,
         result,
         chart_types=tuple(chart_selection),
-        theme_mode=cfg.get("resolved_theme_mode") or cfg.get("theme_mode", "auto"),
         on_error=lambda exc: render_error_banner(st_module, classify_exception(exc)),
     )
 

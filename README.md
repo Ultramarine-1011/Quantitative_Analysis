@@ -239,7 +239,7 @@ flowchart TB
 Quantitative_Analysis/
 ├── app.py                  # Streamlit Web 兼容门面入口
 ├── ui/                     # M7 模块化前端主题、状态、错误分类、组件与工作区
-│   ├── theme.py                # 自适应/深色/浅色设计系统与 Plotly 主题适配
+│   ├── theme.py                # Claude Dark 统一设计系统与 Plotly 图表适配
 │   ├── errors.py               # 五类交互错误分类器与提示格式化
 │   ├── state.py                # 隔离工作区状态与版本化导出/图表缓存失效
 │   ├── services_bridge.py      # 统一服务桥接、质量警告与预览解析
@@ -271,7 +271,7 @@ Quantitative_Analysis/
 ├── pyproject.toml          # 安装配置、CLI 注册与 Ruff / Mypy 配置
 ├── requirements.txt        # 运行依赖
 ├── streamlit.bat           # Windows Streamlit 启动包装脚本
-├── .streamlit/config.toml  # Streamlit 默认服务配置
+├── .streamlit/config.toml  # Streamlit Claude Dark 原生主题与服务配置
 ├── tests/                  # 离线自动化测试套件
 └── docs/                   # 架构、审计、路线图与展示截图
 ```

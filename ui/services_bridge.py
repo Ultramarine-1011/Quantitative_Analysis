@@ -15,7 +15,7 @@ import data_fetcher as _data_fetcher_mod
 from asset_inputs import parse_asset_list, parse_weights
 from contracts import AnalysisResult, AssetSpec, MultiAssetResult, QualityReport
 from reporting import build_html_report, build_markdown_report, build_plotly_figures
-from ui.theme import ThemeMode, apply_ui_plotly_theme, normalize_theme_mode
+from ui.theme import apply_ui_plotly_theme
 
 
 def date_str(value: object) -> str:
@@ -179,13 +179,11 @@ def get_or_build_figures(
     result: AnalysisResult | MultiAssetResult,
     *,
     chart_types: Sequence[str] | None = None,
-    theme_mode: ThemeMode = "auto",
     on_error: Callable[[ImportError], None] | None = None,
 ) -> tuple[dict[str, tuple[str, str, Any]] | None, dict[str, str]]:
-    """Build and memoize themed Plotly figures keyed by ``(result_version, chart_types, theme)``."""
+    """Build and memoize Claude Dark Plotly figures keyed by ``(result_version, chart_types)``."""
     requested_key = tuple(chart_types) if chart_types is not None else None
-    norm_theme = normalize_theme_mode(theme_mode)
-    cache_key = (int(state.get("result_version", 0)), requested_key, norm_theme)
+    cache_key = (int(state.get("result_version", 0)), requested_key)
 
     cached_figs = state.get("figures")
     if isinstance(cached_figs, dict) and state.get("figures_cache_key") == cache_key:
@@ -201,7 +199,7 @@ def get_or_build_figures(
         return None, {}
 
     themed_figs: dict[str, tuple[str, str, Any]] = {
-        ct: (title, subtitle, apply_ui_plotly_theme(fig, norm_theme))
+        ct: (title, subtitle, apply_ui_plotly_theme(fig))
         for ct, (title, subtitle, fig) in raw_figs.items()
     }
     state["figures"] = themed_figs

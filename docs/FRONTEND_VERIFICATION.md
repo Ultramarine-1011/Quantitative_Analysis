@@ -58,3 +58,11 @@
   - **投资组合研究**：验证 OOS 验证协议横幅、目标权重与 Euler 风险贡献表、SLSQP 有效前沿/回测净值与回撤双面板图、敏感性抽屉与多 CSV/MD/HTML/JSON 导出区在明暗双主题下表现正常（并修正了暗色模式下 Streamlit 1.67 `stSelectbox`、`stNumberInputContainer`、`stAlert` 及 `stDataFrame` 的对比度适配）。
 - **响应式视口检查**：在 `1440x1080`、`1280x900` 与 `768x1024` 视口下执行浏览器 DOM 宽度校验，均满足 `scrollWidth <= innerWidth + 2`，无整页横向溢出。
 - **自动化回归**：新增 `tests/test_m7_frontend_refactor.py`（9 项测试覆盖模块边界、主题与 Plotly `bdata`/透明背景适配、5 类错误分类与正常负收益区分、状态与导出缓存失效、输入预览与 Plotly 图表升级），全量离线 `pytest` 354 项、Ruff 检查/格式及 `pip check` 全部通过。
+
+---
+
+# Claude Dark 视觉风格统一验收（2026-11-27）
+
+- **参考基线对齐**：复用 `claude-dark-mpe` 的暖深色色板（`#262624` 主画布、`#30302e` 侧边栏/卡片/表头、`#1f1e1d` 输入框/代码块/标签轨道、`#faf9f5` / `#e8e6dc` / `#c2c0b6` / `#9c9a92` 文本层次、`#3d3d3a` / `#4d4c48` 边框、`2px/4px/6px` 圆角、`#d97757` 陶土强调色、`Lora` + `Source Sans 3` + `JetBrains Mono` 字体栈），仅在图表保留涨跌、风险与多资产区分色。
+- **单主题收敛**：移除侧边栏 `Auto / Light / Dark` 主题切换入口及相关状态与分支；同步更新 `.streamlit/config.toml` 原生暗色配置以避免首屏白色闪烁及表格反色依赖。
+- **浏览器实际检查**：基于 Python 3.14.5 / Streamlit 1.67.0 / Plotly 7.1.0 启动真实应用及离线桩实例，通过 Headless Chrome CDP 检查首页、单资产分析、多资产比较与投资组合四大界面，确认无控制台异常、无横向溢出、原生 `st.dataframe`/日历弹窗/下拉列表/Popover/`st.tabs` 与 Plotly 图表视觉一致。

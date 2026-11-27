@@ -23,7 +23,6 @@ from ui.state import (
     workspace_state,
     workspace_status,
 )
-from ui.theme import THEME_MODES, THEME_SIDEBAR_LABELS, normalize_theme_mode
 
 
 def _sync_rf_from_global(st_module: Any) -> None:
@@ -77,7 +76,6 @@ def render_sidebar(st_module: Any) -> dict[str, Any]:
             "start_date_input": default_start.date(),
             "end_date_input": default_end.date(),
             "rf_pct_input": 1.6,
-            "ui_theme_mode": "auto",
             "proxy_url_input": "",
             "force_refresh_input": False,
             "allow_usdt_peg_input": False,
@@ -167,15 +165,12 @@ def render_sidebar(st_module: Any) -> dict[str, Any]:
         )
 
     cur_rf_pct = float(st_module.session_state.get("rf_pct_input", 1.6))
-    cur_theme = normalize_theme_mode(st_module.session_state.get("ui_theme_mode", "auto"))
     cur_cache_lbl = "实时刷新" if st_module.session_state.get("force_refresh_input") else "本地缓存"
 
     st_module.sidebar.markdown(
         '<div class="qa-sidebar-section">系统与口径</div>', unsafe_allow_html=True
     )
-    st_module.sidebar.caption(
-        f"Rf {cur_rf_pct:.2f}% · {THEME_SIDEBAR_LABELS.get(cur_theme, cur_theme)} · {cur_cache_lbl}"
-    )
+    st_module.sidebar.caption(f"Rf {cur_rf_pct:.2f}% · {cur_cache_lbl}")
 
     with st_module.sidebar.expander("全局参数与设置", expanded=False):
         rf_pct = float(
@@ -189,23 +184,6 @@ def render_sidebar(st_module: Any) -> dict[str, Any]:
                 help="用于夏普比率、Sortino 与切线组合计算；默认 1.6%（可在组合专业参数中同步修改）。",
             )
         )
-        if hasattr(st_module, "segmented_control"):
-            raw_theme = st_module.segmented_control(
-                "界面外观",
-                options=THEME_MODES,
-                format_func=lambda m: THEME_SIDEBAR_LABELS.get(m, m),
-                key="ui_theme_mode",
-                width="stretch",
-            )
-        else:
-            raw_theme = st_module.radio(
-                "界面外观",
-                options=THEME_MODES,
-                horizontal=True,
-                format_func=lambda m: THEME_SIDEBAR_LABELS.get(m, m),
-                key="ui_theme_mode",
-            )
-        theme_mode = normalize_theme_mode(raw_theme)
 
         proxy_raw = st_module.text_input(
             "HTTP/SOCKS 代理地址 (可选)",
@@ -230,8 +208,6 @@ def render_sidebar(st_module: Any) -> dict[str, Any]:
 
     return {
         "active_view": active_view,
-        "theme_mode": theme_mode,
-        "resolved_theme_mode": theme_mode,
         "dates_valid": date_error is None,
         "date_error": date_error,
         "start_str": start_str,

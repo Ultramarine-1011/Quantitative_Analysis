@@ -267,12 +267,12 @@ def test_delta_polarity_drawdown_and_plotly_legend_separation(sample_ohlcv: pd.D
     turn_txt, turn_tone = _format_metric_delta(1.073, 1.000, "neutral_ratio")
     assert turn_txt == "-0.073" and turn_tone == "neutral"
 
-    # Dark theme CSS must cover expander summary and popover triggers.
-    dark_css = build_theme_css("dark")
+    # Claude Dark theme CSS must cover expander summary and popover triggers.
+    dark_css = build_theme_css()
     assert '[data-testid="stExpander"] summary' in dark_css
     assert '[data-testid="stPopover"] button' in dark_css
 
     # Multi-trace price chart moves legend cleanly below plot so rangeselector never overlaps.
     featured = OHLCVFeatureEngineer().transform(sample_ohlcv)
-    fig = apply_ui_plotly_theme(charts.build_price_volume_figure(featured), "light")
+    fig = apply_ui_plotly_theme(charts.build_price_volume_figure(featured))
     assert float(fig.layout.legend.y) < 0.0
